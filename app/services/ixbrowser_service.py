@@ -929,7 +929,12 @@ class IXBrowserService:
                         await page.goto(draft_url, wait_until="domcontentloaded", timeout=40_000)
                         await page.wait_for_timeout(1200)
                 else:
-                    await self._open_draft_from_list(page, task_id=task_id, prompt=prompt)
+                    clicked = await self._open_draft_from_list(page, task_id=task_id, prompt=prompt)
+                    if clicked:
+                        try:
+                            await page.wait_for_url("**/d/**", timeout=8000)
+                        except Exception:  # noqa: BLE001
+                            pass
 
                 await page.wait_for_timeout(800)
                 if not generation_id:
@@ -1002,7 +1007,12 @@ class IXBrowserService:
                 await page.goto(draft_url, wait_until="domcontentloaded", timeout=40_000)
                 await page.wait_for_timeout(1200)
         else:
-            await self._open_draft_from_list(page, task_id=task_id, prompt=prompt)
+            clicked = await self._open_draft_from_list(page, task_id=task_id, prompt=prompt)
+            if clicked:
+                try:
+                    await page.wait_for_url("**/d/**", timeout=8000)
+                except Exception:  # noqa: BLE001
+                    pass
 
         await page.wait_for_timeout(800)
         if not generation_id:
@@ -1446,9 +1456,9 @@ class IXBrowserService:
         page,
         task_id: Optional[str],
         prompt: str,
-    ) -> None:
+    ) -> bool:
         await page.wait_for_timeout(800)
-        await page.evaluate(
+        clicked = await page.evaluate(
             """
             ({taskId, prompt}) => {
               const normalize = (text) => (text || '').toString().toLowerCase();
@@ -1470,7 +1480,7 @@ class IXBrowserService:
               const anchor = pickAnchor();
               if (anchor) {
                 anchor.click();
-                return;
+                return true;
               }
 
               const cards = Array.from(document.querySelectorAll('button, [role=\"button\"], div'));
@@ -1482,12 +1492,15 @@ class IXBrowserService:
               });
               if (matches.length) {
                 matches[0].click();
+                return true;
               }
+              return false;
             }
             """,
             {"taskId": task_id, "prompt": prompt}
         )
         await page.wait_for_timeout(800)
+        return bool(clicked)
 
     async def _try_click_publish_button(self, page) -> bool:
         if await self._click_by_keywords(page, ["发布", "Publish", "公开", "Share", "分享", "Post"]):
