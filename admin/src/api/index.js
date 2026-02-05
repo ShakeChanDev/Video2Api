@@ -86,7 +86,52 @@ export const getIxBrowserSoraGenerateJob = async (jobId) => {
   return response.data
 }
 
+export const publishIxBrowserSoraGenerateJob = async (jobId) => {
+  const response = await api.post(`/ixbrowser/sora-generate-jobs/${jobId}/publish`)
+  return response.data
+}
+
 export const listIxBrowserSoraGenerateJobs = async (params) => {
   const response = await api.get('/ixbrowser/sora-generate-jobs', { params })
+  return response.data
+}
+
+export const listAdminUsers = async () => {
+  const response = await api.get('/admin/users')
+  return response.data
+}
+
+export const createAdminUser = async (data) => {
+  const response = await api.post('/admin/users', data)
+  return response.data
+}
+
+export const updateAdminUser = async (userId, data) => {
+  const response = await api.patch(`/admin/users/${userId}`, data)
+  return response.data
+}
+
+export const resetAdminUserPassword = async (userId, data) => {
+  const response = await api.post(`/admin/users/${userId}/reset-password`, data)
+  return response.data
+}
+
+export const getSystemSettings = async () => {
+  const response = await api.get('/admin/settings/system')
+  return response.data
+}
+
+export const updateSystemSettings = async (data) => {
+  const response = await api.put('/admin/settings/system', data)
+  return response.data
+}
+
+export const getScanSchedulerConfig = async () => {
+  const response = await api.get('/admin/settings/scheduler/scan')
+  return response.data
+}
+
+export const updateScanSchedulerConfig = async (data) => {
+  const response = await api.put('/admin/settings/scheduler/scan', data)
   return response.data
 }

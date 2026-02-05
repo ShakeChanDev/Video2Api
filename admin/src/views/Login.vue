@@ -36,7 +36,7 @@ const doLogin = async () => {
     localStorage.setItem('token', data.access_token)
     localStorage.setItem('user', JSON.stringify(data.user || {}))
     ElMessage.success('登录成功')
-    router.push('/ixbrowser-groups')
+    router.push('/sora-accounts')
   } catch (error) {
     ElMessage.error(error?.response?.data?.detail || '登录失败')
   } finally {
@@ -52,16 +52,21 @@ const doLogin = async () => {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: radial-gradient(circle at top left, #dbeafe 0%, #f8fafc 55%);
+  background:
+    radial-gradient(820px 420px at 10% -2%, rgba(59, 130, 246, 0.24), transparent 68%),
+    radial-gradient(860px 420px at 94% 8%, rgba(20, 184, 166, 0.24), transparent 64%),
+    linear-gradient(150deg, #edf7ff 0%, #eef9f7 48%, #f6f9ff 100%);
 }
 
 .login-card {
   width: 360px;
-  background: #fff;
-  border: 1px solid #e2e8f0;
+  background: linear-gradient(140deg, rgba(255, 255, 255, 0.58) 0%, rgba(255, 255, 255, 0.3) 100%);
+  border: 1px solid rgba(255, 255, 255, 0.58);
   border-radius: 16px;
   box-shadow: 0 14px 36px rgba(15, 23, 42, 0.12);
   padding: 24px;
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
 }
 
 h1 {

@@ -104,6 +104,12 @@ class SQLiteDB:
                 duration TEXT NOT NULL,
                 aspect_ratio TEXT NOT NULL,
                 status TEXT NOT NULL,
+                progress INTEGER NOT NULL DEFAULT 0,
+                publish_status TEXT NOT NULL DEFAULT 'queued',
+                publish_url TEXT,
+                publish_error TEXT,
+                publish_attempts INTEGER NOT NULL DEFAULT 0,
+                published_at TIMESTAMP,
                 task_id TEXT,
                 task_url TEXT,
                 error TEXT,
@@ -122,6 +128,33 @@ class SQLiteDB:
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_ix_gen_jobs_group ON ixbrowser_sora_generate_jobs(group_title, id DESC)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_ix_gen_jobs_profile ON ixbrowser_sora_generate_jobs(profile_id, id DESC)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_ix_gen_jobs_status ON ixbrowser_sora_generate_jobs(status, id DESC)')
+
+        cursor.execute("PRAGMA table_info(ixbrowser_sora_generate_jobs)")
+        columns = {row["name"] for row in cursor.fetchall()}
+        if "progress" not in columns:
+            cursor.execute(
+                "ALTER TABLE ixbrowser_sora_generate_jobs ADD COLUMN progress INTEGER NOT NULL DEFAULT 0"
+            )
+        if "publish_status" not in columns:
+            cursor.execute(
+                "ALTER TABLE ixbrowser_sora_generate_jobs ADD COLUMN publish_status TEXT NOT NULL DEFAULT 'queued'"
+            )
+        if "publish_url" not in columns:
+            cursor.execute(
+                "ALTER TABLE ixbrowser_sora_generate_jobs ADD COLUMN publish_url TEXT"
+            )
+        if "publish_error" not in columns:
+            cursor.execute(
+                "ALTER TABLE ixbrowser_sora_generate_jobs ADD COLUMN publish_error TEXT"
+            )
+        if "publish_attempts" not in columns:
+            cursor.execute(
+                "ALTER TABLE ixbrowser_sora_generate_jobs ADD COLUMN publish_attempts INTEGER NOT NULL DEFAULT 0"
+            )
+        if "published_at" not in columns:
+            cursor.execute(
+                "ALTER TABLE ixbrowser_sora_generate_jobs ADD COLUMN published_at TIMESTAMP"
+            )
 
         conn.commit()
         conn.close()
@@ -354,10 +387,11 @@ class SQLiteDB:
         cursor.execute(
             '''
             INSERT INTO ixbrowser_sora_generate_jobs (
-                profile_id, window_name, group_title, prompt, duration, aspect_ratio, status,
+                profile_id, window_name, group_title, prompt, duration, aspect_ratio, status, progress,
+                publish_status, publish_url, publish_error, publish_attempts, published_at,
                 task_id, task_url, error, submit_attempts, poll_attempts, elapsed_ms,
                 operator_user_id, operator_username, started_at, finished_at, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''',
             (
                 int(data.get("profile_id") or 0),
@@ -367,6 +401,12 @@ class SQLiteDB:
                 str(data.get("duration") or "10s"),
                 str(data.get("aspect_ratio") or "landscape"),
                 str(data.get("status") or "queued"),
+                int(data.get("progress") or 0),
+                str(data.get("publish_status") or "queued"),
+                data.get("publish_url"),
+                data.get("publish_error"),
+                int(data.get("publish_attempts") or 0),
+                data.get("published_at"),
                 data.get("task_id"),
                 data.get("task_url"),
                 data.get("error"),
@@ -392,7 +432,8 @@ class SQLiteDB:
 
         allow_keys = {
             "status", "task_id", "task_url", "error", "submit_attempts", "poll_attempts",
-            "elapsed_ms", "started_at", "finished_at", "window_name"
+            "elapsed_ms", "started_at", "finished_at", "window_name", "progress",
+            "publish_status", "publish_url", "publish_error", "publish_attempts", "published_at"
         }
         sets = []
         params = []

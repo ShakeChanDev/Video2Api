@@ -4,7 +4,9 @@ ixBrowser 本地 API 服务
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import re
 import time
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
@@ -29,6 +31,46 @@ from app.models.ixbrowser import (
 )
 
 logger = logging.getLogger(__name__)
+
+IPHONE_OS_VERSIONS = [
+    "16_0",
+    "16_1",
+    "16_2",
+    "16_3",
+    "16_4",
+    "17_0",
+    "17_1",
+    "17_2",
+    "17_3",
+    "17_4",
+]
+
+IPHONE_BUILD_IDS = [
+    "15E148",
+    "15E302",
+    "15E5178f",
+    "16A366",
+    "16A404",
+    "16B92",
+    "16C50",
+    "16D57",
+    "16E227",
+    "17A577",
+]
+
+IPHONE_UA_POOL = [
+    (
+        "Mozilla/5.0 (iPhone; CPU iPhone OS {os_version} like Mac OS X) "
+        "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/{safari_version} "
+        "Mobile/{build_id} Safari/604.1"
+    ).format(
+        os_version=os_version,
+        safari_version=os_version.replace("_", "."),
+        build_id=build_id,
+    )
+    for os_version in IPHONE_OS_VERSIONS
+    for build_id in IPHONE_BUILD_IDS
+]
 
 
 class IXBrowserServiceError(Exception):
@@ -58,6 +100,12 @@ class IXBrowserService:
     scan_history_limit = 10
     generate_timeout_seconds = 30 * 60
     generate_poll_interval_seconds = 6
+    ixbrowser_busy_retry_max = 6
+    ixbrowser_busy_retry_delay_seconds = 1.2
+    sora_blocked_resource_types = {"image", "media", "font"}
+
+    def __init__(self) -> None:
+        self._ixbrowser_lock: Optional[asyncio.Lock] = None
 
     async def list_groups(self) -> List[IXBrowserGroup]:
         """
@@ -262,10 +310,17 @@ class IXBrowserService:
                         ws_endpoint,
                         timeout=15_000
                     )
-                    session_status, session_obj, session_raw = await self._fetch_sora_session(browser)
+                    session_status, session_obj, session_raw = await self._fetch_sora_session(
+                        browser,
+                        window.profile_id,
+                    )
                     account = self._extract_account(session_obj)
                     try:
-                        quota_info = await self._fetch_sora_quota(browser, session_obj)
+                        quota_info = await self._fetch_sora_quota(
+                            browser,
+                            window.profile_id,
+                            session_obj,
+                        )
                         quota_remaining_count = quota_info.get("remaining_count")
                         quota_total_count = quota_info.get("total_count")
                         quota_reset_at = quota_info.get("reset_at")
@@ -376,6 +431,9 @@ class IXBrowserService:
                 "duration": request.duration,
                 "aspect_ratio": request.aspect_ratio,
                 "status": "queued",
+                "progress": 0,
+                "publish_status": "queued",
+                "publish_attempts": 0,
                 "operator_user_id": operator_user.get("id") if isinstance(operator_user, dict) else None,
                 "operator_username": operator_user.get("username") if isinstance(operator_user, dict) else None,
             }
@@ -393,6 +451,38 @@ class IXBrowserService:
         if not row:
             raise IXBrowserNotFoundError(f"未找到生成任务：{job_id}")
         return self._build_generate_job(row)
+
+    async def retry_sora_publish_job(self, job_id: int) -> IXBrowserGenerateJob:
+        row = sqlite_db.get_ixbrowser_generate_job(job_id)
+        if not row:
+            raise IXBrowserNotFoundError(f"未找到生成任务：{job_id}")
+        status = str(row.get("status") or "")
+        if status != "completed":
+            raise IXBrowserServiceError("仅已完成的任务允许发布")
+        if row.get("publish_status") == "completed" and self._is_valid_publish_url(row.get("publish_url")):
+            return self._build_generate_job(row)
+
+        sqlite_db.update_ixbrowser_generate_job(
+            job_id,
+            {
+                "publish_status": "queued",
+                "publish_error": None,
+                "publish_url": None if not self._is_valid_publish_url(row.get("publish_url")) else row.get("publish_url"),
+            }
+        )
+
+        asyncio.create_task(
+            self._run_sora_publish_job(
+                job_id=job_id,
+                profile_id=int(row["profile_id"]),
+                task_id=row.get("task_id"),
+                task_url=row.get("task_url"),
+                prompt=str(row.get("prompt") or ""),
+            )
+        )
+
+        row = sqlite_db.get_ixbrowser_generate_job(job_id)
+        return self._build_generate_job(row) if row else self.get_sora_generate_job(job_id)
 
     def list_sora_generate_jobs(
         self,
@@ -419,6 +509,7 @@ class IXBrowserService:
                 "status": "running",
                 "started_at": started_at,
                 "error": None,
+                "progress": 1,
             }
         )
         t0 = time.perf_counter()
@@ -436,6 +527,21 @@ class IXBrowserService:
             )
 
             status = "completed" if final.get("status") == "completed" else "failed"
+            publish_url = final.get("publish_url")
+            publish_error = final.get("publish_error")
+            publish_patch: Dict[str, Any] = {}
+            if publish_url:
+                publish_patch = {
+                    "publish_status": "completed",
+                    "publish_url": publish_url,
+                    "publish_error": None,
+                    "published_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                }
+            elif publish_error:
+                publish_patch = {
+                    "publish_status": "failed",
+                    "publish_error": publish_error,
+                }
             sqlite_db.update_ixbrowser_generate_job(
                 job_id,
                 {
@@ -445,10 +551,20 @@ class IXBrowserService:
                     "error": final.get("error"),
                     "poll_attempts": final.get("poll_attempts"),
                     "submit_attempts": final.get("submit_attempts"),
+                    "progress": final.get("progress"),
                     "elapsed_ms": int((time.perf_counter() - t0) * 1000),
                     "finished_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    **publish_patch,
                 }
             )
+            if status == "completed" and not publish_url and not publish_error:
+                await self._run_sora_publish_job(
+                    job_id=job_id,
+                    profile_id=int(row["profile_id"]),
+                    task_id=final.get("task_id"),
+                    task_url=final.get("task_url"),
+                    prompt=str(row.get("prompt") or ""),
+                )
         except Exception as exc:  # noqa: BLE001
             sqlite_db.update_ixbrowser_generate_job(
                 job_id,
@@ -491,6 +607,7 @@ class IXBrowserService:
         poll_attempts = 0
         reconnect_attempts = 0
         max_reconnect_attempts = 3
+        last_progress = 0
         browser = None
         page = None
         task_id: Optional[str] = None
@@ -503,6 +620,7 @@ class IXBrowserService:
                 context = browser.contexts[0] if browser.contexts else await browser.new_context()
                 page = context.pages[0] if context.pages else await context.new_page()
 
+                await self._prepare_sora_page(page, profile_id)
                 await page.goto("https://sora.chatgpt.com/drafts", wait_until="domcontentloaded", timeout=40_000)
                 await page.wait_for_timeout(1500)
 
@@ -564,6 +682,7 @@ class IXBrowserService:
                             "error": f"任务监听超时（>{timeout_seconds}s）",
                             "submit_attempts": submit_attempts,
                             "poll_attempts": poll_attempts,
+                            "progress": last_progress,
                         }
 
                     poll_attempts += 1
@@ -590,14 +709,36 @@ class IXBrowserService:
                             "error": f"任务轮询失败：{poll_exc}",
                             "submit_attempts": submit_attempts,
                             "poll_attempts": poll_attempts,
+                            "progress": last_progress,
                         }
-                    sqlite_db.update_ixbrowser_generate_job(job_id, {"poll_attempts": poll_attempts})
+                    progress = self._normalize_progress(state.get("progress"))
+                    if progress is None:
+                        progress = self._estimate_progress(started, timeout_seconds)
+                    progress = max(int(progress or 0), last_progress)
+                    last_progress = progress
+                    sqlite_db.update_ixbrowser_generate_job(
+                        job_id,
+                        {
+                            "poll_attempts": poll_attempts,
+                            "progress": progress,
+                        }
+                    )
 
                     maybe_url = state.get("task_url")
                     if maybe_url:
                         task_url = maybe_url
 
                     if state.get("state") == "completed":
+                        publish_url = None
+                        publish_error = None
+                        try:
+                            publish_url = await self._publish_sora_from_page(
+                                page=page,
+                                task_id=task_id,
+                                prompt=prompt,
+                            )
+                        except Exception as publish_exc:  # noqa: BLE001
+                            publish_error = str(publish_exc)
                         return {
                             "status": "completed",
                             "task_id": task_id,
@@ -605,6 +746,9 @@ class IXBrowserService:
                             "error": None,
                             "submit_attempts": submit_attempts,
                             "poll_attempts": poll_attempts,
+                            "progress": 100,
+                            "publish_url": publish_url,
+                            "publish_error": publish_error,
                         }
                     if state.get("state") == "failed":
                         return {
@@ -614,6 +758,7 @@ class IXBrowserService:
                             "error": state.get("error") or "任务失败",
                             "submit_attempts": submit_attempts,
                             "poll_attempts": poll_attempts,
+                            "progress": last_progress,
                         }
 
                     try:
@@ -635,6 +780,7 @@ class IXBrowserService:
                             "error": f"任务监听中断：{wait_exc}",
                             "submit_attempts": submit_attempts,
                             "poll_attempts": poll_attempts,
+                            "progress": last_progress,
                         }
         finally:
             if browser:
@@ -642,6 +788,632 @@ class IXBrowserService:
                     await browser.close()
                 except Exception:  # noqa: BLE001
                     pass
+            try:
+                await self._close_profile(profile_id)
+            except Exception:  # noqa: BLE001
+                pass
+
+    async def _run_sora_publish_job(
+        self,
+        job_id: int,
+        profile_id: int,
+        task_id: Optional[str],
+        task_url: Optional[str],
+        prompt: str,
+    ) -> None:
+        row = sqlite_db.get_ixbrowser_generate_job(job_id)
+        if not row:
+            return
+        if row.get("publish_status") == "completed" and self._is_valid_publish_url(row.get("publish_url")):
+            return
+
+        if not task_id and not task_url:
+            sqlite_db.update_ixbrowser_generate_job(
+                job_id,
+                {
+                    "publish_status": "failed",
+                    "publish_error": "缺少任务标识，无法发布",
+                }
+            )
+            return
+
+        base_attempts = int(row.get("publish_attempts") or 0)
+        last_error = None
+        max_attempts = 5
+
+        for attempt in range(1, max_attempts + 1):
+            current_attempt = base_attempts + attempt
+            sqlite_db.update_ixbrowser_generate_job(
+                job_id,
+                {
+                    "publish_status": "running",
+                    "publish_attempts": current_attempt,
+                    "publish_error": None,
+                }
+            )
+            try:
+                publish_url = await self._publish_sora_video(
+                    profile_id=profile_id,
+                    task_id=task_id,
+                    task_url=task_url,
+                    prompt=prompt,
+                )
+                if publish_url:
+                    sqlite_db.update_ixbrowser_generate_job(
+                        job_id,
+                        {
+                            "publish_status": "completed",
+                            "publish_url": publish_url,
+                            "published_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                        }
+                    )
+                    return
+                last_error = "未获取到发布链接"
+            except IXBrowserAPIError as exc:
+                last_error = f"ixBrowser API error {exc.code}: {exc.message}"
+                if exc.code == 1008 and attempt < max_attempts:
+                    await asyncio.sleep(3.0 * attempt)
+                    continue
+            except Exception as exc:  # noqa: BLE001
+                last_error = str(exc)
+                if "server busy" in last_error.lower() and attempt < max_attempts:
+                    await asyncio.sleep(3.0 * attempt)
+                    continue
+
+            break
+
+        sqlite_db.update_ixbrowser_generate_job(
+            job_id,
+            {
+                "publish_status": "failed",
+                "publish_error": last_error or "发布失败",
+            }
+        )
+
+    async def _publish_sora_video(
+        self,
+        profile_id: int,
+        task_id: Optional[str],
+        task_url: Optional[str],
+        prompt: str,
+    ) -> Optional[str]:
+        open_data = await self._open_profile_with_retry(profile_id, max_attempts=2)
+        ws_endpoint = open_data.get("ws")
+        if not ws_endpoint:
+            debugging_address = open_data.get("debugging_address")
+            if debugging_address:
+                ws_endpoint = f"http://{debugging_address}"
+        if not ws_endpoint:
+            raise IXBrowserConnectionError("发布失败：未返回调试地址（ws/debugging_address）")
+
+        publish_url = None
+        async with async_playwright() as playwright:
+            browser = await playwright.chromium.connect_over_cdp(ws_endpoint, timeout=20_000)
+            try:
+                context = browser.contexts[0] if browser.contexts else await browser.new_context()
+                page = context.pages[0] if context.pages else await context.new_page()
+
+                await self._prepare_sora_page(page, profile_id)
+                publish_future = self._watch_publish_url(page)
+
+                await page.goto("https://sora.chatgpt.com/drafts", wait_until="domcontentloaded", timeout=40_000)
+                await page.wait_for_timeout(1500)
+
+                device_id = await self._get_device_id_from_context(context)
+                api_publish = await self._publish_sora_post_from_page(
+                    page=page,
+                    task_id=task_id,
+                    prompt=prompt,
+                    device_id=device_id,
+                )
+                if api_publish.get("publish_url"):
+                    return api_publish["publish_url"]
+
+                draft_data = await self._fetch_draft_item(page, task_id=task_id, prompt=prompt)
+                if isinstance(draft_data, dict):
+                    existing_link = self._extract_publish_url(str(draft_data))
+                    if existing_link:
+                        return existing_link
+                    draft_url = self._resolve_draft_url_from_item(draft_data, task_id)
+                    if draft_url:
+                        await page.goto(draft_url, wait_until="domcontentloaded", timeout=40_000)
+                        await page.wait_for_timeout(1200)
+                elif task_id:
+                    await page.goto(f"https://sora.chatgpt.com/g/{task_id}", wait_until="domcontentloaded", timeout=40_000)
+                    await page.wait_for_timeout(1200)
+                else:
+                    await self._open_draft_from_list(page, task_id=task_id, prompt=prompt)
+
+                await page.wait_for_timeout(800)
+                existing_dom_link = await self._find_publish_url_from_dom(page)
+                if existing_dom_link:
+                    return existing_dom_link
+                clicked = await self._try_click_publish_button(page)
+                if not clicked:
+                    await page.wait_for_timeout(900)
+                    clicked = await self._try_click_publish_button(page)
+                if clicked:
+                    await page.wait_for_timeout(800)
+                    await self._click_by_keywords(page, ["确认", "Confirm", "继续", "Continue", "发布", "Publish"])
+                else:
+                    raise IXBrowserServiceError("未找到发布按钮")
+
+                publish_url = await self._wait_for_publish_url(publish_future, page, timeout_seconds=45)
+            finally:
+                try:
+                    await browser.close()
+                except Exception:  # noqa: BLE001
+                    pass
+                try:
+                    await self._close_profile(profile_id)
+                except Exception:  # noqa: BLE001
+                    pass
+        return publish_url
+
+    async def _publish_sora_from_page(
+        self,
+        page,
+        task_id: Optional[str],
+        prompt: str,
+    ) -> Optional[str]:
+        publish_future = self._watch_publish_url(page)
+
+        await page.goto("https://sora.chatgpt.com/drafts", wait_until="domcontentloaded", timeout=40_000)
+        await page.wait_for_timeout(1500)
+
+        device_id = await self._get_device_id_from_context(page.context)
+        api_publish = await self._publish_sora_post_from_page(
+            page=page,
+            task_id=task_id,
+            prompt=prompt,
+            device_id=device_id,
+        )
+        if api_publish.get("publish_url"):
+            return api_publish["publish_url"]
+
+        draft_data = await self._fetch_draft_item(page, task_id=task_id, prompt=prompt)
+        if isinstance(draft_data, dict):
+            existing_link = self._extract_publish_url(str(draft_data))
+            if existing_link:
+                return existing_link
+            draft_url = self._resolve_draft_url_from_item(draft_data, task_id)
+            if draft_url:
+                await page.goto(draft_url, wait_until="domcontentloaded", timeout=40_000)
+                await page.wait_for_timeout(1200)
+        elif task_id:
+            await page.goto(f"https://sora.chatgpt.com/g/{task_id}", wait_until="domcontentloaded", timeout=40_000)
+            await page.wait_for_timeout(1200)
+        else:
+            await self._open_draft_from_list(page, task_id=task_id, prompt=prompt)
+
+        await page.wait_for_timeout(800)
+        existing_dom_link = await self._find_publish_url_from_dom(page)
+        if existing_dom_link:
+            return existing_dom_link
+        clicked = await self._try_click_publish_button(page)
+        if not clicked:
+            await page.wait_for_timeout(900)
+            clicked = await self._try_click_publish_button(page)
+        if clicked:
+            await page.wait_for_timeout(800)
+            await self._click_by_keywords(page, ["确认", "Confirm", "继续", "Continue", "发布", "Publish"])
+        else:
+            raise IXBrowserServiceError("未找到发布按钮")
+
+        return await self._wait_for_publish_url(publish_future, page, timeout_seconds=45)
+
+    def _watch_publish_url(self, page):
+        loop = asyncio.get_running_loop()
+        future: asyncio.Future = loop.create_future()
+
+        async def handle_response(response):
+            if future.done():
+                return
+            url = response.url
+            if "sora.chatgpt.com" not in url:
+                return
+            if "/p/" in url:
+                future.set_result(url)
+                return
+            try:
+                text = await response.text()
+            except Exception:  # noqa: BLE001
+                return
+            found = self._extract_publish_url(text) or self._extract_publish_url(url)
+            if found and not future.done():
+                future.set_result(found)
+
+        page.on("response", lambda resp: asyncio.create_task(handle_response(resp)))
+        return future
+
+    async def _wait_for_publish_url(self, future, page, timeout_seconds: int = 20) -> Optional[str]:
+        try:
+            return await asyncio.wait_for(future, timeout=timeout_seconds)
+        except asyncio.TimeoutError:
+            return await self._find_publish_url_from_dom(page)
+
+    def _extract_publish_url(self, text: Optional[str]) -> Optional[str]:
+        if not text:
+            return None
+        match = re.search(r"https?://sora\\.chatgpt\\.com/p/s_[a-zA-Z0-9]{8,}", text)
+        if match:
+            return match.group(0)
+        share_id = self._extract_share_id(text)
+        if share_id:
+            return f"https://sora.chatgpt.com/p/{share_id}"
+        try:
+            parsed = json.loads(text)
+        except Exception:  # noqa: BLE001
+            parsed = None
+        share_id = self._find_share_id(parsed)
+        if share_id:
+            return f"https://sora.chatgpt.com/p/{share_id}"
+        return None
+
+    def _extract_share_id(self, text: str) -> Optional[str]:
+        if not text:
+            return None
+        match = re.search(r"s_[a-zA-Z0-9]{8,}", text)
+        return match.group(0) if match else None
+
+    def _is_valid_publish_url(self, url: Optional[str]) -> bool:
+        if not url:
+            return False
+        return bool(re.search(r"https?://sora\\.chatgpt\\.com/p/s_[a-zA-Z0-9]{8,}", url))
+
+    def _find_share_id(self, data: Any) -> Optional[str]:
+        if data is None:
+            return None
+        if isinstance(data, str):
+            if re.fullmatch(r"s_[a-zA-Z0-9]{8,}", data):
+                return data
+            return None
+        if isinstance(data, dict):
+            for key in ("share_id", "shareId", "public_id", "publicId", "publish_id", "publishId", "id"):
+                value = data.get(key)
+                if isinstance(value, str) and re.fullmatch(r"s_[a-zA-Z0-9]{8,}", value):
+                    return value
+            for value in data.values():
+                found = self._find_share_id(value)
+                if found:
+                    return found
+        if isinstance(data, list):
+            for value in data:
+                found = self._find_share_id(value)
+                if found:
+                    return found
+        return None
+
+    async def _find_publish_url_from_dom(self, page) -> Optional[str]:
+        data = await page.evaluate(
+            """
+            () => {
+              const links = Array.from(document.querySelectorAll('a[href*=\"/p/\"]'))
+                .map((node) => node.getAttribute('href'))
+                .filter(Boolean);
+              if (links.length) {
+                const link = links[0];
+                return link.startsWith('http') ? link : `https://sora.chatgpt.com${link}`;
+              }
+
+              const inputs = Array.from(document.querySelectorAll('input, textarea'));
+              for (const input of inputs) {
+                const value = input.value || input.textContent || '';
+                if (value.includes('/p/s_')) {
+                  return value;
+                }
+              }
+              return null;
+            }
+            """
+        )
+        if isinstance(data, str) and data.strip():
+            return data.strip()
+        return None
+
+    async def _fetch_draft_item(
+        self,
+        page,
+        task_id: Optional[str],
+        prompt: str,
+    ) -> Optional[dict]:
+        data = await page.evaluate(
+            """
+            async ({taskId, prompt}) => {
+              try {
+                const resp = await fetch("https://sora.chatgpt.com/backend/project_y/profile/drafts?limit=30", {
+                  method: "GET",
+                  credentials: "include"
+                });
+                const text = await resp.text();
+                let json = null;
+                try { json = JSON.parse(text); } catch (e) {}
+                const items = json?.items;
+                if (!Array.isArray(items)) return null;
+                const norm = (v) => (v || '').toString().toLowerCase();
+                const taskIdNorm = norm(taskId);
+                const promptNorm = norm(prompt);
+                let found = null;
+                if (taskIdNorm) {
+                  found = items.find((item) => norm(item?.task_id) === taskIdNorm);
+                }
+                if (!found && promptNorm) {
+                  found = items.find((item) => norm(item?.prompt || item?.title || item?.name).includes(promptNorm));
+                }
+                return found || items[0] || null;
+              } catch (e) {
+                return null;
+              }
+            }
+            """,
+            {"taskId": task_id, "prompt": prompt}
+        )
+        return data if isinstance(data, dict) else None
+
+    def _resolve_draft_url_from_item(self, item: dict, task_id: Optional[str]) -> Optional[str]:
+        if not item:
+            return None
+        for key in ("share_url", "public_url", "publish_url", "url"):
+            value = item.get(key)
+            if isinstance(value, str) and value.strip():
+                if value.startswith("http"):
+                    return value
+                if value.startswith("/"):
+                    return f"https://sora.chatgpt.com{value}"
+        for key in ("id", "draft_id", "project_id", "video_id", "asset_id"):
+            value = item.get(key)
+            if isinstance(value, str) and value.strip():
+                return f"https://sora.chatgpt.com/g/{value}"
+        if task_id:
+            return f"https://sora.chatgpt.com/g/{task_id}"
+        return None
+
+    async def _open_draft_from_list(
+        self,
+        page,
+        task_id: Optional[str],
+        prompt: str,
+    ) -> None:
+        await page.wait_for_timeout(800)
+        await page.evaluate(
+            """
+            ({taskId, prompt}) => {
+              const normalize = (text) => (text || '').toString().toLowerCase();
+              const promptText = normalize(prompt);
+              const taskText = normalize(taskId);
+              const anchors = Array.from(document.querySelectorAll('a[href*=\"/g/\"], a[href*=\"/draft\"], a[href*=\"/d/\"]'));
+              const pickAnchor = () => {
+                if (taskText) {
+                  const hit = anchors.find((node) => normalize(node.getAttribute('href')).includes(taskText));
+                  if (hit) return hit;
+                }
+                if (promptText) {
+                  const hit = anchors.find((node) => normalize(node.innerText || node.textContent || '').includes(promptText));
+                  if (hit) return hit;
+                }
+                return anchors[0] || null;
+              };
+
+              const anchor = pickAnchor();
+              if (anchor) {
+                anchor.click();
+                return;
+              }
+
+              const cards = Array.from(document.querySelectorAll('button, [role=\"button\"], div'));
+              const matches = cards.filter((node) => {
+                const text = normalize(node.innerText || node.textContent || '');
+                if (taskText && text.includes(taskText)) return true;
+                if (promptText && text.includes(promptText)) return true;
+                return false;
+              });
+              if (matches.length) {
+                matches[0].click();
+              }
+            }
+            """,
+            {"taskId": task_id, "prompt": prompt}
+        )
+        await page.wait_for_timeout(800)
+
+    async def _try_click_publish_button(self, page) -> bool:
+        if await self._click_by_keywords(page, ["发布", "Publish", "公开", "Share", "分享", "Post"]):
+            return True
+        if await self._click_by_keywords(page, ["复制链接", "Copy link", "Share link", "Get link"]):
+            return True
+        if await self._click_by_keywords(page, ["更多", "More", "Menu", "Actions", "Options", "···", "..."]):
+            await page.wait_for_timeout(600)
+            if await self._click_by_keywords(page, ["发布", "Publish", "公开", "Share", "分享"]):
+                return True
+        return False
+
+    async def _click_by_keywords(self, page, keywords: List[str]) -> bool:
+        if not keywords:
+            return False
+        data = await page.evaluate(
+            """
+            (keywords) => {
+              const norm = (v) => (v || '').toString().toLowerCase();
+              const keys = keywords.map((k) => norm(k));
+              const candidates = Array.from(document.querySelectorAll('button, [role=\"button\"], a, [role=\"menuitem\"]'));
+              const matchNode = (node) => {
+                const text = norm(node.innerText || node.textContent || '');
+                const aria = norm(node.getAttribute('aria-label'));
+                const title = norm(node.getAttribute('title'));
+                const testid = norm(node.getAttribute('data-testid') || node.getAttribute('data-test') || node.getAttribute('data-qa'));
+                const href = norm(node.getAttribute('href'));
+                return keys.some((k) => (text && text.includes(k)) || (aria && aria.includes(k)) || (title && title.includes(k)) || (testid && testid.includes(k)) || (href && href.includes(k)));
+              };
+              for (const node of candidates) {
+                if (!matchNode(node)) continue;
+                const rect = node.getBoundingClientRect();
+                if (rect.width <= 0 || rect.height <= 0) continue;
+                node.click();
+                return true;
+              }
+              return false;
+            }
+            """,
+            keywords
+        )
+        return bool(data)
+
+    async def _page_contains_keywords(self, page, keywords: List[str]) -> bool:
+        if not keywords:
+            return False
+        data = await page.evaluate(
+            """
+            (keywords) => {
+              const text = (document.body?.innerText || "").toLowerCase();
+              const keys = keywords.map((k) => (k || '').toString().toLowerCase());
+              return keys.some((k) => k && text.includes(k));
+            }
+            """,
+            keywords,
+        )
+        return bool(data)
+
+    async def _fill_prompt_input(self, page, prompt: str) -> bool:
+        if not prompt:
+            return False
+        data = await page.evaluate(
+            """
+            (prompt) => {
+              const norm = (v) => (v || '').toString().toLowerCase();
+              const hintKeys = ["prompt", "describe", "description", "输入", "描述", "想象", "请输入"];
+              const candidates = [];
+              const pushNode = (node) => {
+                if (!node) return;
+                const rect = node.getBoundingClientRect();
+                if (rect.width <= 0 || rect.height <= 0) return;
+                const placeholder = node.getAttribute('placeholder') || node.getAttribute('aria-label') || node.getAttribute('data-placeholder') || '';
+                const hint = norm(placeholder);
+                const hintScore = hintKeys.some((k) => hint.includes(k)) ? 10 : 0;
+                const areaScore = Math.min(rect.width * rect.height, 200000) / 20000;
+                candidates.push({ node, score: hintScore + areaScore });
+              };
+
+              document.querySelectorAll('textarea').forEach(pushNode);
+              document.querySelectorAll('input[type=\"text\"]').forEach(pushNode);
+              document.querySelectorAll('[contenteditable=\"true\"]').forEach(pushNode);
+              document.querySelectorAll('[role=\"textbox\"]').forEach(pushNode);
+
+              if (!candidates.length) return false;
+              candidates.sort((a, b) => b.score - a.score);
+              const target = candidates[0].node;
+              target.focus();
+              target.click();
+
+              const tag = (target.tagName || '').toLowerCase();
+              const isInput = tag === 'textarea' || tag === 'input';
+              if (isInput) {
+                target.value = '';
+                target.dispatchEvent(new Event('input', { bubbles: true }));
+                target.value = prompt;
+                target.dispatchEvent(new Event('input', { bubbles: true }));
+                target.dispatchEvent(new Event('change', { bubbles: true }));
+              } else {
+                target.textContent = '';
+                target.dispatchEvent(new Event('input', { bubbles: true }));
+                target.textContent = prompt;
+                target.dispatchEvent(new Event('input', { bubbles: true }));
+              }
+              return true;
+            }
+            """,
+            prompt,
+        )
+        return bool(data)
+
+    async def _select_aspect_ratio(self, page, aspect_ratio: str) -> bool:
+        if not aspect_ratio:
+            return False
+        ratio = aspect_ratio.strip().lower()
+        if ratio in {"portrait", "vertical"}:
+            return await self._click_by_keywords(page, ["竖屏", "Portrait", "Vertical"])
+        if ratio in {"landscape", "horizontal"}:
+            return await self._click_by_keywords(page, ["横屏", "Landscape", "Horizontal"])
+        return False
+
+    async def _select_duration(self, page, n_frames: int) -> bool:
+        mapping = {300: "10s", 450: "15s", 750: "25s"}
+        label = mapping.get(n_frames)
+        if not label:
+            return False
+        return await self._click_by_keywords(page, [label])
+
+    async def _submit_video_request_via_ui(
+        self,
+        page,
+        prompt: str,
+        aspect_ratio: str,
+        n_frames: int,
+    ) -> Dict[str, Optional[str]]:
+        try:
+            await page.goto("https://sora.chatgpt.com/", wait_until="domcontentloaded", timeout=40_000)
+            await page.wait_for_timeout(1500)
+        except Exception:  # noqa: BLE001
+            pass
+
+        if await self._page_contains_keywords(page, ["Log in", "Sign in", "登录", "Login"]):
+            return {"task_id": None, "task_url": None, "access_token": None, "error": "Sora 未登录"}
+
+        filled = await self._fill_prompt_input(page, prompt)
+        if not filled:
+            return {"task_id": None, "task_url": None, "access_token": None, "error": "未找到提示词输入框"}
+
+        await self._select_aspect_ratio(page, aspect_ratio)
+        await self._select_duration(page, n_frames)
+
+        try:
+            async with page.expect_response(lambda resp: "/backend/nf/create" in resp.url, timeout=40_000) as resp_info:
+                clicked = await self._click_by_keywords(page, ["生成", "Generate", "Create", "提交", "Run"])
+                if not clicked:
+                    clicked = await page.evaluate(
+                        """
+                        () => {
+                          const candidates = Array.from(document.querySelectorAll('button, [role=\"button\"], input[type=\"submit\"]'));
+                          for (const node of candidates) {
+                            const rect = node.getBoundingClientRect();
+                            if (rect.width <= 0 || rect.height <= 0) continue;
+                            if (node.disabled) continue;
+                            node.click();
+                            return true;
+                          }
+                          return false;
+                        }
+                        """
+                    )
+                if not clicked:
+                    return {"task_id": None, "task_url": None, "access_token": None, "error": "未找到生成按钮"}
+            resp = await resp_info.value
+            text = await resp.text()
+        except Exception as exc:  # noqa: BLE001
+            return {"task_id": None, "task_url": None, "access_token": None, "error": f"等待生成请求失败: {exc}"}
+
+        json_payload = None
+        try:
+            json_payload = json.loads(text)
+        except Exception:  # noqa: BLE001
+            json_payload = None
+        task_id = None
+        if isinstance(json_payload, dict):
+            task_id = json_payload.get("id") or json_payload.get("task_id") or (json_payload.get("task") or {}).get("id")
+        task_url = f"https://sora.chatgpt.com/g/{task_id}" if task_id else None
+        if not task_id:
+            message = None
+            if isinstance(json_payload, dict):
+                message = (json_payload.get("error") or {}).get("message") or json_payload.get("message")
+            message = message or text or "生成请求未返回 task_id"
+            return {"task_id": None, "task_url": None, "access_token": None, "error": str(message)[:300]}
+
+        access_token = await self._get_access_token_from_page(page)
+        return {
+            "task_id": task_id,
+            "task_url": task_url,
+            "access_token": access_token,
+            "error": None,
+        }
 
     async def _submit_video_request_from_page(
         self,
@@ -651,13 +1423,27 @@ class IXBrowserService:
         n_frames: int,
         device_id: str,
     ) -> Dict[str, Optional[str]]:
-        try:
-            await page.wait_for_function(
-                "typeof window.SentinelSDK !== 'undefined' && typeof window.SentinelSDK.token === 'function'",
-                timeout=30_000
+        ready = False
+        for _ in range(30):
+            try:
+                ready = await page.evaluate(
+                    "typeof window.SentinelSDK !== 'undefined' && typeof window.SentinelSDK.token === 'function'"
+                )
+            except Exception:  # noqa: BLE001
+                ready = False
+            if ready:
+                break
+            await page.wait_for_timeout(1000)
+        if not ready:
+            fallback = await self._submit_video_request_via_ui(
+                page=page,
+                prompt=prompt,
+                aspect_ratio=aspect_ratio,
+                n_frames=n_frames,
             )
-        except PlaywrightTimeoutError as exc:
-            raise IXBrowserServiceError("页面未加载 SentinelSDK，无法提交生成请求") from exc
+            if fallback.get("task_id") or fallback.get("error"):
+                return fallback
+            return {"task_id": None, "task_url": None, "access_token": None, "error": "页面未加载 SentinelSDK，无法提交生成请求"}
 
         data = await page.evaluate(
             """
@@ -767,12 +1553,110 @@ class IXBrowserService:
             return data.strip()
         return None
 
+    async def _get_device_id_from_context(self, context) -> str:
+        try:
+            cookies = await context.cookies("https://sora.chatgpt.com")
+        except Exception:  # noqa: BLE001
+            cookies = []
+        device_id = next(
+            (cookie.get("value") for cookie in cookies if cookie.get("name") == "oai-did" and cookie.get("value")),
+            None
+        )
+        return device_id or str(uuid4())
+
+    async def _publish_sora_post_from_page(
+        self,
+        page,
+        task_id: Optional[str],
+        prompt: str,
+        device_id: str,
+    ) -> Dict[str, Optional[str]]:
+        draft_data = await self._fetch_draft_item(page, task_id=task_id, prompt=prompt)
+        if not isinstance(draft_data, dict):
+            return {"publish_url": None, "error": "未找到草稿数据"}
+
+        generation_id = (
+            draft_data.get("generation_id")
+            or draft_data.get("generationId")
+            or (draft_data.get("generation") or {}).get("id")
+            or (draft_data.get("generation") or {}).get("generation_id")
+        )
+        if not generation_id:
+            return {"publish_url": None, "error": "草稿缺少 generation_id"}
+
+        data = await page.evaluate(
+            """
+            async ({generationId, deviceId}) => {
+              const err = (message) => ({ publish_url: null, error: message });
+              try {
+                let sentinelToken = null;
+                if (window.SentinelSDK && typeof window.SentinelSDK.token === "function") {
+                  const sentinelRaw = await window.SentinelSDK.token("sora_2_create_post", deviceId);
+                  if (sentinelRaw) {
+                    sentinelToken = typeof sentinelRaw === "string" ? sentinelRaw : JSON.stringify(sentinelRaw);
+                  }
+                }
+
+                const payload = {
+                  attachments_to_create: [{ generation_id: generationId, kind: "sora" }],
+                  post_text: ""
+                };
+                const headers = { "Content-Type": "application/json" };
+                if (sentinelToken) headers["OpenAI-Sentinel-Token"] = sentinelToken;
+                if (deviceId) headers["OAI-Device-Id"] = deviceId;
+
+                const tryFetch = async (url) => {
+                  const resp = await fetch(url, {
+                    method: "POST",
+                    credentials: "include",
+                    headers,
+                    body: JSON.stringify(payload)
+                  });
+                  const text = await resp.text();
+                  return { ok: resp.ok, status: resp.status, text };
+                };
+
+                let result = await tryFetch("https://sora.chatgpt.com/backend/project_y/post");
+                if (!result.ok) {
+                  // fallback to same-origin path
+                  result = await tryFetch("/project_y/post");
+                }
+                if (!result.ok) {
+                  return err(result.text || `发布失败，状态码 ${result.status}`);
+                }
+                return { publish_url: result.text || null, error: null };
+              } catch (e) {
+                return err(String(e));
+              }
+            }
+            """,
+            {"generationId": generation_id, "deviceId": device_id}
+        )
+        if not isinstance(data, dict):
+            return {"publish_url": None, "error": "发布返回格式异常"}
+
+        text = data.get("publish_url")
+        extracted = self._extract_publish_url(text)
+        if extracted:
+            return {"publish_url": extracted, "error": None}
+
+        # 尝试从 JSON 中解析 share_id/public_id
+        try:
+            parsed = json.loads(text) if isinstance(text, str) else None
+        except Exception:  # noqa: BLE001
+            parsed = None
+        share_id = self._find_share_id(parsed)
+        if share_id:
+            return {"publish_url": f"https://sora.chatgpt.com/p/{share_id}", "error": None}
+
+        return {"publish_url": None, "error": data.get("error") or "发布未返回链接"}
+
     async def _poll_sora_task_from_page(
         self,
         page,
         task_id: str,
         access_token: str,
-    ) -> Dict[str, Optional[str]]:
+    ) -> Dict[str, Any]:
         data = await page.evaluate(
             """
             async ({taskId, accessToken}) => {
@@ -780,7 +1664,11 @@ class IXBrowserService:
                 "Authorization": `Bearer ${accessToken}`,
                 "Accept": "application/json"
               };
-              const fail = (msg) => ({ state: "failed", error: msg, task_url: null });
+              const pickProgress = (obj) => {
+                if (!obj) return null;
+                return obj.progress ?? obj.progress_percent ?? obj.progress_percentage ?? obj.percent ?? obj.pct ?? obj.progressPct ?? null;
+              };
+              const fail = (msg, progress = null) => ({ state: "failed", error: msg, task_url: null, progress });
 
               try {
                 const pendingResp = await fetch("https://sora.chatgpt.com/backend/nf/pending/v2", {
@@ -794,7 +1682,7 @@ class IXBrowserService:
                 if (pendingResp.status === 200 && Array.isArray(pendingJson)) {
                   const foundPending = pendingJson.find((item) => item?.id === taskId);
                   if (foundPending) {
-                    return { state: "processing", error: null, task_url: null };
+                    return { state: "processing", error: null, task_url: null, progress: pickProgress(foundPending) };
                   }
                 }
               } catch (e) {}
@@ -814,22 +1702,23 @@ class IXBrowserService:
                 }
                 const target = items.find((item) => item?.task_id === taskId);
                 if (!target) {
-                  return { state: "processing", error: null, task_url: null };
+                  return { state: "processing", error: null, task_url: null, progress: null };
                 }
 
                 const reason = target.reason_str || target.markdown_reason_str || null;
                 const kind = target.kind || "";
                 const taskUrl = target.url || target.downloadable_url || null;
+                const progress = pickProgress(target);
                 if (reason && String(reason).trim()) {
-                  return fail(String(reason));
+                  return fail(String(reason), progress);
                 }
                 if (kind === "sora_content_violation") {
-                  return fail("内容审核未通过");
+                  return fail("内容审核未通过", progress);
                 }
                 if (taskUrl) {
-                  return { state: "completed", error: null, task_url: taskUrl };
+                  return { state: "completed", error: null, task_url: taskUrl, progress: 100 };
                 }
-                return { state: "processing", error: null, task_url: null };
+                return { state: "processing", error: null, task_url: null, progress };
               } catch (e) {
                 return fail(String(e));
               }
@@ -841,7 +1730,7 @@ class IXBrowserService:
             }
         )
         if not isinstance(data, dict):
-            return {"state": "processing", "error": None, "task_url": None}
+            return {"state": "processing", "error": None, "task_url": None, "progress": None}
         state = data.get("state")
         if state not in {"processing", "completed", "failed"}:
             state = "processing"
@@ -849,9 +1738,78 @@ class IXBrowserService:
             "state": state,
             "error": data.get("error"),
             "task_url": data.get("task_url"),
+            "progress": data.get("progress"),
         }
 
+    def _normalize_progress(self, value: Any) -> Optional[int]:
+        if value is None:
+            return None
+        try:
+            progress = float(value)
+        except (TypeError, ValueError):
+            return None
+        if 0 <= progress <= 1:
+            progress *= 100
+        return max(0, min(100, int(progress)))
+
+    def _estimate_progress(self, started_at: float, timeout_seconds: int) -> int:
+        if timeout_seconds <= 0:
+            return 0
+        elapsed = time.perf_counter() - started_at
+        ratio = max(0.0, min(elapsed / timeout_seconds, 0.95))
+        return int(ratio * 100)
+
+    def _select_iphone_user_agent(self, profile_id: int) -> str:
+        if not IPHONE_UA_POOL:
+            return (
+                "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) "
+                "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"
+            )
+        try:
+            index = abs(int(profile_id)) % len(IPHONE_UA_POOL)
+        except (TypeError, ValueError):
+            index = 0
+        return IPHONE_UA_POOL[index]
+
+    async def _apply_ua_override(self, page, user_agent: str) -> None:
+        try:
+            session = await page.context.new_cdp_session(page)
+            await session.send("Network.setUserAgentOverride", {"userAgent": user_agent})
+        except Exception:  # noqa: BLE001
+            try:
+                await page.set_extra_http_headers({"User-Agent": user_agent})
+            except Exception:  # noqa: BLE001
+                pass
+
+    async def _apply_request_blocking(self, page) -> None:
+        blocked = self.sora_blocked_resource_types
+
+        async def handle_route(route, request):
+            if request.resource_type in blocked:
+                await route.abort()
+            else:
+                await route.continue_()
+
+        try:
+            await page.route("**/*", handle_route)
+        except Exception:  # noqa: BLE001
+            pass
+
+    async def _prepare_sora_page(self, page, profile_id: int) -> None:
+        user_agent = self._select_iphone_user_agent(profile_id)
+        await self._apply_ua_override(page, user_agent)
+        await self._apply_request_blocking(page)
+
     def _build_generate_job(self, row: dict) -> IXBrowserGenerateJob:
+        status = str(row.get("status") or "queued")
+        progress = row.get("progress")
+        if progress is None:
+            progress = 100 if status == "completed" else 0
+        elif status == "completed" and int(progress) < 100:
+            progress = 100
+        publish_url = row.get("publish_url")
+        if publish_url and not self._is_valid_publish_url(publish_url):
+            publish_url = None
         return IXBrowserGenerateJob(
             job_id=int(row["id"]),
             profile_id=int(row["profile_id"]),
@@ -860,7 +1818,13 @@ class IXBrowserService:
             prompt=str(row.get("prompt") or ""),
             duration=str(row.get("duration") or "10s"),
             aspect_ratio=str(row.get("aspect_ratio") or "landscape"),
-            status=str(row.get("status") or "queued"),
+            status=status,
+            progress=progress,
+            publish_status=row.get("publish_status"),
+            publish_url=publish_url,
+            publish_error=row.get("publish_error"),
+            publish_attempts=row.get("publish_attempts"),
+            published_at=row.get("published_at"),
             task_id=row.get("task_id"),
             task_url=row.get("task_url"),
             error=row.get("error"),
@@ -873,6 +1837,9 @@ class IXBrowserService:
         )
 
     async def _open_profile_with_retry(self, profile_id: int, max_attempts: int = 3) -> dict:
+        opened = await self._get_opened_profile(profile_id)
+        if opened:
+            return opened
         last_error: Optional[Exception] = None
         for attempt in range(1, max_attempts + 1):
             try:
@@ -899,6 +1866,7 @@ class IXBrowserService:
         browser = await playwright.chromium.connect_over_cdp(ws_endpoint, timeout=20_000)
         context = browser.contexts[0] if browser.contexts else await browser.new_context()
         page = context.pages[0] if context.pages else await context.new_page()
+        await self._prepare_sora_page(page, profile_id)
         await page.goto("https://sora.chatgpt.com/drafts", wait_until="domcontentloaded", timeout=40_000)
         await page.wait_for_timeout(1000)
         access_token = await self._get_access_token_from_page(page)
@@ -1096,6 +2064,10 @@ class IXBrowserService:
         except IXBrowserAPIError as exc:
             already_open = exc.code == 111003 or "已经打开" in exc.message.lower() or "already open" in exc.message.lower()
             process_not_found = exc.code == 1009 or "process not found" in exc.message.lower()
+            if already_open:
+                opened = await self._get_opened_profile(profile_id)
+                if opened:
+                    return opened
             if restart_if_opened and (already_open or process_not_found):
                 # 1009 常见于窗口状态与本地进程状态短暂不一致，先尝试关闭再重开。
                 await self._close_profile(profile_id)
@@ -1108,6 +2080,67 @@ class IXBrowserService:
             raise IXBrowserConnectionError("打开窗口返回格式异常")
         return result
 
+    async def _get_opened_profile(self, profile_id: int) -> Optional[dict]:
+        items = await self._list_opened_profiles()
+        if not items:
+            return None
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            pid = item.get("profile_id")
+            if pid is None:
+                pid = item.get("profileId") or item.get("id")
+            try:
+                if pid is not None and int(pid) == int(profile_id):
+                    normalized = self._normalize_opened_profile_data(item)
+                    if normalized.get("ws") or normalized.get("debugging_address"):
+                        return normalized
+                    return None
+            except (TypeError, ValueError):
+                continue
+        return None
+
+    async def _list_opened_profiles(self) -> List[dict]:
+        for path in ("/api/v2/profile-opened-list", "/api/v2/native-client-profile-opened-list"):
+            try:
+                data = await self._post(path, {})
+            except IXBrowserAPIError:
+                continue
+            except IXBrowserConnectionError:
+                continue
+            items = self._unwrap_profile_list(data)
+            if items:
+                return items
+        return []
+
+    def _unwrap_profile_list(self, data: Any) -> List[dict]:
+        if not data:
+            return []
+        if isinstance(data, list):
+            return [item for item in data if isinstance(item, dict)]
+        if isinstance(data, dict):
+            for key in ("data", "list", "items", "profiles"):
+                value = data.get(key)
+                if isinstance(value, list):
+                    return [item for item in value if isinstance(item, dict)]
+        return []
+
+    def _normalize_opened_profile_data(self, item: dict) -> dict:
+        if not isinstance(item, dict):
+            return {}
+        data = dict(item)
+        ws = data.get("ws") or data.get("wsEndpoint") or data.get("browserWSEndpoint") or data.get("webSocketDebuggerUrl")
+        if ws:
+            data["ws"] = ws
+        debugging_address = data.get("debugging_address") or data.get("debuggingAddress") or data.get("debug_address")
+        if not debugging_address:
+            port = data.get("debug_port") or data.get("debugPort") or data.get("port")
+            if port:
+                debugging_address = f"127.0.0.1:{port}"
+        if debugging_address:
+            data["debugging_address"] = debugging_address
+        return data
+
     async def _close_profile(self, profile_id: int) -> bool:
         try:
             await self._post("/api/v2/profile-close", {"profile_id": profile_id})
@@ -1118,11 +2151,16 @@ class IXBrowserService:
             raise
         return True
 
-    async def _fetch_sora_session(self, browser) -> Tuple[Optional[int], Optional[dict], Optional[str]]:
+    async def _fetch_sora_session(
+        self,
+        browser,
+        profile_id: int,
+    ) -> Tuple[Optional[int], Optional[dict], Optional[str]]:
         context = browser.contexts[0] if browser.contexts else await browser.new_context()
         page = context.pages[0] if context.pages else await context.new_page()
 
         try:
+            await self._prepare_sora_page(page, profile_id)
             await page.goto(
                 "https://sora.chatgpt.com/drafts",
                 wait_until="domcontentloaded",
@@ -1167,6 +2205,7 @@ class IXBrowserService:
     async def _fetch_sora_quota(
         self,
         browser,
+        profile_id: int,
         session_obj: Optional[dict] = None
     ) -> Dict[str, Optional[Any]]:
         """
@@ -1188,6 +2227,7 @@ class IXBrowserService:
 
         context = browser.contexts[0] if browser.contexts else await browser.new_context()
         page = context.pages[0] if context.pages else await context.new_page()
+        await self._prepare_sora_page(page, profile_id)
 
         response_data = await page.evaluate(
             """
@@ -1343,39 +2383,56 @@ class IXBrowserService:
         url = f"{base}{path}"
         timeout = httpx.Timeout(10.0)
 
-        try:
-            async with httpx.AsyncClient(timeout=timeout) as client:
-                response = await client.post(url, json=payload)
-                response.raise_for_status()
-                result = response.json()
-        except httpx.ConnectError as exc:
-            raise IXBrowserConnectionError(
-                f"无法连接 ixBrowser 本地 API，请确认 ixBrowser 已启动且地址可访问：{base}"
-            ) from exc
-        except httpx.HTTPStatusError as exc:
-            status = exc.response.status_code
-            body = exc.response.text
-            logger.error("ixBrowser HTTP error: %s %s", status, body)
-            raise IXBrowserConnectionError(f"ixBrowser 接口 HTTP 异常：{status}") from exc
-        except Exception as exc:  # noqa: BLE001
-            raise IXBrowserConnectionError(f"调用 ixBrowser 失败：{exc}") from exc
+        if self._ixbrowser_lock is None:
+            self._ixbrowser_lock = asyncio.Lock()
 
-        if not isinstance(result, dict):
-            raise IXBrowserConnectionError("ixBrowser 返回格式异常：响应不是 JSON 对象")
-
-        error = result.get("error", {})
-        if isinstance(error, dict):
-            code = error.get("code")
-            message = error.get("message", "unknown error")
-            if code is not None:
+        async with self._ixbrowser_lock:
+            for attempt in range(self.ixbrowser_busy_retry_max + 1):
                 try:
-                    code_int = int(code)
-                except (TypeError, ValueError):
-                    code_int = -1
-                if code_int != 0:
-                    raise IXBrowserAPIError(code_int, str(message))
+                    async with httpx.AsyncClient(timeout=timeout) as client:
+                        response = await client.post(url, json=payload)
+                        response.raise_for_status()
+                        result = response.json()
+                except httpx.ConnectError as exc:
+                    raise IXBrowserConnectionError(
+                        f"无法连接 ixBrowser 本地 API，请确认 ixBrowser 已启动且地址可访问：{base}"
+                    ) from exc
+                except httpx.HTTPStatusError as exc:
+                    status = exc.response.status_code
+                    body = exc.response.text
+                    logger.error("ixBrowser HTTP error: %s %s", status, body)
+                    raise IXBrowserConnectionError(f"ixBrowser 接口 HTTP 异常：{status}") from exc
+                except Exception as exc:  # noqa: BLE001
+                    raise IXBrowserConnectionError(f"调用 ixBrowser 失败：{exc}") from exc
 
-        return result
+                if not isinstance(result, dict):
+                    raise IXBrowserConnectionError("ixBrowser 返回格式异常：响应不是 JSON 对象")
+
+                error = result.get("error", {})
+                if isinstance(error, dict):
+                    code = error.get("code")
+                    message = error.get("message", "unknown error")
+                    if code is not None:
+                        try:
+                            code_int = int(code)
+                        except (TypeError, ValueError):
+                            code_int = -1
+                        if code_int != 0:
+                            if code_int == 1008 and attempt < self.ixbrowser_busy_retry_max:
+                                delay = self.ixbrowser_busy_retry_delay_seconds * (2 ** attempt)
+                                logger.warning(
+                                    "ixBrowser busy (code=1008), retry in %.1fs (attempt %s/%s)",
+                                    delay,
+                                    attempt + 1,
+                                    self.ixbrowser_busy_retry_max,
+                                )
+                                await asyncio.sleep(delay)
+                                continue
+                            raise IXBrowserAPIError(code_int, str(message))
+
+                return result
+
+            raise IXBrowserAPIError(1008, "Server busy, please try again later")
 
 
 ixbrowser_service = IXBrowserService()

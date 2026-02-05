@@ -84,6 +84,12 @@ class IXBrowserGenerateJob(BaseModel):
     duration: str
     aspect_ratio: str
     status: str
+    progress: Optional[int] = None
+    publish_status: Optional[str] = None
+    publish_url: Optional[str] = None
+    publish_error: Optional[str] = None
+    publish_attempts: Optional[int] = None
+    published_at: Optional[str] = None
     task_id: Optional[str] = None
     task_url: Optional[str] = None
     error: Optional[str] = None
