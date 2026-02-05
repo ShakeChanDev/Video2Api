@@ -935,6 +935,8 @@ class IXBrowserService:
                     await self._open_draft_from_list(page, task_id=task_id, prompt=prompt)
 
                 await page.wait_for_timeout(800)
+                if not generation_id:
+                    generation_id = self._extract_generation_id_from_url(page.url)
                 await self._clear_caption_input(page)
                 device_id = await self._get_device_id_from_context(context)
                 api_publish = await self._publish_sora_post_from_page(
@@ -1009,6 +1011,8 @@ class IXBrowserService:
             await self._open_draft_from_list(page, task_id=task_id, prompt=prompt)
 
         await page.wait_for_timeout(800)
+        if not generation_id:
+            generation_id = self._extract_generation_id_from_url(page.url)
         await self._clear_caption_input(page)
         device_id = await self._get_device_id_from_context(page.context)
         api_publish = await self._publish_sora_post_from_page(
@@ -1401,6 +1405,14 @@ class IXBrowserService:
                 generation_id = match.group(0)
         if isinstance(generation_id, str) and generation_id.strip():
             return generation_id.strip()
+        return None
+
+    def _extract_generation_id_from_url(self, url: Optional[str]) -> Optional[str]:
+        if not url:
+            return None
+        match = re.search(r"/d/(gen_[a-zA-Z0-9]{8,})", str(url))
+        if match:
+            return match.group(1)
         return None
 
     def _resolve_draft_url_from_item(self, item: dict, task_id: Optional[str]) -> Optional[str]:
