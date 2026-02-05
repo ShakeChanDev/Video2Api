@@ -1495,6 +1495,11 @@ class IXBrowserService:
                 return
             for item in items:
                 if isinstance(item, dict) and self._match_task_id_in_item(item, task_id_norm):
+                    generation_id = self._extract_generation_id(item)
+                    if not generation_id:
+                        continue
+                    if "generation_id" not in item:
+                        item["generation_id"] = generation_id
                     future.set_result(item)
                     return
 
