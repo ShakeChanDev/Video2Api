@@ -49,7 +49,6 @@
             </el-tag>
           </template>
         </el-table-column>
-        <el-table-column prop="group_title" label="分组" width="120" />
         <el-table-column prop="profile_id" label="窗口" width="86" />
         <el-table-column prop="duration" label="时长" width="80" />
         <el-table-column prop="aspect_ratio" label="比例" width="95" />
@@ -80,6 +79,12 @@
         <el-table-column prop="submit_attempts" label="提交重试" width="96" />
         <el-table-column prop="poll_attempts" label="轮询次数" width="96" />
         <el-table-column prop="task_id" label="任务ID" min-width="150" />
+        <el-table-column label="GenID" min-width="170">
+          <template #default="{ row }">
+            <span v-if="row.generation_id">{{ row.generation_id }}</span>
+            <el-button v-else size="small" type="primary" @click="fetchGenId(row)">获取 genid</el-button>
+          </template>
+        </el-table-column>
         <el-table-column label="发布链接" min-width="160">
           <template #default="{ row }">
             <a v-if="row.publish_url" :href="row.publish_url" target="_blank" class="task-link">打开</a>
@@ -187,7 +192,8 @@ import {
   createIxBrowserSoraGenerateJob,
   getIxBrowserGroupWindows,
   listIxBrowserSoraGenerateJobs,
-  publishIxBrowserSoraGenerateJob
+  publishIxBrowserSoraGenerateJob,
+  fetchIxBrowserSoraGenerationId
 } from '../api'
 
 const loading = ref(false)
@@ -420,6 +426,23 @@ const retryPublish = async (row) => {
       return
     }
     ElMessage.error(message)
+  } finally {
+    submitting.value = false
+  }
+}
+
+const fetchGenId = async (row) => {
+  if (!row?.job_id) {
+    ElMessage.warning('缺少任务 ID')
+    return
+  }
+  submitting.value = true
+  try {
+    await fetchIxBrowserSoraGenerationId(row.job_id)
+    ElMessage.success(`Job #${row.job_id} 已触发获取 genid`)
+    await loadJobs()
+  } catch (error) {
+    ElMessage.error(error?.response?.data?.detail || '获取 genid 失败')
   } finally {
     submitting.value = false
   }

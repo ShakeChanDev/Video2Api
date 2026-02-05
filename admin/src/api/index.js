@@ -91,6 +91,11 @@ export const publishIxBrowserSoraGenerateJob = async (jobId) => {
   return response.data
 }
 
+export const fetchIxBrowserSoraGenerationId = async (jobId) => {
+  const response = await api.post(`/ixbrowser/sora-generate-jobs/${jobId}/genid`)
+  return response.data
+}
+
 export const listIxBrowserSoraGenerateJobs = async (params) => {
   const response = await api.get('/ixbrowser/sora-generate-jobs', { params })
   return response.data

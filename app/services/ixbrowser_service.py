@@ -488,6 +488,27 @@ class IXBrowserService:
         row = sqlite_db.get_ixbrowser_generate_job(job_id)
         return self._build_generate_job(row) if row else self.get_sora_generate_job(job_id)
 
+    async def fetch_sora_generation_id(self, job_id: int) -> IXBrowserGenerateJob:
+        row = sqlite_db.get_ixbrowser_generate_job(job_id)
+        if not row:
+            raise IXBrowserNotFoundError(f"未找到生成任务：{job_id}")
+        if row.get("generation_id"):
+            return self._build_generate_job(row)
+        task_id = row.get("task_id")
+        if not task_id:
+            raise IXBrowserServiceError("缺少任务标识，无法获取 genid")
+
+        asyncio.create_task(
+            self._run_sora_fetch_generation_id(
+                job_id=job_id,
+                profile_id=int(row["profile_id"]),
+                task_id=task_id,
+            )
+        )
+
+        row = sqlite_db.get_ixbrowser_generate_job(job_id)
+        return self._build_generate_job(row) if row else self.get_sora_generate_job(job_id)
+
     def list_sora_generate_jobs(
         self,
         group_title: str = "Sora",
@@ -895,6 +916,80 @@ class IXBrowserService:
                 "publish_error": last_error or "发布失败",
             }
         )
+
+    async def _run_sora_fetch_generation_id(
+        self,
+        job_id: int,
+        profile_id: int,
+        task_id: str,
+    ) -> None:
+        logger.info("获取 genid 开始: profile=%s task_id=%s", profile_id, task_id)
+        open_data = None
+        try:
+            open_data = await self._open_profile_with_retry(profile_id, max_attempts=2)
+            ws_endpoint = open_data.get("ws")
+            if not ws_endpoint:
+                debugging_address = open_data.get("debugging_address")
+                if debugging_address:
+                    ws_endpoint = f"http://{debugging_address}"
+            if not ws_endpoint:
+                raise IXBrowserConnectionError("获取 genid 失败：未返回调试地址（ws/debugging_address）")
+
+            async with async_playwright() as playwright:
+                browser = await playwright.chromium.connect_over_cdp(ws_endpoint, timeout=20_000)
+                try:
+                    context = browser.contexts[0] if browser.contexts else await browser.new_context()
+                    page = context.pages[0] if context.pages else await context.new_page()
+
+                    await self._prepare_sora_page(page, profile_id)
+                    draft_future = self._watch_draft_item_by_task_id(page, task_id)
+
+                    logger.info("获取 genid 进入 drafts 等待: profile=%s task_id=%s", profile_id, task_id)
+                    await page.goto("https://sora.chatgpt.com/drafts", wait_until="domcontentloaded", timeout=40_000)
+                    await page.wait_for_timeout(1500)
+
+                    draft_started = time.perf_counter()
+                    draft_data = await self._wait_for_draft_item(
+                        draft_future, timeout_seconds=self.draft_wait_timeout_seconds
+                    )
+                    draft_elapsed = time.perf_counter() - draft_started
+                    logger.info(
+                        "获取 genid drafts 等待结束: profile=%s task_id=%s elapsed=%.1fs matched=%s",
+                        profile_id,
+                        task_id,
+                        draft_elapsed,
+                        bool(draft_data),
+                    )
+
+                    generation_id = None
+                    if isinstance(draft_data, dict):
+                        generation_id = self._extract_generation_id(draft_data)
+                    if generation_id:
+                        sqlite_db.update_ixbrowser_generate_job(
+                            job_id,
+                            {"generation_id": generation_id},
+                        )
+                        logger.info(
+                            "获取 genid 成功: profile=%s task_id=%s generation_id=%s",
+                            profile_id,
+                            task_id,
+                            generation_id,
+                        )
+                    else:
+                        logger.info("获取 genid 未命中: profile=%s task_id=%s", profile_id, task_id)
+                finally:
+                    try:
+                        await browser.close()
+                    except Exception:  # noqa: BLE001
+                        pass
+        except Exception as exc:  # noqa: BLE001
+            logger.info("获取 genid 失败: profile=%s task_id=%s error=%s", profile_id, task_id, exc)
+        finally:
+            if open_data:
+                try:
+                    await self._close_profile(profile_id)
+                except Exception:  # noqa: BLE001
+                    pass
 
     async def _publish_sora_video(
         self,

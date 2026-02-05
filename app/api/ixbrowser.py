@@ -157,6 +157,23 @@ async def retry_sora_publish_job(
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
+@router.post("/sora-generate-jobs/{job_id}/genid", response_model=IXBrowserGenerateJob)
+async def fetch_sora_generation_id(
+    job_id: int,
+    current_user: dict = Depends(get_current_active_user),
+):
+    try:
+        return await ixbrowser_service.fetch_sora_generation_id(job_id)
+    except IXBrowserNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except IXBrowserServiceError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except IXBrowserAPIError as exc:
+        raise HTTPException(status_code=502, detail=f"ixBrowser 返回错误（code={exc.code}）：{exc.message}") from exc
+    except IXBrowserConnectionError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
 @router.get("/sora-generate-jobs", response_model=List[IXBrowserGenerateJob])
 async def list_sora_generate_jobs(
     group_title: str = Query("Sora", description="分组名称"),
