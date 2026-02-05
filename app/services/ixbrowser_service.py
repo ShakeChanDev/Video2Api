@@ -1378,6 +1378,10 @@ class IXBrowserService:
         generation_id = item.get("generation_id") or item.get("generationId")
         if not generation_id and isinstance(item.get("generation"), dict):
             generation_id = item.get("generation", {}).get("id") or item.get("generation", {}).get("generation_id")
+        if not generation_id:
+            item_id = item.get("id")
+            if isinstance(item_id, str) and item_id.startswith("gen_"):
+                generation_id = item_id
         if isinstance(generation_id, str) and generation_id.strip():
             return generation_id.strip()
         return None
@@ -2003,6 +2007,7 @@ class IXBrowserService:
                   || target?.generationId
                   || target?.generation?.id
                   || target?.generation?.generation_id
+                  || (typeof target?.id === "string" && target.id.startsWith("gen_") ? target.id : null)
                   || null;
                 if (reason && String(reason).trim()) {
                   return fail(String(reason), progress);
