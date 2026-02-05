@@ -2034,12 +2034,19 @@ class IXBrowserService:
                 const kind = target.kind || "";
                 const taskUrl = target.url || target.downloadable_url || null;
                 const progress = pickProgress(target);
-                const generationId = target?.generation_id
+                let generationId = target?.generation_id
                   || target?.generationId
                   || target?.generation?.id
                   || target?.generation?.generation_id
                   || (typeof target?.id === "string" && target.id.startsWith("gen_") ? target.id : null)
                   || null;
+                if (!generationId) {
+                  try {
+                    const blob = JSON.stringify(target);
+                    const m = blob && blob.match(/gen_[a-zA-Z0-9]{8,}/);
+                    if (m) generationId = m[0];
+                  } catch (e) {}
+                }
                 if (reason && String(reason).trim()) {
                   return fail(String(reason), progress);
                 }
