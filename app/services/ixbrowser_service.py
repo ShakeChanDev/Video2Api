@@ -928,9 +928,6 @@ class IXBrowserService:
                     if draft_url:
                         await page.goto(draft_url, wait_until="domcontentloaded", timeout=40_000)
                         await page.wait_for_timeout(1200)
-                elif task_id:
-                    await page.goto(f"https://sora.chatgpt.com/g/{task_id}", wait_until="domcontentloaded", timeout=40_000)
-                    await page.wait_for_timeout(1200)
                 else:
                     await self._open_draft_from_list(page, task_id=task_id, prompt=prompt)
 
@@ -1004,9 +1001,6 @@ class IXBrowserService:
             if draft_url:
                 await page.goto(draft_url, wait_until="domcontentloaded", timeout=40_000)
                 await page.wait_for_timeout(1200)
-        elif task_id:
-            await page.goto(f"https://sora.chatgpt.com/g/{task_id}", wait_until="domcontentloaded", timeout=40_000)
-            await page.wait_for_timeout(1200)
         else:
             await self._open_draft_from_list(page, task_id=task_id, prompt=prompt)
 
