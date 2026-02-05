@@ -1172,6 +1172,14 @@ class IXBrowserService:
                 const maxPages = 6;
                 const headers = { "Accept": "application/json" };
                 try {
+                  const didMatch = document.cookie.match(/(?:^|; )oai-did=([^;]+)/);
+                  if (didMatch && didMatch[1]) headers["OAI-Device-Id"] = decodeURIComponent(didMatch[1]);
+                } catch (e) {}
+                try {
+                  const didMatch = document.cookie.match(/(?:^|; )oai-did=([^;]+)/);
+                  if (didMatch && didMatch[1]) headers["OAI-Device-Id"] = decodeURIComponent(didMatch[1]);
+                } catch (e) {}
+                try {
                   const sessionResp = await fetch("https://sora.chatgpt.com/api/auth/session", {
                     method: "GET",
                     credentials: "include"
