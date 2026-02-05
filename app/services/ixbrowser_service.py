@@ -1382,6 +1382,14 @@ class IXBrowserService:
             item_id = item.get("id")
             if isinstance(item_id, str) and item_id.startswith("gen_"):
                 generation_id = item_id
+        if not generation_id:
+            try:
+                raw = json.dumps(item)
+            except Exception:  # noqa: BLE001
+                raw = ""
+            match = re.search(r"gen_[a-zA-Z0-9]{8,}", raw)
+            if match:
+                generation_id = match.group(0)
         if isinstance(generation_id, str) and generation_id.strip():
             return generation_id.strip()
         return None
