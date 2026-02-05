@@ -899,16 +899,6 @@ class IXBrowserService:
                 await page.goto("https://sora.chatgpt.com/drafts", wait_until="domcontentloaded", timeout=40_000)
                 await page.wait_for_timeout(1500)
 
-                device_id = await self._get_device_id_from_context(context)
-                api_publish = await self._publish_sora_post_from_page(
-                    page=page,
-                    task_id=task_id,
-                    prompt=prompt,
-                    device_id=device_id,
-                )
-                if api_publish.get("publish_url"):
-                    return api_publish["publish_url"]
-
                 draft_data = await self._fetch_draft_item(page, task_id=task_id, prompt=prompt)
                 if isinstance(draft_data, dict):
                     existing_link = self._extract_publish_url(str(draft_data))
@@ -925,6 +915,16 @@ class IXBrowserService:
                     await self._open_draft_from_list(page, task_id=task_id, prompt=prompt)
 
                 await page.wait_for_timeout(800)
+                await self._clear_caption_input(page)
+                device_id = await self._get_device_id_from_context(context)
+                api_publish = await self._publish_sora_post_from_page(
+                    page=page,
+                    task_id=task_id,
+                    prompt=prompt,
+                    device_id=device_id,
+                )
+                if api_publish.get("publish_url"):
+                    return api_publish["publish_url"]
                 existing_dom_link = await self._find_publish_url_from_dom(page)
                 if existing_dom_link:
                     return existing_dom_link
@@ -961,16 +961,6 @@ class IXBrowserService:
         await page.goto("https://sora.chatgpt.com/drafts", wait_until="domcontentloaded", timeout=40_000)
         await page.wait_for_timeout(1500)
 
-        device_id = await self._get_device_id_from_context(page.context)
-        api_publish = await self._publish_sora_post_from_page(
-            page=page,
-            task_id=task_id,
-            prompt=prompt,
-            device_id=device_id,
-        )
-        if api_publish.get("publish_url"):
-            return api_publish["publish_url"]
-
         draft_data = await self._fetch_draft_item(page, task_id=task_id, prompt=prompt)
         if isinstance(draft_data, dict):
             existing_link = self._extract_publish_url(str(draft_data))
@@ -987,6 +977,16 @@ class IXBrowserService:
             await self._open_draft_from_list(page, task_id=task_id, prompt=prompt)
 
         await page.wait_for_timeout(800)
+        await self._clear_caption_input(page)
+        device_id = await self._get_device_id_from_context(page.context)
+        api_publish = await self._publish_sora_post_from_page(
+            page=page,
+            task_id=task_id,
+            prompt=prompt,
+            device_id=device_id,
+        )
+        if api_publish.get("publish_url"):
+            return api_publish["publish_url"]
         existing_dom_link = await self._find_publish_url_from_dom(page)
         if existing_dom_link:
             return existing_dom_link
@@ -1341,6 +1341,56 @@ class IXBrowserService:
         if not label:
             return False
         return await self._click_by_keywords(page, [label])
+
+    async def _clear_caption_input(self, page) -> bool:
+        data = await page.evaluate(
+            """
+            () => {
+              const norm = (v) => (v || '').toString().toLowerCase();
+              const keys = [
+                "caption", "description", "describe", "post text", "post_text",
+                "标题", "描述", "说明", "文案", "配文", "写点", "写些", "写点什么", "写一些"
+              ];
+              const candidates = [];
+              const pushNode = (node) => {
+                if (!node) return;
+                const rect = node.getBoundingClientRect();
+                if (rect.width <= 0 || rect.height <= 0) return;
+                const placeholder = norm(node.getAttribute('placeholder'));
+                const aria = norm(node.getAttribute('aria-label'));
+                const name = norm(node.getAttribute('name'));
+                const testid = norm(node.getAttribute('data-testid') || node.getAttribute('data-test') || node.getAttribute('data-qa'));
+                const cls = norm(node.getAttribute('class'));
+                const hint = [placeholder, aria, name, testid, cls].join(' ');
+                const matched = keys.some((k) => hint.includes(k));
+                if (matched) candidates.push(node);
+              };
+
+              document.querySelectorAll('textarea').forEach(pushNode);
+              document.querySelectorAll('input[type="text"]').forEach(pushNode);
+              document.querySelectorAll('[contenteditable="true"]').forEach(pushNode);
+              document.querySelectorAll('[role="textbox"]').forEach(pushNode);
+
+              if (!candidates.length) return false;
+
+              const target = candidates[0];
+              target.focus();
+              target.click();
+              const tag = (target.tagName || '').toLowerCase();
+              const isInput = tag === 'textarea' || tag === 'input';
+              if (isInput) {
+                target.value = '';
+                target.dispatchEvent(new Event('input', { bubbles: true }));
+                target.dispatchEvent(new Event('change', { bubbles: true }));
+              } else {
+                target.textContent = '';
+                target.dispatchEvent(new Event('input', { bubbles: true }));
+              }
+              return true;
+            }
+            """
+        )
+        return bool(data)
 
     async def _submit_video_request_via_ui(
         self,
