@@ -906,15 +906,12 @@ class IXBrowserService:
 
                 await self._prepare_sora_page(page, profile_id)
                 publish_future = self._watch_publish_url(page)
+                draft_future = self._watch_draft_item_by_task_id(page, task_id)
 
                 await page.goto("https://sora.chatgpt.com/drafts", wait_until="domcontentloaded", timeout=40_000)
                 await page.wait_for_timeout(1500)
 
-                draft_data = await self._fetch_draft_item_by_task_id(page, task_id=task_id, limit=15, retries=5)
-                if not draft_data:
-                    draft_data = await self._fetch_draft_item(
-                        page, task_id=task_id, prompt=prompt, created_after=created_after
-                    )
+                draft_data = await self._wait_for_draft_item(draft_future, timeout_seconds=12)
                 generation_id = None
                 if isinstance(draft_data, dict):
                     existing_link = self._extract_publish_url(str(draft_data))
@@ -984,15 +981,12 @@ class IXBrowserService:
         created_after: Optional[str] = None,
     ) -> Optional[str]:
         publish_future = self._watch_publish_url(page)
+        draft_future = self._watch_draft_item_by_task_id(page, task_id)
 
         await page.goto("https://sora.chatgpt.com/drafts", wait_until="domcontentloaded", timeout=40_000)
         await page.wait_for_timeout(1500)
 
-        draft_data = await self._fetch_draft_item_by_task_id(page, task_id=task_id, limit=15, retries=5)
-        if not draft_data:
-            draft_data = await self._fetch_draft_item(
-                page, task_id=task_id, prompt=prompt, created_after=created_after
-            )
+        draft_data = await self._wait_for_draft_item(draft_future, timeout_seconds=12)
         generation_id = None
         if isinstance(draft_data, dict):
             existing_link = self._extract_publish_url(str(draft_data))
@@ -1426,6 +1420,74 @@ class IXBrowserService:
         if match:
             return match.group(1)
         return None
+
+    def _normalize_task_id(self, value: Optional[str]) -> Optional[str]:
+        if not value:
+            return None
+        norm = str(value).strip().lower()
+        if norm.startswith("task_"):
+            norm = norm[len("task_"):]
+        return norm or None
+
+    def _match_task_id_in_item(self, item: dict, task_id_norm: str) -> bool:
+        if not item or not task_id_norm:
+            return False
+        candidates = [
+            item.get("task_id"),
+            item.get("taskId"),
+            (item.get("task") or {}).get("id") if isinstance(item.get("task"), dict) else None,
+            (item.get("task") or {}).get("task_id") if isinstance(item.get("task"), dict) else None,
+            (item.get("generation") or {}).get("task_id") if isinstance(item.get("generation"), dict) else None,
+            (item.get("generation") or {}).get("taskId") if isinstance(item.get("generation"), dict) else None,
+            item.get("id"),
+        ]
+        for cand in candidates:
+            cand_norm = self._normalize_task_id(str(cand)) if cand else None
+            if cand_norm and cand_norm == task_id_norm:
+                return True
+        try:
+            raw = json.dumps(item).lower()
+        except Exception:  # noqa: BLE001
+            raw = ""
+        return task_id_norm in raw
+
+    def _watch_draft_item_by_task_id(self, page, task_id: Optional[str]):
+        loop = asyncio.get_running_loop()
+        future: asyncio.Future = loop.create_future()
+        task_id_norm = self._normalize_task_id(task_id)
+
+        async def handle_response(response):
+            if future.done():
+                return
+            if not task_id_norm:
+                return
+            url = response.url
+            if "sora.chatgpt.com/backend/project_y/profile/drafts" not in url:
+                return
+            try:
+                text = await response.text()
+                payload = json.loads(text)
+            except Exception:  # noqa: BLE001
+                return
+            items = payload.get("items") or payload.get("data")
+            if not isinstance(items, list):
+                return
+            for item in items:
+                if isinstance(item, dict) and self._match_task_id_in_item(item, task_id_norm):
+                    future.set_result(item)
+                    return
+
+        page.on("response", lambda resp: asyncio.create_task(handle_response(resp)))
+        return future
+
+    async def _wait_for_draft_item(self, future, timeout_seconds: int = 12) -> Optional[dict]:
+        if not future:
+            return None
+        try:
+            data = await asyncio.wait_for(future, timeout=timeout_seconds)
+        except asyncio.TimeoutError:
+            return None
+        return data if isinstance(data, dict) else None
 
     def _resolve_draft_url_from_item(self, item: dict, task_id: Optional[str]) -> Optional[str]:
         if not item:
@@ -1910,17 +1972,7 @@ class IXBrowserService:
         generation_id: Optional[str] = None,
     ) -> Dict[str, Optional[str]]:
         if not generation_id:
-            draft_data = await self._fetch_draft_item_by_task_id(page, task_id=task_id, limit=15, retries=5)
-            if not draft_data:
-                draft_data = await self._fetch_draft_item(
-                    page, task_id=task_id, prompt=prompt, created_after=created_after
-                )
-            if not isinstance(draft_data, dict):
-                return {"publish_url": None, "error": "未找到草稿数据"}
-
-            generation_id = self._extract_generation_id(draft_data)
-            if not generation_id:
-                return {"publish_url": None, "error": "草稿缺少 generation_id"}
+            return {"publish_url": None, "error": "未捕获草稿 generation_id"}
 
         data = await page.evaluate(
             """
