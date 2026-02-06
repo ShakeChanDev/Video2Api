@@ -52,8 +52,9 @@ export const openIxBrowserProfileWindow = async (profileId, groupTitle = 'Sora')
   return response.data
 }
 
-export const scanIxBrowserSoraSessionAccounts = async (groupTitle = 'Sora') => {
-  const response = await api.post('/ixbrowser/sora-session-accounts', null, {
+export const scanIxBrowserSoraSessionAccounts = async (groupTitle = 'Sora', profileIds = null) => {
+  const payload = Array.isArray(profileIds) && profileIds.length ? { profile_ids: profileIds } : null
+  const response = await api.post('/ixbrowser/sora-session-accounts', payload, {
     params: { group_title: groupTitle, with_fallback: true },
     timeout: 180000
   })
@@ -122,6 +123,13 @@ export const listSoraJobEvents = async (jobId) => {
 
 export const retrySoraJobWatermark = async (jobId) => {
   const response = await api.post(`/sora/jobs/${jobId}/watermark/retry`)
+  return response.data
+}
+
+export const getSoraAccountWeights = async (groupTitle = 'Sora', limit = 100) => {
+  const response = await api.get('/sora/accounts/weights', {
+    params: { group_title: groupTitle, limit }
+  })
   return response.data
 }
 

@@ -3,7 +3,7 @@ import asyncio
 import json
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import StreamingResponse
 from jose import JWTError, jwt
@@ -18,6 +18,7 @@ from app.models.ixbrowser import (
     IXBrowserGroup,
     IXBrowserGroupWindows,
     IXBrowserOpenProfileResponse,
+    IXBrowserScanRequest,
     IXBrowserScanRunSummary,
     IXBrowserSessionScanResponse,
 )
@@ -161,15 +162,21 @@ async def get_sora_session_accounts(
     request: Request,
     group_title: str = Query("Sora", description="要扫描的分组名称"),
     with_fallback: bool = Query(True, description="是否应用历史成功结果回填"),
+    scan_request: Optional[IXBrowserScanRequest] = Body(None),
     current_user: dict = Depends(get_current_active_user),
 ):
     try:
+        requested_profile_ids = scan_request.profile_ids if scan_request and scan_request.profile_ids else None
         result = await ixbrowser_service.scan_group_sora_sessions(
             group_title=group_title,
             operator_user=current_user,
             with_fallback=with_fallback,
+            profile_ids=requested_profile_ids,
         )
         if request:
+            requested_count = len(requested_profile_ids) if requested_profile_ids else 0
+            requested_set = set(requested_profile_ids) if requested_profile_ids else set()
+            effective_count = len([item for item in result.results if int(item.profile_id) in requested_set])
             _log_audit(
                 request=request,
                 current_user=current_user,
@@ -184,6 +191,8 @@ async def get_sora_session_accounts(
                     "success_count": result.success_count,
                     "failed_count": result.failed_count,
                     "fallback_applied_count": result.fallback_applied_count,
+                    "requested_profile_count": requested_count,
+                    "effective_profile_count": effective_count,
                 },
             )
         return result

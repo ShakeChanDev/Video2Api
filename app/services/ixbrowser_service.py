@@ -35,6 +35,7 @@ from app.models.ixbrowser import (
     SoraJobEvent,
     SoraJobRequest,
 )
+from app.services.account_dispatch_service import AccountDispatchNoAvailableError, account_dispatch_service
 
 logger = logging.getLogger(__name__)
 
@@ -310,6 +311,7 @@ class IXBrowserService:
         self,
         group_title: str = "Sora",
         operator_user: Optional[dict] = None,
+        profile_ids: Optional[List[int]] = None,
         with_fallback: bool = True,
     ) -> IXBrowserSessionScanResponse:
         """
@@ -320,19 +322,56 @@ class IXBrowserService:
         if not target:
             raise IXBrowserNotFoundError(f"未找到分组：{group_title}")
 
+        normalized_profile_ids: Optional[List[int]] = None
+        if profile_ids:
+            normalized: List[int] = []
+            seen = set()
+            for raw in profile_ids:
+                try:
+                    pid = int(raw)
+                except (TypeError, ValueError):
+                    continue
+                if pid <= 0 or pid in seen:
+                    continue
+                seen.add(pid)
+                normalized.append(pid)
+            if normalized:
+                normalized_profile_ids = normalized
+
+        previous_map: Dict[int, IXBrowserSessionScanItem] = {}
+        if normalized_profile_ids:
+            try:
+                previous = self.get_latest_sora_scan(group_title=group_title, with_fallback=True)
+            except IXBrowserNotFoundError:
+                previous = None
+            if previous and previous.results:
+                previous_map = {int(item.profile_id): item for item in previous.results}
+
+        target_windows = list(target.windows or [])
+        selected_set = set(normalized_profile_ids) if normalized_profile_ids else None
+        windows_to_scan = (
+            [window for window in target_windows if int(window.profile_id) in selected_set]
+            if selected_set is not None
+            else target_windows
+        )
+        if selected_set is not None and not windows_to_scan:
+            raise IXBrowserNotFoundError("未找到指定窗口")
+
         try:
             opened_ids = await self._list_opened_profile_ids()
         except Exception:  # noqa: BLE001
             opened_ids = []
         if opened_ids:
-            for window in target.windows:
-                if int(window.profile_id) in opened_ids:
+            opened_set = set(opened_ids)
+            close_targets = windows_to_scan if selected_set is not None else target_windows
+            for window in close_targets:
+                if int(window.profile_id) in opened_set:
                     await self._ensure_profile_closed(window.profile_id)
 
-        results: List[IXBrowserSessionScanItem] = []
+        scanned_items: Dict[int, IXBrowserSessionScanItem] = {}
 
         async with async_playwright() as playwright:
-            for window in target.windows:
+            for window in windows_to_scan:
                 started_at = time.perf_counter()
                 close_success = False
                 success = False
@@ -403,39 +442,66 @@ class IXBrowserService:
                             error = f"窗口关闭失败：{close_exc}"
 
                 duration_ms = int((time.perf_counter() - started_at) * 1000)
-                results.append(
-                    IXBrowserSessionScanItem(
-                        profile_id=window.profile_id,
-                        window_name=window.name,
-                        group_id=target.id,
-                        group_title=target.title,
-                        session_status=session_status,
-                        account=account,
-                        account_plan=account_plan,
-                        session=session_obj,
-                        session_raw=session_raw,
-                        quota_remaining_count=quota_remaining_count,
-                        quota_total_count=quota_total_count,
-                        quota_reset_at=quota_reset_at,
-                        quota_source=quota_source,
-                        quota_payload=quota_payload,
-                        quota_error=quota_error,
-                        success=success,
-                        close_success=close_success,
-                        error=error,
-                        duration_ms=duration_ms,
-                    )
+                item = IXBrowserSessionScanItem(
+                    profile_id=window.profile_id,
+                    window_name=window.name,
+                    group_id=target.id,
+                    group_title=target.title,
+                    session_status=session_status,
+                    account=account,
+                    account_plan=account_plan,
+                    session=session_obj,
+                    session_raw=session_raw,
+                    quota_remaining_count=quota_remaining_count,
+                    quota_total_count=quota_total_count,
+                    quota_reset_at=quota_reset_at,
+                    quota_source=quota_source,
+                    quota_payload=quota_payload,
+                    quota_error=quota_error,
+                    success=success,
+                    close_success=close_success,
+                    error=error,
+                    duration_ms=duration_ms,
                 )
+                scanned_items[int(item.profile_id)] = item
 
-        success_count = sum(1 for item in results if item.success)
-        failed_count = len(results) - success_count
+        final_results: List[IXBrowserSessionScanItem] = []
+        for window in target_windows:
+            profile_id = int(window.profile_id)
+            scanned = scanned_items.get(profile_id)
+            if scanned:
+                final_results.append(scanned)
+                continue
+
+            previous = previous_map.get(profile_id)
+            if previous:
+                cloned = IXBrowserSessionScanItem(**previous.model_dump())
+                cloned.profile_id = profile_id
+                cloned.window_name = window.name
+                cloned.group_id = int(target.id)
+                cloned.group_title = str(target.title)
+                final_results.append(cloned)
+                continue
+
+            final_results.append(
+                IXBrowserSessionScanItem(
+                    profile_id=profile_id,
+                    window_name=window.name,
+                    group_id=target.id,
+                    group_title=target.title,
+                    success=False,
+                )
+            )
+
+        success_count = sum(1 for item in final_results if item.success)
+        failed_count = len(final_results) - success_count
         response = IXBrowserSessionScanResponse(
             group_id=target.id,
             group_title=target.title,
-            total_windows=len(results),
+            total_windows=len(target_windows),
             success_count=success_count,
             failed_count=failed_count,
-            results=results,
+            results=final_results,
         )
         run_id = self._save_scan_response(
             response=response,
@@ -445,6 +511,11 @@ class IXBrowserService:
         response.run_id = run_id
         run_row = sqlite_db.get_ixbrowser_scan_run(run_id)
         response.scanned_at = str(run_row.get("scanned_at")) if run_row else None
+        if response.scanned_at:
+            scanned_ids = set(scanned_items.keys())
+            for item in response.results:
+                if int(item.profile_id) in scanned_ids:
+                    item.scanned_at = response.scanned_at
         if with_fallback:
             self._apply_fallback_from_history(response)
             if response.run_id is not None:
@@ -602,13 +673,42 @@ class IXBrowserService:
             raise IXBrowserServiceError("比例仅支持：landscape、portrait")
 
         group_title = request.group_title.strip() if request.group_title else "Sora"
-        target_window = await self._get_window_from_group(request.profile_id, group_title)
-        if not target_window:
-            raise IXBrowserNotFoundError(f"窗口 {request.profile_id} 不在 {group_title} 分组中")
+        dispatch_mode = str(request.dispatch_mode or "").strip().lower()
+        if not dispatch_mode:
+            dispatch_mode = "manual" if request.profile_id else "weighted_auto"
+        if dispatch_mode not in {"manual", "weighted_auto"}:
+            raise IXBrowserServiceError("dispatch_mode 必须是 manual 或 weighted_auto")
+
+        dispatch_reason = None
+        dispatch_score = None
+        dispatch_quantity_score = None
+        dispatch_quality_score = None
+
+        if dispatch_mode == "manual":
+            if not request.profile_id:
+                raise IXBrowserServiceError("手动模式缺少窗口 ID")
+            selected_profile_id = int(request.profile_id)
+            target_window = await self._get_window_from_group(selected_profile_id, group_title)
+            if not target_window:
+                raise IXBrowserNotFoundError(f"窗口 {selected_profile_id} 不在 {group_title} 分组中")
+            dispatch_reason = f"手动指定 profile={selected_profile_id}"
+        else:
+            try:
+                weight = await account_dispatch_service.pick_best_account(group_title=group_title)
+            except AccountDispatchNoAvailableError as exc:
+                raise IXBrowserServiceError(str(exc)) from exc
+            selected_profile_id = int(weight.profile_id)
+            target_window = await self._get_window_from_group(selected_profile_id, group_title)
+            if not target_window:
+                raise IXBrowserNotFoundError(f"自动分配失败，窗口 {selected_profile_id} 不在 {group_title} 分组中")
+            dispatch_score = float(weight.score_total)
+            dispatch_quantity_score = float(weight.score_quantity)
+            dispatch_quality_score = float(weight.score_quality)
+            dispatch_reason = " | ".join(weight.reasons or []) or "自动分配"
 
         job_id = sqlite_db.create_sora_job(
             {
-                "profile_id": request.profile_id,
+                "profile_id": selected_profile_id,
                 "window_name": target_window.name,
                 "group_title": group_title,
                 "prompt": prompt,
@@ -617,10 +717,16 @@ class IXBrowserService:
                 "status": "queued",
                 "phase": "queue",
                 "progress_pct": 0,
+                "dispatch_mode": dispatch_mode,
+                "dispatch_score": dispatch_score,
+                "dispatch_quantity_score": dispatch_quantity_score,
+                "dispatch_quality_score": dispatch_quality_score,
+                "dispatch_reason": dispatch_reason,
                 "operator_user_id": operator_user.get("id") if isinstance(operator_user, dict) else None,
                 "operator_username": operator_user.get("username") if isinstance(operator_user, dict) else None,
             }
         )
+        sqlite_db.create_sora_job_event(job_id, "dispatch", "select", dispatch_reason)
         sqlite_db.create_sora_job_event(job_id, "queue", "queue", "进入队列")
 
         asyncio.create_task(self._run_sora_job(job_id))
@@ -4441,6 +4547,11 @@ class IXBrowserService:
             watermark_attempts=row.get("watermark_attempts"),
             watermark_started_at=row.get("watermark_started_at"),
             watermark_finished_at=row.get("watermark_finished_at"),
+            dispatch_mode=row.get("dispatch_mode"),
+            dispatch_score=row.get("dispatch_score"),
+            dispatch_quantity_score=row.get("dispatch_quantity_score"),
+            dispatch_quality_score=row.get("dispatch_quality_score"),
+            dispatch_reason=row.get("dispatch_reason"),
             error=row.get("error"),
             started_at=row.get("started_at"),
             finished_at=row.get("finished_at"),

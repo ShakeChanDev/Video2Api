@@ -164,6 +164,238 @@ async def test_scan_group_sora_sessions_collects_results(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_scan_group_sora_sessions_with_profile_ids_only_scans_selected(monkeypatch):
+    service = IXBrowserService()
+
+    async def _fake_list_group_windows():
+        return [
+            IXBrowserGroupWindows(
+                id=1,
+                title="Sora",
+                window_count=3,
+                windows=[
+                    IXBrowserWindow(profile_id=11, name="win-11"),
+                    IXBrowserWindow(profile_id=12, name="win-12"),
+                    IXBrowserWindow(profile_id=13, name="win-13"),
+                ],
+            )
+        ]
+
+    open_calls = []
+
+    async def _fake_open_profile(profile_id, restart_if_opened=False):
+        open_calls.append(int(profile_id))
+        return {"ws": f"ws://127.0.0.1/mock-{profile_id}"}
+
+    async def _fake_close_profile(_profile_id):
+        return True
+
+    async def _fake_fetch_sora_session(_browser, _profile_id=None):
+        return (
+            200,
+            {
+                "user": {"email": "selected@example.com"},
+                "accessToken": _build_access_token("free"),
+            },
+            '{"ok":true}',
+        )
+
+    async def _fake_fetch_sora_quota(_browser, _profile_id=None, _session_obj=None):
+        return {
+            "remaining_count": 6,
+            "total_count": 6,
+            "reset_at": "2026-02-06T00:00:00+00:00",
+            "source": "https://sora.chatgpt.com/backend/nf/check",
+            "payload": {"ok": True},
+            "error": None,
+        }
+
+    baseline = IXBrowserSessionScanResponse(
+        run_id=100,
+        scanned_at="2026-02-04 12:00:00",
+        group_id=1,
+        group_title="Sora",
+        total_windows=3,
+        success_count=3,
+        failed_count=0,
+        results=[
+            IXBrowserSessionScanItem(
+                profile_id=11,
+                window_name="win-11",
+                group_id=1,
+                group_title="Sora",
+                scanned_at="2026-02-04 12:00:00",
+                account="prev11@example.com",
+                quota_remaining_count=8,
+                success=True,
+            ),
+            IXBrowserSessionScanItem(
+                profile_id=12,
+                window_name="win-12",
+                group_id=1,
+                group_title="Sora",
+                scanned_at="2026-02-04 12:00:00",
+                account="prev12@example.com",
+                quota_remaining_count=8,
+                success=True,
+            ),
+            IXBrowserSessionScanItem(
+                profile_id=13,
+                window_name="win-13",
+                group_id=1,
+                group_title="Sora",
+                scanned_at="2026-02-04 12:00:00",
+                account="prev13@example.com",
+                quota_remaining_count=8,
+                success=True,
+            ),
+        ],
+    )
+
+    service.list_group_windows = _fake_list_group_windows
+    service._open_profile = _fake_open_profile
+    service._close_profile = _fake_close_profile
+    service._fetch_sora_session = _fake_fetch_sora_session
+    service._fetch_sora_quota = _fake_fetch_sora_quota
+
+    async def _fake_list_opened_profile_ids():
+        return []
+
+    service._list_opened_profile_ids = _fake_list_opened_profile_ids
+    service._save_scan_response = lambda *_args, **_kwargs: 201
+    service.get_latest_sora_scan = lambda *_args, **_kwargs: baseline
+
+    monkeypatch.setattr(
+        "app.services.ixbrowser_service.async_playwright",
+        lambda: _FakePlaywrightContext(),
+    )
+    monkeypatch.setattr(
+        "app.services.ixbrowser_service.sqlite_db.get_ixbrowser_scan_run",
+        lambda _run_id: {"scanned_at": "2026-02-06 12:00:00"},
+    )
+
+    result = await service.scan_group_sora_sessions(group_title="Sora", profile_ids=[12, 12, 999], with_fallback=False)
+
+    assert open_calls == [12]
+    assert result.total_windows == 3
+    assert len(result.results) == 3
+    assert result.results[0].profile_id == 11
+    assert result.results[0].account == "prev11@example.com"
+    assert result.results[0].scanned_at == "2026-02-04 12:00:00"
+    assert result.results[1].profile_id == 12
+    assert result.results[1].account == "selected@example.com"
+    assert result.results[1].scanned_at == "2026-02-06 12:00:00"
+    assert result.results[2].profile_id == 13
+    assert result.results[2].account == "prev13@example.com"
+    assert result.results[2].scanned_at == "2026-02-04 12:00:00"
+
+
+@pytest.mark.asyncio
+async def test_scan_group_sora_sessions_with_profile_ids_not_found(monkeypatch):
+    service = IXBrowserService()
+
+    async def _fake_list_group_windows():
+        return [
+            IXBrowserGroupWindows(
+                id=1,
+                title="Sora",
+                window_count=2,
+                windows=[
+                    IXBrowserWindow(profile_id=11, name="win-11"),
+                    IXBrowserWindow(profile_id=12, name="win-12"),
+                ],
+            )
+        ]
+
+    service.list_group_windows = _fake_list_group_windows
+
+    monkeypatch.setattr(
+        "app.services.ixbrowser_service.async_playwright",
+        lambda: _FakePlaywrightContext(),
+    )
+
+    with pytest.raises(IXBrowserNotFoundError):
+        await service.scan_group_sora_sessions(group_title="Sora", profile_ids=[999], with_fallback=False)
+
+
+@pytest.mark.asyncio
+async def test_scan_group_sora_sessions_with_profile_ids_without_history_keeps_placeholders(monkeypatch):
+    service = IXBrowserService()
+
+    async def _fake_list_group_windows():
+        return [
+            IXBrowserGroupWindows(
+                id=1,
+                title="Sora",
+                window_count=2,
+                windows=[
+                    IXBrowserWindow(profile_id=11, name="win-11"),
+                    IXBrowserWindow(profile_id=12, name="win-12"),
+                ],
+            )
+        ]
+
+    async def _fake_open_profile(profile_id, restart_if_opened=False):
+        return {"ws": f"ws://127.0.0.1/mock-{profile_id}"}
+
+    async def _fake_close_profile(_profile_id):
+        return True
+
+    async def _fake_fetch_sora_session(_browser, _profile_id=None):
+        return (
+            200,
+            {
+                "user": {"email": "selected@example.com"},
+                "accessToken": _build_access_token("free"),
+            },
+            '{"ok":true}',
+        )
+
+    async def _fake_fetch_sora_quota(_browser, _profile_id=None, _session_obj=None):
+        return {
+            "remaining_count": 6,
+            "total_count": 6,
+            "reset_at": "2026-02-06T00:00:00+00:00",
+            "source": "https://sora.chatgpt.com/backend/nf/check",
+            "payload": {"ok": True},
+            "error": None,
+        }
+
+    service.list_group_windows = _fake_list_group_windows
+    service._open_profile = _fake_open_profile
+    service._close_profile = _fake_close_profile
+    service._fetch_sora_session = _fake_fetch_sora_session
+    service._fetch_sora_quota = _fake_fetch_sora_quota
+
+    async def _fake_list_opened_profile_ids():
+        return []
+
+    service._list_opened_profile_ids = _fake_list_opened_profile_ids
+    service._save_scan_response = lambda *_args, **_kwargs: 202
+    service.get_latest_sora_scan = lambda *_args, **_kwargs: (_ for _ in ()).throw(IXBrowserNotFoundError("no history"))
+
+    monkeypatch.setattr(
+        "app.services.ixbrowser_service.async_playwright",
+        lambda: _FakePlaywrightContext(),
+    )
+    monkeypatch.setattr(
+        "app.services.ixbrowser_service.sqlite_db.get_ixbrowser_scan_run",
+        lambda _run_id: {"scanned_at": "2026-02-06 12:00:00"},
+    )
+
+    result = await service.scan_group_sora_sessions(group_title="Sora", profile_ids=[12], with_fallback=False)
+
+    assert result.total_windows == 2
+    assert len(result.results) == 2
+    assert result.results[0].profile_id == 11
+    assert result.results[0].account is None
+    assert result.results[0].scanned_at is None
+    assert result.results[1].profile_id == 12
+    assert result.results[1].account == "selected@example.com"
+    assert result.results[1].scanned_at == "2026-02-06 12:00:00"
+
+
+@pytest.mark.asyncio
 async def test_open_profile_window_group_not_found():
     service = IXBrowserService()
 

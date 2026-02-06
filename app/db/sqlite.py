@@ -416,6 +416,11 @@ class SQLiteDB:
         run_id = int(cursor.lastrowid)
 
         for item in results:
+            item_scanned_at = item.get("scanned_at")
+            if isinstance(item_scanned_at, str):
+                item_scanned_at = item_scanned_at.strip()
+            if not item_scanned_at:
+                item_scanned_at = scanned_at
             session_json = item.get("session")
             quota_payload = item.get("quota_payload")
             cursor.execute(
@@ -448,7 +453,7 @@ class SQLiteDB:
                     1 if item.get("close_success") else 0,
                     item.get("error"),
                     int(item.get("duration_ms") or 0),
-                    scanned_at,
+                    item_scanned_at,
                 )
             )
 
@@ -553,6 +558,11 @@ class SQLiteDB:
         conn = self._get_conn()
         cursor = conn.cursor()
         scanned_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        item_scanned_at = item.get("scanned_at")
+        if isinstance(item_scanned_at, str):
+            item_scanned_at = item_scanned_at.strip()
+        if not item_scanned_at:
+            item_scanned_at = scanned_at
         profile_id = int(item.get("profile_id") or 0)
 
         cursor.execute(
@@ -583,7 +593,7 @@ class SQLiteDB:
             1 if item.get("close_success") else 0,
             item.get("error"),
             int(item.get("duration_ms") or 0),
-            scanned_at,
+            item_scanned_at,
         )
 
         if row:

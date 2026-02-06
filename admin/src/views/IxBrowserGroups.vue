@@ -71,10 +71,14 @@
 
       <el-table
         v-if="scanRows.length"
+        ref="scanTableRef"
         :data="scanRows"
         class="scan-table card-table"
         :row-class-name="getRowClass"
+        row-key="profile_id"
+        @selection-change="handleSelectionChange"
       >
+        <el-table-column type="selection" width="46" align="center" reserve-selection />
         <el-table-column label="窗口" min-width="360">
           <template #default="{ row }">
             <div class="window-card">
@@ -174,6 +178,8 @@ const systemSettings = ref(null)
 const sessionDialogVisible = ref(false)
 const currentSessionText = ref('')
 const openingProfileIds = ref({})
+const scanTableRef = ref(null)
+const selectedProfileIds = ref([])
 
 const parseScanTime = (value) => {
   if (!value) return 0
@@ -337,6 +343,21 @@ const refreshAll = async () => {
   await loadLatest()
 }
 
+const handleSelectionChange = (rows) => {
+  const raw = Array.isArray(rows) ? rows : []
+  const ids = raw
+    .map((row) => Number(row?.profile_id))
+    .filter((id) => Number.isFinite(id) && id > 0)
+  selectedProfileIds.value = Array.from(new Set(ids))
+}
+
+const clearSelection = () => {
+  selectedProfileIds.value = []
+  if (scanTableRef.value && typeof scanTableRef.value.clearSelection === 'function') {
+    scanTableRef.value.clearSelection()
+  }
+}
+
 const scanNow = async () => {
   if (!selectedGroupTitle.value) {
     ElMessage.warning('请先选择分组')
@@ -344,7 +365,8 @@ const scanNow = async () => {
   }
   scanLoading.value = true
   try {
-    const data = await scanIxBrowserSoraSessionAccounts(selectedGroupTitle.value)
+    const ids = selectedProfileIds.value
+    const data = await scanIxBrowserSoraSessionAccounts(selectedGroupTitle.value, ids.length ? ids : null)
     scanData.value = data
     ElMessage.success('扫描完成，结果已入库')
   } catch (error) {
@@ -355,6 +377,7 @@ const scanNow = async () => {
 }
 
 const onGroupChange = async () => {
+  clearSelection()
   loadCache(selectedGroupTitle.value)
   await loadLatest()
   startRealtimeStream()
