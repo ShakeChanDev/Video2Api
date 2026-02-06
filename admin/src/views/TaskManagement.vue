@@ -208,9 +208,57 @@
             />
           </el-select>
         </el-form-item>
-        <el-form-item label="窗口ID">
-          <el-input-number v-model="createForm.profile_id" style="width: 100%" :min="1" />
+        <el-form-item label="账号">
+          <div class="dispatch-mode">
+            <el-radio-group v-model="createForm.dispatch_mode">
+              <el-radio-button label="weighted_auto">自动分配</el-radio-button>
+              <el-radio-button label="manual">手动指定</el-radio-button>
+            </el-radio-group>
+            <div class="dispatch-tip">自动分配会优先选择高权重账号（可用次数 + 账号质量）。</div>
+          </div>
         </el-form-item>
+
+        <template v-if="createForm.dispatch_mode === 'manual'">
+          <el-form-item label="窗口ID">
+            <el-input-number v-model="createForm.profile_id" style="width: 100%" :min="1" />
+          </el-form-item>
+        </template>
+        <template v-else>
+          <el-form-item label="推荐账号">
+            <div class="weights-panel" v-loading="weightsLoading">
+              <el-table v-if="accountWeights.length" :data="accountWeights" size="small" class="weights-table">
+                <el-table-column label="窗口" width="110">
+                  <template #default="{ row }">
+                    <span class="mono">#{{ row.profile_id }}</span>
+                  </template>
+                </el-table-column>
+                <el-table-column label="总分" width="90" align="center">
+                  <template #default="{ row }">
+                    <span class="score">{{ row.score_total }}</span>
+                  </template>
+                </el-table-column>
+                <el-table-column label="可用" width="80" align="center">
+                  <template #default="{ row }">
+                    <span>{{ row.quota_remaining_count ?? '-' }}</span>
+                  </template>
+                </el-table-column>
+                <el-table-column label="说明" min-width="200">
+                  <template #default="{ row }">
+                    <span class="weights-reason">{{ (row.reasons || []).slice(0, 2).join('；') || '-' }}</span>
+                  </template>
+                </el-table-column>
+                <el-table-column label="可选" width="80" align="center">
+                  <template #default="{ row }">
+                    <el-tag size="small" :type="row.selectable ? 'success' : 'info'">
+                      {{ row.selectable ? '可用' : '不可用' }}
+                    </el-tag>
+                  </template>
+                </el-table-column>
+              </el-table>
+              <div v-else class="weights-empty">暂无权重数据（可先去“账号管理”扫描一次）。</div>
+            </div>
+          </el-form-item>
+        </template>
         <el-form-item label="时长">
           <el-select v-model="createForm.duration" style="width: 100%">
             <el-option label="10秒" value="10s" />
@@ -247,6 +295,9 @@
         <div class="detail-grid">
           <div class="detail-item"><span>Job</span><strong>#{{ detailJob.job_id }}</strong></div>
           <div class="detail-item"><span>窗口</span><strong>{{ detailJob.profile_id }}</strong></div>
+          <div class="detail-item"><span>调度方式</span><strong>{{ detailJob.dispatch_mode || '-' }}</strong></div>
+          <div class="detail-item"><span>调度总分</span><strong>{{ detailJob.dispatch_score ?? '-' }}</strong></div>
+          <div class="detail-item"><span>调度原因</span><strong>{{ detailJob.dispatch_reason || '-' }}</strong></div>
           <div class="detail-item"><span>状态</span><strong>{{ detailJob.status }}</strong></div>
           <div class="detail-item"><span>阶段</span><strong>{{ detailJob.phase }}</strong></div>
           <div class="detail-item"><span>进度</span><strong>{{ detailJob.progress_pct }}%</strong></div>
@@ -282,16 +333,17 @@
 </template>
 
 <script setup>
-import { computed, onMounted, onUnmounted, ref } from 'vue'
-import { ElMessage } from 'element-plus'
-import { formatRelativeTimeZh } from '../utils/relativeTime'
-import {
-  createSoraJob,
-  getIxBrowserGroupWindows,
-  getSystemSettings,
-  listSoraJobEvents,
-  listSoraJobs,
-  retrySoraJob,
+  import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+  import { ElMessage } from 'element-plus'
+  import { formatRelativeTimeZh } from '../utils/relativeTime'
+  import {
+    createSoraJob,
+    getSoraAccountWeights,
+    getIxBrowserGroupWindows,
+    getSystemSettings,
+    listSoraJobEvents,
+    listSoraJobs,
+    retrySoraJob,
   retrySoraJobWatermark
 } from '../api'
 
@@ -307,18 +359,22 @@ const systemSettings = ref(null)
 const selectedGroupTitle = ref('Sora')
 const statusFilter = ref('all')
 const phaseFilter = ref('all')
-const keyword = ref('')
-let pollingTimer = null
-let relativeTimeTimer = null
-const nowTick = ref(Date.now())
+  const keyword = ref('')
+  let pollingTimer = null
+  let relativeTimeTimer = null
+  const nowTick = ref(Date.now())
 
-const createForm = ref({
-  group_title: 'Sora',
-  profile_id: null,
-  prompt: '',
-  duration: '10s',
-  aspect_ratio: 'landscape'
-})
+  const weightsLoading = ref(false)
+  const accountWeights = ref([])
+
+  const createForm = ref({
+    group_title: 'Sora',
+    dispatch_mode: 'weighted_auto',
+    profile_id: null,
+    prompt: '',
+    duration: '10s',
+    aspect_ratio: 'landscape'
+  })
 
 const concurrencyLimit = computed(() => systemSettings.value?.sora?.job_max_concurrency || 2)
 
@@ -549,19 +605,37 @@ const loadJobs = async (withLoading = true) => {
   }
 }
 
-const openCreateDialog = () => {
-  createForm.value = {
-    group_title: selectedGroupTitle.value || 'Sora',
-    profile_id: null,
-    prompt: '',
-    duration: '10s',
-    aspect_ratio: 'landscape'
+  const openCreateDialog = () => {
+    createForm.value = {
+      group_title: selectedGroupTitle.value || 'Sora',
+      dispatch_mode: 'weighted_auto',
+      profile_id: null,
+      prompt: '',
+      duration: '10s',
+      aspect_ratio: 'landscape'
+    }
+    createDialogVisible.value = true
   }
-  createDialogVisible.value = true
-}
 
-const submitTask = async () => {
-  if (!createForm.value.profile_id) {
+  const loadAccountWeights = async () => {
+    if (!createDialogVisible.value) return
+    if (createForm.value.dispatch_mode !== 'weighted_auto') return
+    weightsLoading.value = true
+    try {
+      const groupTitle = createForm.value.group_title || selectedGroupTitle.value || 'Sora'
+      const data = await getSoraAccountWeights(groupTitle, 12)
+      accountWeights.value = Array.isArray(data) ? data : []
+    } catch (error) {
+      accountWeights.value = []
+      ElMessage.error(error?.response?.data?.detail || '获取账号权重失败')
+    } finally {
+      weightsLoading.value = false
+    }
+  }
+
+  const submitTask = async () => {
+  const mode = createForm.value.dispatch_mode || (createForm.value.profile_id ? 'manual' : 'weighted_auto')
+  if (mode === 'manual' && !createForm.value.profile_id) {
     ElMessage.warning('请输入窗口 ID')
     return
   }
@@ -572,13 +646,17 @@ const submitTask = async () => {
   }
   submitting.value = true
   try {
-    await createSoraJob({
-      profile_id: createForm.value.profile_id,
+    const payload = {
+      dispatch_mode: mode,
       prompt,
       duration: createForm.value.duration,
       aspect_ratio: createForm.value.aspect_ratio,
       group_title: createForm.value.group_title || 'Sora'
-    })
+    }
+    if (mode === 'manual') {
+      payload.profile_id = createForm.value.profile_id
+    }
+    await createSoraJob(payload)
     ElMessage.success('任务已创建并进入队列')
     createDialogVisible.value = false
     await loadJobs()
@@ -638,6 +716,31 @@ const openDetail = async (row) => {
   }
   detailDrawerVisible.value = true
 }
+
+watch(
+  () => createDialogVisible.value,
+  (visible) => {
+    if (visible) {
+      loadAccountWeights()
+    } else {
+      accountWeights.value = []
+    }
+  }
+)
+
+watch(
+  () => createForm.value.dispatch_mode,
+  () => {
+    loadAccountWeights()
+  }
+)
+
+watch(
+  () => createForm.value.group_title,
+  () => {
+    loadAccountWeights()
+  }
+)
 
 onMounted(async () => {
   nowTick.value = Date.now()
@@ -968,6 +1071,56 @@ onUnmounted(() => {
 
 .w-260 {
   width: 260px;
+}
+
+.dispatch-mode {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+}
+
+.dispatch-tip {
+  font-size: 12px;
+  color: #475569;
+}
+
+.weights-panel {
+  width: 100%;
+  border: 1px solid rgba(148, 163, 184, 0.32);
+  border-radius: 12px;
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.92);
+}
+
+.weights-table :deep(.el-table__cell) {
+  padding-top: 6px;
+  padding-bottom: 6px;
+}
+
+.weights-empty {
+  padding: 10px 12px;
+  font-size: 12px;
+  color: #64748b;
+}
+
+.mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', monospace;
+}
+
+.score {
+  font-weight: 700;
+  color: #0f172a;
+}
+
+.weights-reason {
+  display: inline-block;
+  max-width: 100%;
+  font-size: 12px;
+  color: #475569;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 @keyframes rise {

@@ -78,6 +78,172 @@
                     <el-option label="portrait" value="portrait" />
                   </el-select>
                 </el-form-item>
+
+                <el-divider content-position="left">账号权重调度与自动恢复</el-divider>
+
+                <el-form-item label="启用权重调度">
+                  <div class="field-row">
+                    <el-switch v-model="systemForm.sora.account_dispatch.enabled" />
+                    <div class="inline-tip">关闭后仍可手动指定窗口，但不会自动选号。</div>
+                  </div>
+                </el-form-item>
+
+                <el-form-item label="启用自动扫描">
+                  <div class="field-row">
+                    <el-switch v-model="systemForm.sora.account_dispatch.auto_scan_enabled" />
+                    <div class="inline-tip">开启后会周期扫描账号配额，用于自动恢复 24h 次数。</div>
+                  </div>
+                </el-form-item>
+
+                <el-form-item label="扫描间隔（分钟）">
+                  <el-input-number v-model="systemForm.sora.account_dispatch.auto_scan_interval_minutes" :min="1" :max="360" />
+                </el-form-item>
+
+                <el-form-item label="扫描分组">
+                  <el-input v-model="systemForm.sora.account_dispatch.auto_scan_group_title" />
+                </el-form-item>
+
+                <el-form-item label="评分窗口（小时）">
+                  <el-input-number v-model="systemForm.sora.account_dispatch.lookback_hours" :min="1" :max="720" />
+                </el-form-item>
+
+                <el-form-item label="惩罚半衰期（小时）">
+                  <el-input-number v-model="systemForm.sora.account_dispatch.decay_half_life_hours" :min="1" :max="720" />
+                </el-form-item>
+
+                <el-form-item label="数量权重">
+                  <el-input-number v-model="systemForm.sora.account_dispatch.quantity_weight" :min="0" :max="1" :step="0.05" />
+                </el-form-item>
+
+                <el-form-item label="质量权重">
+                  <el-input-number v-model="systemForm.sora.account_dispatch.quality_weight" :min="0" :max="1" :step="0.05" />
+                </el-form-item>
+
+                <el-form-item label="配额封顶">
+                  <el-input-number v-model="systemForm.sora.account_dispatch.quota_cap" :min="1" :max="1000" />
+                </el-form-item>
+
+                <el-form-item label="最低剩余次数">
+                  <el-input-number v-model="systemForm.sora.account_dispatch.min_quota_remaining" :min="0" :max="1000" />
+                </el-form-item>
+
+                <el-form-item label="未知配额分">
+                  <el-input-number v-model="systemForm.sora.account_dispatch.unknown_quota_score" :min="0" :max="100" :step="1" />
+                </el-form-item>
+
+                <el-form-item label="默认质量分">
+                  <el-input-number v-model="systemForm.sora.account_dispatch.default_quality_score" :min="0" :max="100" :step="1" />
+                </el-form-item>
+
+                <el-form-item label="活跃任务惩罚">
+                  <el-input-number v-model="systemForm.sora.account_dispatch.active_job_penalty" :min="0" :max="100" :step="0.5" />
+                </el-form-item>
+
+                <el-form-item label="Plus 加分">
+                  <el-input-number v-model="systemForm.sora.account_dispatch.plus_bonus" :min="0" :max="100" :step="0.5" />
+                </el-form-item>
+
+                <el-form-item label="忽略规则">
+                  <div class="rule-panel">
+                    <el-table
+                      :data="systemForm.sora.account_dispatch.quality_ignore_rules"
+                      size="small"
+                      class="rule-table"
+                      style="width: 100%"
+                    >
+                      <el-table-column label="phase" width="110">
+                        <template #default="{ row }">
+                          <el-input v-model="row.phase" placeholder="可选" />
+                        </template>
+                      </el-table-column>
+                      <el-table-column label="message contains" min-width="220">
+                        <template #default="{ row }">
+                          <el-input v-model="row.message_contains" placeholder="例如：ixBrowser" />
+                        </template>
+                      </el-table-column>
+                      <el-table-column label="操作" width="90" align="center">
+                        <template #default="{ $index }">
+                          <el-button size="small" type="danger" @click="removeIgnoreRule($index)">删除</el-button>
+                        </template>
+                      </el-table-column>
+                    </el-table>
+                    <div class="rule-actions">
+                      <el-button size="small" class="btn-soft" @click="addIgnoreRule">新增忽略规则</el-button>
+                    </div>
+                  </div>
+                </el-form-item>
+
+                <el-form-item label="惩罚规则">
+                  <div class="rule-panel">
+                    <el-table
+                      :data="systemForm.sora.account_dispatch.quality_error_rules"
+                      size="small"
+                      class="rule-table"
+                      style="width: 100%"
+                    >
+                      <el-table-column label="phase" width="110">
+                        <template #default="{ row }">
+                          <el-input v-model="row.phase" placeholder="可选" />
+                        </template>
+                      </el-table-column>
+                      <el-table-column label="message contains" min-width="220">
+                        <template #default="{ row }">
+                          <el-input v-model="row.message_contains" placeholder="例如：heavy load" />
+                        </template>
+                      </el-table-column>
+                      <el-table-column label="penalty" width="110" align="center">
+                        <template #default="{ row }">
+                          <el-input-number v-model="row.penalty" :min="0" :max="100" :step="1" />
+                        </template>
+                      </el-table-column>
+                      <el-table-column label="cooldown(m)" width="140" align="center">
+                        <template #default="{ row }">
+                          <el-input-number v-model="row.cooldown_minutes" :min="0" :max="10080" :step="1" />
+                        </template>
+                      </el-table-column>
+                      <el-table-column label="block" width="90" align="center">
+                        <template #default="{ row }">
+                          <el-switch v-model="row.block_during_cooldown" />
+                        </template>
+                      </el-table-column>
+                      <el-table-column label="操作" width="90" align="center">
+                        <template #default="{ $index }">
+                          <el-button size="small" type="danger" @click="removeErrorRule($index)">删除</el-button>
+                        </template>
+                      </el-table-column>
+                    </el-table>
+                    <div class="rule-actions">
+                      <el-button size="small" class="btn-soft" @click="addErrorRule">新增惩罚规则</el-button>
+                    </div>
+                  </div>
+                </el-form-item>
+
+                <el-form-item label="默认惩罚">
+                  <div class="default-rule-grid">
+                    <div class="field-row">
+                      <span class="rule-label">Penalty</span>
+                      <el-input-number
+                        v-model="systemForm.sora.account_dispatch.default_error_rule.penalty"
+                        :min="0"
+                        :max="100"
+                        :step="1"
+                      />
+                    </div>
+                    <div class="field-row">
+                      <span class="rule-label">Cooldown(m)</span>
+                      <el-input-number
+                        v-model="systemForm.sora.account_dispatch.default_error_rule.cooldown_minutes"
+                        :min="0"
+                        :max="10080"
+                        :step="1"
+                      />
+                    </div>
+                    <div class="field-row">
+                      <span class="rule-label">Block</span>
+                      <el-switch v-model="systemForm.sora.account_dispatch.default_error_rule.block_during_cooldown" />
+                    </div>
+                  </div>
+                </el-form-item>
               </el-form>
             </el-tab-pane>
 
@@ -291,7 +457,42 @@ const defaultSystemForm = {
     blocked_resource_types: ['image', 'media', 'font'],
     default_group_title: 'Sora',
     default_duration: '10s',
-    default_aspect_ratio: 'landscape'
+    default_aspect_ratio: 'landscape',
+    account_dispatch: {
+      enabled: true,
+      auto_scan_enabled: true,
+      auto_scan_interval_minutes: 10,
+      auto_scan_group_title: 'Sora',
+      lookback_hours: 72,
+      decay_half_life_hours: 24,
+      quantity_weight: 0.45,
+      quality_weight: 0.55,
+      quota_cap: 30,
+      min_quota_remaining: 2,
+      unknown_quota_score: 40,
+      default_quality_score: 70,
+      active_job_penalty: 8,
+      plus_bonus: 5,
+      quality_ignore_rules: [
+        { phase: null, message_contains: 'ixBrowser' },
+        { phase: null, message_contains: '调用 ixBrowser' },
+        { phase: 'publish', message_contains: '未找到发布按钮' },
+        { phase: 'publish', message_contains: '发布未返回链' },
+        { phase: 'publish', message_contains: '发布未返回链接' },
+        { phase: 'submit', message_contains: '未找到提示词输入框' }
+      ],
+      quality_error_rules: [
+        { phase: null, message_contains: 'heavy load', penalty: 8, cooldown_minutes: 15, block_during_cooldown: false },
+        {
+          phase: null,
+          message_contains: 'execution context was destroyed',
+          penalty: 14,
+          cooldown_minutes: 45,
+          block_during_cooldown: false
+        }
+      ],
+      default_error_rule: { penalty: 10, cooldown_minutes: 30, block_during_cooldown: false }
+    }
   },
   scan: {
     history_limit: 10,
@@ -419,6 +620,44 @@ const normalizePayload = (payload) => {
   return data
 }
 
+const addIgnoreRule = () => {
+  const cfg = systemForm.value?.sora?.account_dispatch
+  if (!cfg) return
+  if (!Array.isArray(cfg.quality_ignore_rules)) {
+    cfg.quality_ignore_rules = []
+  }
+  cfg.quality_ignore_rules.push({ phase: null, message_contains: '' })
+}
+
+const removeIgnoreRule = (index) => {
+  const cfg = systemForm.value?.sora?.account_dispatch
+  if (!cfg) return
+  if (!Array.isArray(cfg.quality_ignore_rules)) return
+  cfg.quality_ignore_rules.splice(index, 1)
+}
+
+const addErrorRule = () => {
+  const cfg = systemForm.value?.sora?.account_dispatch
+  if (!cfg) return
+  if (!Array.isArray(cfg.quality_error_rules)) {
+    cfg.quality_error_rules = []
+  }
+  cfg.quality_error_rules.push({
+    phase: null,
+    message_contains: '',
+    penalty: 10,
+    cooldown_minutes: 30,
+    block_during_cooldown: false
+  })
+}
+
+const removeErrorRule = (index) => {
+  const cfg = systemForm.value?.sora?.account_dispatch
+  if (!cfg) return
+  if (!Array.isArray(cfg.quality_error_rules)) return
+  cfg.quality_error_rules.splice(index, 1)
+}
+
 const saveAll = async () => {
   if (!validateTimes(schedulerForm.value.times)) {
     ElMessage.warning('执行时刻格式不正确，请输入 HH:mm 并用逗号分隔')
@@ -540,5 +779,40 @@ onMounted(async () => {
 
 .flex-1 {
   flex: 1;
+}
+
+.rule-panel {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.rule-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.rule-table :deep(.el-input__wrapper) {
+  box-shadow: none;
+}
+
+.default-rule-grid {
+  width: 100%;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.rule-label {
+  font-size: 12px;
+  color: #475569;
+  min-width: 78px;
+}
+
+@media (max-width: 920px) {
+  .default-rule-grid {
+    grid-template-columns: 1fr;
+  }
 }
 </style>

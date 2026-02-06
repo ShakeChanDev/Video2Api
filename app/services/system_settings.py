@@ -218,3 +218,11 @@ def apply_runtime_settings(settings_data: Optional[SystemSettings] = None) -> No
 
     if old_concurrency != data.sora.job_max_concurrency:
         ixbrowser_service._sora_job_semaphore = asyncio.Semaphore(data.sora.job_max_concurrency)
+
+    # Account dispatch / recovery scheduler is runtime-configurable.
+    try:
+        from app.services.account_recovery_scheduler import account_recovery_scheduler  # noqa: WPS433
+
+        account_recovery_scheduler.apply_settings(data.sora.account_dispatch)
+    except Exception:  # noqa: BLE001
+        pass

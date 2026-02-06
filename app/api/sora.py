@@ -3,8 +3,9 @@ from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
 from app.core.auth import get_current_active_user
-from app.models.ixbrowser import SoraJob, SoraJobCreateResponse, SoraJobEvent, SoraJobRequest
+from app.models.ixbrowser import SoraAccountWeight, SoraJob, SoraJobCreateResponse, SoraJobEvent, SoraJobRequest
 from app.db.sqlite import sqlite_db
+from app.services.account_dispatch_service import account_dispatch_service
 from app.services.ixbrowser_service import (
     IXBrowserAPIError,
     IXBrowserConnectionError,
@@ -72,10 +73,13 @@ async def create_sora_job(
             resource_type="job",
             resource_id=str(result.job.job_id),
             extra={
-                "profile_id": request.profile_id,
+                "profile_id": result.job.profile_id,
                 "group_title": request.group_title,
                 "duration": request.duration,
                 "aspect_ratio": request.aspect_ratio,
+                "dispatch_mode": result.job.dispatch_mode,
+                "dispatch_score": result.job.dispatch_score,
+                "dispatch_reason": result.job.dispatch_reason,
             },
         )
         return result
@@ -88,7 +92,7 @@ async def create_sora_job(
             level="WARN",
             message=str(exc),
             resource_type="profile",
-            resource_id=str(request.profile_id),
+            resource_id=str(request.profile_id) if request.profile_id else str(request.group_title or "Sora"),
         )
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except IXBrowserServiceError as exc:
@@ -99,8 +103,8 @@ async def create_sora_job(
             status="failed",
             level="WARN",
             message=str(exc),
-            resource_type="profile",
-            resource_id=str(request.profile_id),
+            resource_type="group",
+            resource_id=str(request.group_title or "Sora"),
         )
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except IXBrowserAPIError as exc:
@@ -111,8 +115,8 @@ async def create_sora_job(
             status="failed",
             level="WARN",
             message=str(exc),
-            resource_type="profile",
-            resource_id=str(request.profile_id),
+            resource_type="group",
+            resource_id=str(request.group_title or "Sora"),
         )
         raise HTTPException(status_code=502, detail=f"ixBrowser 返回错误（code={exc.code}）：{exc.message}") from exc
     except IXBrowserConnectionError as exc:
@@ -123,9 +127,22 @@ async def create_sora_job(
             status="failed",
             level="WARN",
             message=str(exc),
-            resource_type="profile",
-            resource_id=str(request.profile_id),
+            resource_type="group",
+            resource_id=str(request.group_title or "Sora"),
         )
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@router.get("/accounts/weights", response_model=List[SoraAccountWeight])
+async def list_sora_account_weights(
+    group_title: str = Query("Sora", description="分组名称"),
+    limit: int = Query(100, ge=1, le=500, description="返回条数"),
+    current_user: dict = Depends(get_current_active_user),
+):
+    del current_user
+    try:
+        return await account_dispatch_service.list_account_weights(group_title=group_title, limit=limit)
+    except IXBrowserConnectionError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 

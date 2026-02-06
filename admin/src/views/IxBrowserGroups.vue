@@ -61,7 +61,7 @@
       </article>
     </section>
 
-    <el-card class="table-card" v-loading="latestLoading || scanLoading">
+    <el-card class="table-card" v-loading="latestLoading || scanLoading || weightsLoading">
       <template #header>
         <div class="table-head stack">
           <span>窗口扫描结果</span>
@@ -104,6 +104,49 @@
         <el-table-column label="套餐" width="118" align="center">
           <template #default="{ row }">
             <span v-if="isPlusPlan(row)" class="plan-badge">Plus</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="总分" width="100" align="center">
+          <template #default="{ row }">
+            <div class="score-cell">
+              <span class="score-total">{{ formatScore(row.score_total) }}</span>
+              <el-tag size="small" :type="row.selectable ? 'success' : 'info'">
+                {{ row.selectable ? '可选' : '不可选' }}
+              </el-tag>
+            </div>
+          </template>
+        </el-table-column>
+        <el-table-column label="数量分" width="90" align="center">
+          <template #default="{ row }">
+            <span class="score-sub">{{ formatScore(row.score_quantity) }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="质量分" width="90" align="center">
+          <template #default="{ row }">
+            <span class="score-sub">{{ formatScore(row.score_quality) }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="冷却到期" width="170" align="center">
+          <template #default="{ row }">
+            <span class="cooldown-text">{{ row.cooldown_until || '-' }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="忽略错误" width="110" align="center">
+          <template #default="{ row }">
+            <span>{{ row.ignored_error_count ?? 0 }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="最近非忽略错误" min-width="260">
+          <template #default="{ row }">
+            <el-tooltip
+              v-if="row.last_non_ignored_error"
+              :content="row.last_non_ignored_error"
+              placement="top"
+              effect="dark"
+            >
+              <span class="error-text">{{ shorten(row.last_non_ignored_error, 56) }}</span>
+            </el-tooltip>
+            <span v-else class="error-text error-empty">-</span>
           </template>
         </el-table-column>
         <el-table-column label="更新时间" width="150" align="center">
@@ -157,6 +200,7 @@ import { formatRelativeTimeZh } from '../utils/relativeTime'
 import {
   getIxBrowserGroupWindows,
   getLatestIxBrowserSoraSessionAccounts,
+  getSoraAccountWeights,
   openIxBrowserProfileWindow,
   scanIxBrowserSoraSessionAccounts,
   getSystemSettings
@@ -164,6 +208,7 @@ import {
 
 const latestLoading = ref(false)
 const scanLoading = ref(false)
+const weightsLoading = ref(false)
 const realtimeStatus = ref('disconnected')
 let realtimeSource = null
 let relativeTimeTimer = null
@@ -174,6 +219,7 @@ const groups = ref([])
 const selectedGroupTitle = ref('Sora')
 const scanData = ref(null)
 const systemSettings = ref(null)
+const weightsData = ref([])
 
 const sessionDialogVisible = ref(false)
 const currentSessionText = ref('')
@@ -194,9 +240,35 @@ const parseScanTime = (value) => {
   return 0
 }
 
+const weightMap = computed(() => {
+  const map = {}
+  const rows = Array.isArray(weightsData.value) ? weightsData.value : []
+  rows.forEach((item) => {
+    const pid = Number(item?.profile_id || 0)
+    if (!Number.isFinite(pid) || pid <= 0) return
+    map[pid] = item
+  })
+  return map
+})
+
 const scanRows = computed(() => {
   const rows = scanData.value?.results || []
-  return [...rows].sort((a, b) => {
+  const merged = [...rows].map((row) => {
+    const pid = Number(row?.profile_id || 0)
+    const weight = weightMap.value[pid]
+    return {
+      ...row,
+      ...(weight || {})
+    }
+  })
+  return merged.sort((a, b) => {
+    const aSelectable = a?.selectable ? 1 : 0
+    const bSelectable = b?.selectable ? 1 : 0
+    if (aSelectable !== bSelectable) return bSelectable - aSelectable
+    const scoreDiff = Number(b?.score_total || 0) - Number(a?.score_total || 0)
+    if (scoreDiff !== 0) return scoreDiff
+    const quotaDiff = Number(b?.quota_remaining_count ?? -1) - Number(a?.quota_remaining_count ?? -1)
+    if (quotaDiff !== 0) return quotaDiff
     const timeDiff = parseScanTime(b?.scanned_at) - parseScanTime(a?.scanned_at)
     if (timeDiff !== 0) return timeDiff
     return Number(b?.profile_id || 0) - Number(a?.profile_id || 0)
@@ -250,6 +322,19 @@ const formatTime = (value) => {
 
 const formatUpdatedTime = (value) => formatRelativeTimeZh(value, nowTick.value)
 
+const formatScore = (value) => {
+  const num = Number(value)
+  if (!Number.isFinite(num)) return '-'
+  return num.toFixed(1)
+}
+
+const shorten = (value, maxLen = 60) => {
+  const text = String(value || '')
+  if (!text) return ''
+  if (text.length <= maxLen) return text
+  return `${text.slice(0, maxLen)}...`
+}
+
 const applySystemDefaults = () => {
   const defaults = systemSettings.value?.scan || {}
   if (defaults.default_group_title) {
@@ -300,6 +385,20 @@ const loadLatest = async () => {
   }
 }
 
+const loadWeights = async () => {
+  if (!selectedGroupTitle.value) return
+  weightsLoading.value = true
+  try {
+    const data = await getSoraAccountWeights(selectedGroupTitle.value, 200)
+    weightsData.value = Array.isArray(data) ? data : []
+  } catch (error) {
+    weightsData.value = []
+    ElMessage.error(error?.response?.data?.detail || '获取账号权重失败')
+  } finally {
+    weightsLoading.value = false
+  }
+}
+
 const stopRealtimeStream = () => {
   if (realtimeSource) {
     realtimeSource.close()
@@ -341,6 +440,7 @@ const startRealtimeStream = () => {
 
 const refreshAll = async () => {
   await loadLatest()
+  await loadWeights()
 }
 
 const handleSelectionChange = (rows) => {
@@ -369,6 +469,7 @@ const scanNow = async () => {
     const data = await scanIxBrowserSoraSessionAccounts(selectedGroupTitle.value, ids.length ? ids : null)
     scanData.value = data
     ElMessage.success('扫描完成，结果已入库')
+    await loadWeights()
   } catch (error) {
     ElMessage.error(error?.response?.data?.detail || '扫描失败')
   } finally {
@@ -380,6 +481,7 @@ const onGroupChange = async () => {
   clearSelection()
   loadCache(selectedGroupTitle.value)
   await loadLatest()
+  await loadWeights()
   startRealtimeStream()
 }
 
@@ -496,6 +598,7 @@ onMounted(async () => {
   await loadGroups()
   loadCache(selectedGroupTitle.value)
   await loadLatest()
+  await loadWeights()
   startRealtimeStream()
 })
 
@@ -687,6 +790,46 @@ onBeforeUnmount(() => {
   border: 1px solid #7dd3fc;
   background: linear-gradient(135deg, rgba(186, 230, 253, 0.9), rgba(219, 234, 254, 0.92));
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.8), 0 3px 10px rgba(14, 116, 144, 0.16);
+}
+
+.score-cell {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+}
+
+.score-total {
+  font-size: 16px;
+  font-weight: 800;
+  color: var(--ink);
+  line-height: 1;
+}
+
+.score-sub {
+  font-size: 13px;
+  font-weight: 700;
+  color: rgba(15, 23, 42, 0.86);
+}
+
+.cooldown-text {
+  font-size: 12px;
+  color: rgba(71, 85, 105, 0.92);
+  font-weight: 600;
+}
+
+.error-text {
+  display: inline-block;
+  max-width: 100%;
+  font-size: 12px;
+  color: rgba(71, 85, 105, 0.92);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.error-text.error-empty {
+  color: rgba(100, 116, 139, 0.9);
 }
 
 .source-tag {

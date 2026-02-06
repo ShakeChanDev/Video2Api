@@ -13,8 +13,6 @@ from app.models.settings import (
     AccountDispatchIgnoreRule,
     AccountDispatchSettings,
 )
-from app.services.ixbrowser_service import ixbrowser_service
-from app.services.system_settings import load_system_settings
 
 
 def _clamp(value: float, lower: float, upper: float) -> float:
@@ -186,15 +184,50 @@ class AccountDispatchService:
         raise AccountDispatchNoAvailableError(f"自动分配失败：当前无可用账号。{detail}")
 
     def _load_settings(self) -> AccountDispatchSettings:
+        # Lazy import to avoid circular dependency at module import time.
+        from app.services.system_settings import load_system_settings  # noqa: WPS433
+
         settings = load_system_settings(mask_sensitive=False)
         return settings.sora.account_dispatch
 
     async def _list_group_windows(self, group_title: str) -> List[IXBrowserWindow]:
-        groups = await ixbrowser_service.list_group_windows()
-        target = ixbrowser_service._find_group_by_title(groups, group_title)  # noqa: SLF001
-        if not target:
+        # Avoid importing ixbrowser_service at module import time to prevent circular deps.
+        try:
+            from app.services.ixbrowser_service import ixbrowser_service  # noqa: WPS433
+
+            groups = await ixbrowser_service.list_group_windows()
+            normalized = str(group_title or "").strip().lower()
+            target = None
+            for group in groups:
+                if str(group.title or "").strip().lower() == normalized:
+                    target = group
+                    break
+            if target and target.windows:
+                return list(target.windows)
+        except Exception:
+            pass
+
+        # Fallback to latest scan results (works even when ixBrowser is temporarily unavailable).
+        run_row = sqlite_db.get_ixbrowser_latest_scan_run(str(group_title or "Sora"))
+        if not run_row:
             return []
-        return list(target.windows or [])
+        rows = sqlite_db.get_ixbrowser_scan_results_by_run(int(run_row["id"]))
+        windows: List[IXBrowserWindow] = []
+        for row in rows:
+            try:
+                profile_id = int(row.get("profile_id") or 0)
+            except Exception:
+                continue
+            if profile_id <= 0:
+                continue
+            windows.append(
+                IXBrowserWindow(
+                    profile_id=profile_id,
+                    name=str(row.get("window_name") or f"窗口-{profile_id}"),
+                )
+            )
+        windows.sort(key=lambda item: int(item.profile_id), reverse=True)
+        return windows
 
     def _load_latest_scan_map(self, group_title: str) -> Dict[int, dict]:
         run_row = sqlite_db.get_ixbrowser_latest_scan_run(group_title)
