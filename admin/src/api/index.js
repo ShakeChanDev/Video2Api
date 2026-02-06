@@ -207,3 +207,35 @@ export const listSystemLogs = async (params) => {
   const response = await api.get('/admin/logs', { params })
   return response.data
 }
+
+export const createNurtureBatch = async (data) => {
+  const response = await api.post('/nurture/batches', data, {
+    timeout: 60000
+  })
+  return response.data
+}
+
+export const listNurtureBatches = async (params) => {
+  const response = await api.get('/nurture/batches', { params })
+  return response.data
+}
+
+export const getNurtureBatch = async (batchId) => {
+  const response = await api.get(`/nurture/batches/${batchId}`)
+  return response.data
+}
+
+export const listNurtureJobs = async (batchId, params) => {
+  const response = await api.get(`/nurture/batches/${batchId}/jobs`, { params })
+  return response.data
+}
+
+export const getNurtureJob = async (jobId) => {
+  const response = await api.get(`/nurture/jobs/${jobId}`)
+  return response.data
+}
+
+export const cancelNurtureBatch = async (batchId) => {
+  const response = await api.post(`/nurture/batches/${batchId}/cancel`)
+  return response.data
+}

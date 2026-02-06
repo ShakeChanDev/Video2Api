@@ -8,7 +8,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from jose import JWTError, jwt
 
-from app.api import admin, auth, ixbrowser, sora
+from app.api import admin, auth, ixbrowser, nurture, sora
 from app.core.config import settings
 from app.core.logger import setup_logging
 from app.db.sqlite import sqlite_db
@@ -96,6 +96,7 @@ async def log_requests(request, call_next):
 app.include_router(auth.router)
 app.include_router(ixbrowser.router)
 app.include_router(sora.router)
+app.include_router(nurture.router)
 app.include_router(admin.router)
 
 
