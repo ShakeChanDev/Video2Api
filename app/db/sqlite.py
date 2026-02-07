@@ -1059,6 +1059,41 @@ class SQLiteDB:
         conn.close()
         return dict(row) if row else None
 
+    def get_sora_job_latest_retry_child(self, parent_job_id: int) -> Optional[Dict[str, Any]]:
+        conn = self._get_conn()
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT * FROM sora_jobs WHERE retry_of_job_id = ? ORDER BY id DESC LIMIT 1",
+            (int(parent_job_id),),
+        )
+        row = cursor.fetchone()
+        conn.close()
+        return dict(row) if row else None
+
+    def list_sora_retry_chain_profile_ids(self, root_job_id: int) -> List[int]:
+        conn = self._get_conn()
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT DISTINCT profile_id
+            FROM sora_jobs
+            WHERE id = ?
+               OR retry_root_job_id = ?
+            """,
+            (int(root_job_id), int(root_job_id)),
+        )
+        rows = cursor.fetchall()
+        conn.close()
+        profile_ids: List[int] = []
+        for row in rows:
+            try:
+                pid = int(row["profile_id"])
+            except Exception:
+                continue
+            if pid > 0:
+                profile_ids.append(pid)
+        return profile_ids
+
     def get_sora_job_max_retry_index(self, root_job_id: int) -> int:
         conn = self._get_conn()
         cursor = conn.cursor()

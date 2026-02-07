@@ -696,6 +696,14 @@ async def test_retry_sora_job_overload_creates_new_job(monkeypatch):
         lambda _root_job_id: 0,
     )
     monkeypatch.setattr(
+        "app.services.ixbrowser_service.sqlite_db.get_sora_job_latest_retry_child",
+        lambda _parent_job_id: None,
+    )
+    monkeypatch.setattr(
+        "app.services.ixbrowser_service.sqlite_db.list_sora_retry_chain_profile_ids",
+        lambda _root_job_id: [old_profile_id],
+    )
+    monkeypatch.setattr(
         "app.services.ixbrowser_service.sqlite_db.update_sora_job",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("should not update old job in overload path")),
     )
@@ -774,6 +782,7 @@ async def test_retry_sora_job_overload_creates_new_job(monkeypatch):
 @pytest.mark.asyncio
 async def test_retry_sora_job_overload_respects_max(monkeypatch):
     service = IXBrowserService()
+    service.heavy_load_retry_max_attempts = 3
     old_job_id = 10
     monkeypatch.setattr(
         "app.services.ixbrowser_service.sqlite_db.get_sora_job",
@@ -791,7 +800,11 @@ async def test_retry_sora_job_overload_respects_max(monkeypatch):
     )
     monkeypatch.setattr(
         "app.services.ixbrowser_service.sqlite_db.get_sora_job_max_retry_index",
-        lambda _root_job_id: 3,
+        lambda _root_job_id: 2,
+    )
+    monkeypatch.setattr(
+        "app.services.ixbrowser_service.sqlite_db.get_sora_job_latest_retry_child",
+        lambda _parent_job_id: None,
     )
     monkeypatch.setattr(
         "app.services.ixbrowser_service.sqlite_db.create_sora_job",
@@ -863,3 +876,155 @@ async def test_retry_sora_job_non_overload_keeps_old_behavior(monkeypatch):
     assert patched["patch"]["error"] is None
     assert patched["patch"]["progress_pct"] == 0
     assert any(item[0] == old_job_id and item[2] == "retry" for item in job_events)
+
+
+@pytest.mark.asyncio
+async def test_overload_spawn_is_idempotent_when_child_exists(monkeypatch):
+    service = IXBrowserService()
+    old_job_id = 10
+
+    monkeypatch.setattr(
+        "app.services.ixbrowser_service.sqlite_db.get_sora_job",
+        lambda _job_id: {
+            "id": old_job_id,
+            "profile_id": 1,
+            "group_title": "Sora",
+            "prompt": "hello",
+            "duration": "10s",
+            "aspect_ratio": "landscape",
+            "status": "failed",
+            "phase": "submit",
+            "error": "heavy load",
+        },
+    )
+    monkeypatch.setattr(
+        "app.services.ixbrowser_service.sqlite_db.get_sora_job_max_retry_index",
+        lambda _root_job_id: 0,
+    )
+    monkeypatch.setattr(
+        "app.services.ixbrowser_service.sqlite_db.get_sora_job_latest_retry_child",
+        lambda _parent_job_id: {"id": 11, "retry_of_job_id": old_job_id},
+    )
+    monkeypatch.setattr(
+        "app.services.ixbrowser_service.sqlite_db.create_sora_job",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("should not create new job when child exists")),
+    )
+
+    async def _fake_pick_best_account(*_args, **_kwargs):
+        raise AssertionError("should not dispatch when child exists")
+
+    monkeypatch.setattr(
+        "app.services.ixbrowser_service.account_dispatch_service.pick_best_account",
+        _fake_pick_best_account,
+    )
+
+    service.get_sora_job = lambda jid: SimpleNamespace(job_id=jid)
+    result = await service.retry_sora_job(old_job_id)
+    assert result.job_id == 11
+
+
+@pytest.mark.asyncio
+async def test_run_sora_job_submit_overload_auto_spawns_new_job(monkeypatch):
+    service = IXBrowserService()
+    service.heavy_load_retry_max_attempts = 2
+
+    old_job_id = 10
+    old_profile_id = 1
+    state_row = {
+        "id": old_job_id,
+        "profile_id": old_profile_id,
+        "window_name": "win-1",
+        "group_title": "Sora",
+        "prompt": "hello sora",
+        "duration": "10s",
+        "aspect_ratio": "landscape",
+        "status": "queued",
+        "phase": "queue",
+        "error": None,
+        "retry_root_job_id": None,
+        "retry_index": 0,
+    }
+
+    def _fake_get_sora_job(job_id):
+        return state_row if int(job_id) == old_job_id else None
+
+    def _fake_update_sora_job(job_id, patch):
+        assert int(job_id) == old_job_id
+        state_row.update(dict(patch))
+        return True
+
+    monkeypatch.setattr("app.services.ixbrowser_service.sqlite_db.get_sora_job", _fake_get_sora_job)
+    monkeypatch.setattr("app.services.ixbrowser_service.sqlite_db.update_sora_job", _fake_update_sora_job)
+    monkeypatch.setattr("app.services.ixbrowser_service.sqlite_db.get_sora_job_max_retry_index", lambda _root: 0)
+    monkeypatch.setattr("app.services.ixbrowser_service.sqlite_db.get_sora_job_latest_retry_child", lambda _pid: None)
+    monkeypatch.setattr(
+        "app.services.ixbrowser_service.sqlite_db.list_sora_retry_chain_profile_ids",
+        lambda _root: [old_profile_id],
+    )
+
+    created_payload = {}
+
+    def _fake_create_sora_job(data):
+        created_payload.update(dict(data))
+        return 11
+
+    monkeypatch.setattr("app.services.ixbrowser_service.sqlite_db.create_sora_job", _fake_create_sora_job)
+
+    job_events = []
+    monkeypatch.setattr(
+        "app.services.ixbrowser_service.sqlite_db.create_sora_job_event",
+        lambda job_id, phase, event, message=None: job_events.append((job_id, phase, event, message)) or 1,
+    )
+
+    scheduled = []
+    monkeypatch.setattr(
+        "app.services.ixbrowser_service.asyncio.create_task",
+        lambda task: scheduled.append(task) or None,
+    )
+
+    called = {}
+
+    async def _fake_pick_best_account(group_title="Sora", exclude_profile_ids=None):
+        called["group_title"] = group_title
+        called["exclude_profile_ids"] = exclude_profile_ids
+        return SoraAccountWeight(
+            profile_id=2,
+            selectable=True,
+            score_total=88,
+            score_quantity=40,
+            score_quality=90,
+            reasons=["r1", "r2"],
+        )
+
+    monkeypatch.setattr(
+        "app.services.ixbrowser_service.account_dispatch_service.pick_best_account",
+        _fake_pick_best_account,
+    )
+
+    async def _fake_get_window_from_group(profile_id, group_title):
+        assert profile_id == 2
+        assert group_title == "Sora"
+        return IXBrowserWindow(profile_id=2, name="win-2")
+
+    service._get_window_from_group = _fake_get_window_from_group
+    service.get_sora_job = lambda jid: SimpleNamespace(job_id=jid)
+
+    async def _fake_submit_and_progress(**_kwargs):
+        raise IXBrowserServiceError("We're under heavy load, please try again later.")
+
+    service._run_sora_submit_and_progress = _fake_submit_and_progress
+    # 防止新 job 递归执行：spawn 时 create_task 调用的是实例属性 _run_sora_job
+    service._run_sora_job = lambda jid: ("run", jid)
+
+    await IXBrowserService._run_sora_job(service, old_job_id)
+
+    assert called["group_title"] == "Sora"
+    assert called["exclude_profile_ids"] == [old_profile_id]
+    assert created_payload["profile_id"] == 2
+    assert created_payload["dispatch_mode"] == "weighted_auto"
+    assert created_payload["retry_of_job_id"] == old_job_id
+    assert created_payload["retry_root_job_id"] == old_job_id
+    assert created_payload["retry_index"] == 1
+    assert scheduled == [("run", 11)]
+    assert any(item[0] == old_job_id and item[2] == "auto_retry_new_job" for item in job_events)
+    assert any(item[0] == 11 and item[2] == "select" for item in job_events)

@@ -48,6 +48,12 @@
                 <el-form-item label="Draft 手动轮询（分钟）">
                   <el-input-number v-model="systemForm.sora.draft_manual_poll_interval_minutes" :min="1" :max="60" />
                 </el-form-item>
+                <el-form-item label="heavy load 换号总尝试次数">
+                  <div class="field-row">
+                    <el-input-number v-model="systemForm.sora.heavy_load_retry_max_attempts" :min="1" :max="10" />
+                    <div class="inline-tip">heavy load 换号总尝试次数（含首次）。设为 1 表示不自动换号重试。</div>
+                  </div>
+                </el-form-item>
                 <el-form-item label="阻塞资源类型">
                   <el-select
                     v-model="systemForm.sora.blocked_resource_types"
@@ -454,6 +460,7 @@ const defaultSystemForm = {
     generate_max_minutes: 30,
     draft_wait_timeout_minutes: 20,
     draft_manual_poll_interval_minutes: 5,
+    heavy_load_retry_max_attempts: 4,
     blocked_resource_types: ['image', 'media', 'font'],
     default_group_title: 'Sora',
     default_duration: '10s',

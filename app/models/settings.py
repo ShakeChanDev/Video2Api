@@ -21,6 +21,7 @@ class SoraSettings(BaseModel):
     generate_max_minutes: int = Field(30, ge=1, le=120)
     draft_wait_timeout_minutes: int = Field(20, ge=1, le=120)
     draft_manual_poll_interval_minutes: int = Field(5, ge=1, le=60)
+    heavy_load_retry_max_attempts: int = Field(4, ge=1, le=10)
     blocked_resource_types: List[str] = Field(default_factory=lambda: ["image", "media", "font"])
     default_group_title: str = "Sora"
     default_duration: str = "10s"
