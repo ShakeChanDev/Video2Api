@@ -2458,10 +2458,7 @@ class IXBrowserService:
                 ui_link = await self._capture_share_link_from_ui(page)
                 if ui_link:
                     return ui_link
-                clicked = await self._try_click_publish_button(page)
-                if not clicked:
-                    await page.wait_for_timeout(900)
-                    clicked = await self._try_click_publish_button(page)
+                clicked = await self._wait_and_click_publish_button(page, timeout_seconds=60)
                 if clicked:
                     await page.wait_for_timeout(800)
                     await self._click_by_keywords(page, ["确认", "Confirm", "继续", "Continue", "发布", "Publish"])
@@ -2623,10 +2620,7 @@ class IXBrowserService:
         ui_link = await self._capture_share_link_from_ui(page)
         if ui_link:
             return ui_link
-        clicked = await self._try_click_publish_button(page)
-        if not clicked:
-            await page.wait_for_timeout(900)
-            clicked = await self._try_click_publish_button(page)
+        clicked = await self._wait_and_click_publish_button(page, timeout_seconds=60)
         if clicked:
             await page.wait_for_timeout(800)
             await self._click_by_keywords(page, ["确认", "Confirm", "继续", "Continue", "发布", "Publish"])
@@ -3791,6 +3785,30 @@ class IXBrowserService:
             pass
         if await self._click_by_keywords(page, ["发布", "Publish", "公开", "Share", "分享", "Post"]):
             return True
+        return False
+
+    async def _wait_and_click_publish_button(self, page, timeout_seconds: int = 60) -> bool:
+        """等待发布入口出现并点击。
+
+        Sora 的详情页在视频刚生成/后处理阶段，发布入口可能延迟出现；
+        这里通过轮询避免误判“未找到发布按钮”。
+        """
+        timeout_seconds = int(timeout_seconds or 0)
+        if timeout_seconds <= 0:
+            timeout_seconds = 1
+        deadline = time.monotonic() + timeout_seconds
+
+        attempt = 0
+        while time.monotonic() < deadline:
+            attempt += 1
+            try:
+                clicked = await self._try_click_publish_button(page)
+            except Exception:  # noqa: BLE001
+                clicked = False
+            if clicked:
+                return True
+            # 给前端渲染/接口回填一点时间，避免过快轮询导致浪费 CPU
+            await page.wait_for_timeout(1200)
         return False
 
     async def _click_by_keywords(self, page, keywords: List[str]) -> bool:
