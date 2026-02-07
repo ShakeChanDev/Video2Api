@@ -77,7 +77,7 @@ def _load_scan_scheduler_row() -> Tuple[Optional[Dict[str, Any]], Optional[str]]
 
 def default_system_settings(mask_sensitive: bool = False) -> SystemSettings:
     cfg = core_config.settings
-    service_cls = ixbrowser_service.__class__
+    service_cls = type(ixbrowser_service)
     defaults = {
         "ixbrowser": {
             "api_base": cfg.ixbrowser_api_base,
@@ -203,13 +203,12 @@ def apply_runtime_settings(settings_data: Optional[SystemSettings] = None) -> No
     cfg.audit_log_retention_days = data.logging.audit_log_retention_days
     cfg.audit_log_cleanup_interval_sec = data.logging.audit_log_cleanup_interval_sec
 
-    old_concurrency = ixbrowser_service.sora_job_max_concurrency
     ixbrowser_service.request_timeout_ms = data.ixbrowser.request_timeout_ms
     ixbrowser_service.ixbrowser_busy_retry_max = data.ixbrowser.busy_retry_max
     ixbrowser_service.ixbrowser_busy_retry_delay_seconds = data.ixbrowser.busy_retry_delay_seconds
-    ixbrowser_service._group_windows_cache_ttl = float(data.ixbrowser.group_windows_cache_ttl_sec)
-    ixbrowser_service._realtime_quota_cache_ttl = float(data.ixbrowser.realtime_quota_cache_ttl_sec)
-    ixbrowser_service.sora_job_max_concurrency = data.sora.job_max_concurrency
+    ixbrowser_service.set_group_windows_cache_ttl(float(data.ixbrowser.group_windows_cache_ttl_sec))
+    ixbrowser_service.set_realtime_quota_cache_ttl(float(data.ixbrowser.realtime_quota_cache_ttl_sec))
+    ixbrowser_service.set_sora_job_max_concurrency(int(data.sora.job_max_concurrency))
     ixbrowser_service.generate_poll_interval_seconds = data.sora.generate_poll_interval_sec
     ixbrowser_service.generate_timeout_seconds = data.sora.generate_max_minutes * 60
     ixbrowser_service.draft_wait_timeout_seconds = data.sora.draft_wait_timeout_minutes * 60
@@ -217,9 +216,6 @@ def apply_runtime_settings(settings_data: Optional[SystemSettings] = None) -> No
     ixbrowser_service.heavy_load_retry_max_attempts = data.sora.heavy_load_retry_max_attempts
     ixbrowser_service.sora_blocked_resource_types = set(data.sora.blocked_resource_types or [])
     ixbrowser_service.scan_history_limit = data.scan.history_limit
-
-    if old_concurrency != data.sora.job_max_concurrency:
-        ixbrowser_service._sora_job_semaphore = asyncio.Semaphore(data.sora.job_max_concurrency)
 
     # Account dispatch / recovery scheduler is runtime-configurable.
     try:

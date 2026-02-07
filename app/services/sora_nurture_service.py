@@ -66,6 +66,13 @@ class SoraNurtureService:
         self._tasks: Dict[int, asyncio.Task] = {}
         self._tasks_lock = asyncio.Lock()
 
+    def _find_group_by_title(self, groups: List[Any], group_title: str) -> Any:
+        normalized = str(group_title or "").strip().lower()
+        for g in groups or []:
+            if str(getattr(g, "title", "") or "").strip().lower() == normalized:
+                return g
+        return None
+
     async def create_batch(self, request: SoraNurtureBatchCreateRequest, operator_user: Optional[dict] = None) -> dict:
         group_title = str(request.group_title or "Sora").strip() or "Sora"
         profile_ids = list(request.profile_ids or [])
@@ -80,7 +87,7 @@ class SoraNurtureService:
         window_name_map: Dict[int, Optional[str]] = {}
         try:
             groups = await self._ix.list_group_windows()
-            target = self._ix._find_group_by_title(groups, group_title)  # noqa: SLF001
+            target = self._find_group_by_title(groups, group_title)
             if target:
                 for win in target.windows or []:
                     window_name_map[int(win.profile_id)] = win.name

@@ -129,6 +129,47 @@ class IXBrowserService:
         self._realtime_subscribers: List[asyncio.Queue] = []
         self.request_timeout_ms = int(self.request_timeout_ms)
 
+    def register_realtime_subscriber(self) -> asyncio.Queue:
+        """对外公开的实时订阅入口（避免外部依赖私有方法）。"""
+        return self._register_realtime_subscriber()
+
+    def unregister_realtime_subscriber(self, queue: asyncio.Queue) -> None:
+        """对外公开的实时订阅注销入口（避免外部依赖私有方法）。"""
+        return self._unregister_realtime_subscriber(queue)
+
+    def select_iphone_user_agent(self, profile_id: int) -> str:
+        """对外公开 UA 选择（供 e2e/业务复用）。"""
+        return self._select_iphone_user_agent(profile_id)
+
+    async def apply_ua_override(self, page, user_agent: str) -> None:
+        """对外公开 UA 覆盖（供 e2e/业务复用）。"""
+        return await self._apply_ua_override(page, user_agent)
+
+    async def apply_request_blocking(self, page) -> None:
+        """对外公开请求拦截（供 e2e/业务复用）。"""
+        return await self._apply_request_blocking(page)
+
+    async def close_profile(self, profile_id: int) -> bool:
+        """对外公开关闭窗口（供 e2e/业务复用）。"""
+        return await self._close_profile(profile_id)
+
+    def set_group_windows_cache_ttl(self, ttl_sec: float) -> None:
+        self._group_windows_cache_ttl = float(ttl_sec)
+
+    def set_realtime_quota_cache_ttl(self, ttl_sec: float) -> None:
+        self._realtime_quota_cache_ttl = float(ttl_sec)
+
+    def set_sora_job_max_concurrency(self, n: int) -> None:
+        n_int = int(n)
+        if n_int < 1:
+            n_int = 1
+        if self.sora_job_max_concurrency == n_int:
+            return
+        self.sora_job_max_concurrency = n_int
+        # 若已初始化 semaphore，则重建以应用新并发；运行中的任务不回收。
+        if self._sora_job_semaphore is not None:
+            self._sora_job_semaphore = asyncio.Semaphore(n_int)
+
     async def list_groups(self) -> List[IXBrowserGroup]:
         """
         获取全部分组列表（自动翻页）

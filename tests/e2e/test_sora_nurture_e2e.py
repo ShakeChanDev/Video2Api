@@ -250,13 +250,13 @@ async def test_sora_nurture_e2e_post_like_and_follow():
             # 使用新页面避免复用旧 tab 遗留的 route/状态导致 Explore 入口加载异常
             page = await context.new_page()
 
-            ua = ixbrowser_service._select_iphone_user_agent(profile_id)  # noqa: SLF001
-            await ixbrowser_service._apply_ua_override(page, ua)  # noqa: SLF001
+            ua = ixbrowser_service.select_iphone_user_agent(profile_id)
+            await ixbrowser_service.apply_ua_override(page, ua)
             try:
                 await page.unroute("**/*")
             except Exception:
                 pass
-            await ixbrowser_service._apply_request_blocking(page)  # noqa: SLF001
+            await ixbrowser_service.apply_request_blocking(page)
 
             await page.goto(EXPLORE_URL, wait_until="domcontentloaded", timeout=40_000)
             await _wait_for_post_links(page, timeout_ms=70_000)
@@ -313,7 +313,7 @@ async def test_sora_nurture_e2e_post_like_and_follow():
     finally:
         # 先让 ixBrowser 收到关闭指令，避免遗留孤儿进程
         try:
-            await ixbrowser_service._close_profile(profile_id)  # noqa: SLF001
+            await ixbrowser_service.close_profile(profile_id)
         except Exception:
             pass
         if browser:
