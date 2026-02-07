@@ -47,6 +47,12 @@ uvicorn app.main:app --host 0.0.0.0 --port 8001 --reload
 
 - `http://127.0.0.1:8001/login`
 
+## 开发文档与一键命令
+
+- 开发手册：`docs/dev.md`
+- 一键启动（Makefile）：`make backend-install init-admin admin-install admin-build backend-dev`
+- 单元测试：`make test-unit`
+
 ## 环境变量
 
 参考 `.env.example`。
@@ -55,4 +61,3 @@ uvicorn app.main:app --host 0.0.0.0 --port 8001 --reload
 
 - `IXBROWSER_API_BASE`（默认 `http://127.0.0.1:53200`）
 - `PORT`（默认 `8001`）
-
