@@ -849,18 +849,25 @@ class SoraNurtureService:
             return False
 
         try:
-            await btn.first.click(timeout=3000)
+            # 注意：该 button 内部的数字区域（span.cursor-pointer）会打开“点赞列表”
+            # 必须点击心形 svg 才是“帖子赞”。
+            svg = btn.first.locator("svg").first
+            if await svg.count() > 0:
+                await svg.click(timeout=5000)
+            else:
+                # 极端兜底：尽量点击左上（更靠近图标），避免点到数字
+                await btn.first.click(timeout=5000, position={"x": 12, "y": 12})
         except Exception:  # noqa: BLE001
             return False
 
-        # 等待描边心 -> 实心心（弱依赖计数变化）
-        for _ in range(6):
+        # 等待描边心 -> 实心心（确认成功才算点赞）
+        for _ in range(10):
             await page.wait_for_timeout(300)
             after = await self._get_post_like_state(page)
             if after and str(after.get("fill") or "").strip() and not str(after.get("stroke") or "").strip():
                 return True
 
-        return True
+        return False
 
     def _calc_batch_stats(self, batch_id: int) -> Dict[str, Any]:
         jobs = self._db.list_sora_nurture_jobs(batch_id=int(batch_id), limit=5000)

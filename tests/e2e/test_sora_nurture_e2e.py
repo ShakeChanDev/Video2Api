@@ -196,15 +196,21 @@ async def _click_post_like_if_needed(page) -> dict:
     if str(before.get("fill") or "").strip() and not str(before.get("stroke") or "").strip():
         return {"ok": True, "clicked": False, "already": True, "before": before}
 
-    await btn.first.click(timeout=3000)
-    for _ in range(6):
+    # 注意：该 button 内部的数字区域会打开“点赞列表”，必须点心形 svg
+    svg = btn.first.locator("svg").first
+    if await svg.count() > 0:
+        await svg.click(timeout=5000)
+    else:
+        await btn.first.click(timeout=5000, position={"x": 12, "y": 12})
+
+    for _ in range(10):
         await page.wait_for_timeout(300)
         after = await _get_post_like_state(page)
         if after and str(after.get("fill") or "").strip() and not str(after.get("stroke") or "").strip():
             return {"ok": True, "clicked": True, "before": before, "after": after}
 
     after = await _get_post_like_state(page)
-    return {"ok": True, "clicked": True, "before": before, "after": after, "warning": "state not confirmed"}
+    return {"ok": False, "clicked": True, "before": before, "after": after, "reason": "state not confirmed"}
 
 
 async def _click_follow_if_needed(page) -> dict:
