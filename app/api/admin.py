@@ -43,6 +43,10 @@ def _parse_datetime(value: Optional[str]) -> Optional[str]:
         else:
             normalized = text.replace("Z", "+00:00")
             dt = datetime.fromisoformat(normalized)
+            # 前端使用 Date.toISOString()（UTC）；DB 里存的是本地时间字符串。
+            # 这里将带时区的时间转换为本地时间，避免时区差导致查询范围为空。
+            if dt.tzinfo is not None:
+                dt = dt.astimezone().replace(tzinfo=None)
         return dt.strftime("%Y-%m-%d %H:%M:%S")
     except Exception:
         return None
