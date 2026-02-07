@@ -93,27 +93,57 @@ async def _mark_post_like_button(page) -> dict:
           const vw = window.innerWidth, vh = window.innerHeight;
           const inView = (r) => r.bottom > 0 && r.right > 0 && r.top < vh && r.left < vw;
 
-          function collectCandidates(card) {
+          function collectCandidates(root) {
             const out = [];
-            for (const btn of Array.from(card.querySelectorAll('button'))) {
-              const txt = (btn.innerText || '').trim().replace(/\\s+/g, ' ');
-              if (!txt || !/^[0-9][0-9.,KkMm]*$/.test(txt)) continue;
+            for (const btn of Array.from(root.querySelectorAll('button'))) {
               const svg = btn.querySelector('svg');
               if (!svg) continue;
               const path = svg.querySelector('path');
+              if (!path) continue;
               const r = btn.getBoundingClientRect();
               if (!inView(r) || r.width < 18 || r.height < 18) continue;
-              const d = path ? (path.getAttribute('d') || '') : '';
+              const txt = (btn.innerText || '').trim().replace(/\\s+/g, ' ');
+              const aria = (btn.getAttribute('aria-label') || '').trim();
+              const d = (path.getAttribute('d') || '');
               out.push({
                 btn,
                 txt,
+                aria,
                 x: r.x,
+                y: r.y,
                 d,
-                fill: path ? (path.getAttribute('fill') || '') : '',
-                stroke: path ? (path.getAttribute('stroke') || '') : '',
+                fill: (path.getAttribute('fill') || ''),
+                stroke: (path.getAttribute('stroke') || ''),
               });
             }
             return out;
+          }
+
+          function findLikeByHeartPrefix(root) {
+            const paths = Array.from(root.querySelectorAll('button svg path'));
+            for (const path of paths) {
+              const d = (path.getAttribute('d') || '');
+              if (!d) continue;
+              if (!d.startsWith(outlinePrefix) && !d.startsWith(filledPrefix)) continue;
+              const btn = path.closest('button');
+              if (!btn) continue;
+              const r = btn.getBoundingClientRect();
+              if (!inView(r) || r.width < 18 || r.height < 18) continue;
+              const txt = (btn.innerText || '').trim().replace(/\\s+/g, ' ');
+              const aria = (btn.getAttribute('aria-label') || '').trim();
+              return {
+                btn,
+                txt,
+                aria,
+                x: r.x,
+                y: r.y,
+                d,
+                fill: (path.getAttribute('fill') || ''),
+                stroke: (path.getAttribute('stroke') || ''),
+                strategy: 'heart_prefix',
+              };
+            }
+            return null;
           }
 
           function findFollowCard() {
@@ -137,7 +167,10 @@ async def _mark_post_like_button(page) -> dict:
             if (cards.length >= 10) break;
           }
 
-          let best = null;
+          // Strategy 1: 在整个 dialog 内直接按心形 path 前缀定位（最稳定）
+          let best = findLikeByHeartPrefix(dialog);
+
+          // Strategy 2: 若未命中，再在可能的卡片区域内找候选
           for (const card of cards) {
             const cands = collectCandidates(card);
             if (!cands.length) continue;
@@ -149,10 +182,15 @@ async def _mark_post_like_button(page) -> dict:
             best = best || cands[0];
           }
 
-          if (!best) return { ok: false, reason: 'no candidates' };
+          if (!best) {
+            const sample = collectCandidates(dialog)
+              .slice(0, 8)
+              .map(c => ({ aria: c.aria, txt: c.txt, d: (c.d || '').slice(0, 32), x: Math.round(c.x), y: Math.round(c.y) }));
+            return { ok: false, reason: 'no candidates', sample };
+          }
 
           best.btn.setAttribute('data-nurture-post-like', '1');
-          return { ok: true, picked: { txt: best.txt, d: (best.d || '').slice(0, 40), fill: best.fill, stroke: best.stroke } };
+          return { ok: true, picked: { txt: best.txt, aria: best.aria, d: (best.d || '').slice(0, 40), fill: best.fill, stroke: best.stroke } };
         }
         """,
         {
@@ -311,6 +349,12 @@ async def test_sora_nurture_e2e_post_like_and_follow():
                 pass
         raise
     finally:
+        # 避免 route 回调在页面关闭后抛 TargetClosedError 污染 stderr
+        if page:
+            try:
+                await page.unroute_all(behavior="ignoreErrors")
+            except Exception:
+                pass
         # 先让 ixBrowser 收到关闭指令，避免遗留孤儿进程
         try:
             await ixbrowser_service.close_profile(profile_id)
