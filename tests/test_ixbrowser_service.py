@@ -520,6 +520,119 @@ def test_apply_fallback_from_history(monkeypatch):
     assert response.results[0].fallback_run_id == 11
 
 
+def test_get_latest_sora_scan_merges_realtime_quota_without_overwriting_plan(monkeypatch):
+    service = IXBrowserService()
+
+    scan_row = {
+        "id": 36,
+        "group_id": 1,
+        "group_title": "Sora",
+        "total_windows": 1,
+        "success_count": 1,
+        "failed_count": 0,
+        "fallback_applied_count": 0,
+        "scanned_at": "2026-02-07 19:56:55",
+    }
+    realtime_row = {
+        "id": 27,
+        "group_id": 1,
+        "group_title": "Sora",
+        "total_windows": 1,
+        "success_count": 1,
+        "failed_count": 0,
+        "fallback_applied_count": 0,
+        "operator_username": "实时使用",
+        "scanned_at": "2026-02-07 20:08:09",
+    }
+
+    monkeypatch.setattr(
+        "app.services.ixbrowser_service.sqlite_db.get_ixbrowser_latest_scan_run_excluding_operator",
+        lambda _group_title, _operator_username: scan_row,
+    )
+    monkeypatch.setattr(
+        "app.services.ixbrowser_service.sqlite_db.get_ixbrowser_latest_scan_run_by_operator",
+        lambda _group_title, _operator_username: realtime_row,
+    )
+
+    def _fake_get_results_by_run(run_id: int):
+        if int(run_id) == 36:
+            return [
+                {
+                    "run_id": 36,
+                    "profile_id": 11,
+                    "window_name": "win-11",
+                    "group_id": 1,
+                    "group_title": "Sora",
+                    "scanned_at": "2026-02-07 19:56:55",
+                    "session_status": 200,
+                    "account": "a@example.com",
+                    "account_plan": "plus",
+                    "session_json": {"ok": True},
+                    "session_raw": '{"ok":true}',
+                    "quota_remaining_count": 8,
+                    "quota_total_count": 8,
+                    "quota_reset_at": "2026-02-08T00:00:00+00:00",
+                    "quota_source": "https://sora.chatgpt.com/backend/nf/check",
+                    "quota_payload_json": {"scan": True},
+                    "quota_error": None,
+                    "success": 1,
+                    "close_success": 1,
+                    "error": None,
+                    "duration_ms": 123,
+                }
+            ]
+        if int(run_id) == 27:
+            return [
+                {
+                    "run_id": 27,
+                    "profile_id": 11,
+                    "window_name": "win-11",
+                    "group_id": 1,
+                    "group_title": "Sora",
+                    "scanned_at": "2026-02-07 20:08:09",
+                    "session_status": 200,
+                    "account": None,
+                    "account_plan": None,
+                    "session_json": None,
+                    "session_raw": None,
+                    "quota_remaining_count": 5,
+                    "quota_total_count": 6,
+                    "quota_reset_at": "2026-02-08T00:00:00+00:00",
+                    "quota_source": "realtime",
+                    "quota_payload_json": {"realtime": True},
+                    "quota_error": None,
+                    "success": 1,
+                    "close_success": 1,
+                    "error": None,
+                    "duration_ms": 0,
+                }
+            ]
+        return []
+
+    monkeypatch.setattr(
+        "app.services.ixbrowser_service.sqlite_db.get_ixbrowser_scan_results_by_run",
+        _fake_get_results_by_run,
+    )
+
+    # fallback 逻辑在此用例中不影响目标断言，直接跳过以降低耦合。
+    monkeypatch.setattr(service, "_apply_fallback_from_history", lambda _resp: None)
+
+    result = service.get_latest_sora_scan(group_title="Sora", with_fallback=True)
+    assert result.run_id == 36
+    assert result.scanned_at == "2026-02-07 19:56:55"
+    assert len(result.results) == 1
+
+    row = result.results[0]
+    assert row.profile_id == 11
+    assert row.account == "a@example.com"
+    assert row.account_plan == "plus"
+    assert row.quota_remaining_count == 5
+    assert row.quota_total_count == 6
+    assert row.quota_source == "realtime"
+    assert row.quota_payload == {"realtime": True}
+    assert row.scanned_at == "2026-02-07 20:08:09"
+
+
 @pytest.mark.asyncio
 async def test_create_sora_generate_job_requires_sora_window():
     service = IXBrowserService()

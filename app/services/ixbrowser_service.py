@@ -410,7 +410,12 @@ class IXBrowserService:
                         window.profile_id,
                     )
                     account = self._extract_account(session_obj)
-                    account_plan = self._extract_account_plan(session_obj)
+                    plan_from_sub = await self._fetch_sora_subscription_plan(
+                        browser,
+                        window.profile_id,
+                        session_obj,
+                    )
+                    account_plan = plan_from_sub or self._extract_account_plan(session_obj)
                     try:
                         quota_info = await self._fetch_sora_quota(
                             browser,
@@ -4781,7 +4786,10 @@ class IXBrowserService:
         group_title: str = "Sora",
         with_fallback: bool = True,
     ) -> IXBrowserSessionScanResponse:
-        run_row = sqlite_db.get_ixbrowser_latest_scan_run(group_title)
+        scan_row = sqlite_db.get_ixbrowser_latest_scan_run_excluding_operator(
+            group_title,
+            self._realtime_operator_username,
+        )
         realtime_row = sqlite_db.get_ixbrowser_latest_scan_run_by_operator(
             group_title,
             self._realtime_operator_username,
@@ -4790,26 +4798,74 @@ class IXBrowserService:
         def parse_time(value: Optional[str]) -> Optional[datetime]:
             if not value:
                 return None
+            text = str(value).strip()
+            if not text:
+                return None
             try:
-                return datetime.strptime(str(value), "%Y-%m-%d %H:%M:%S")
+                return datetime.strptime(text, "%Y-%m-%d %H:%M:%S")
+            except Exception:  # noqa: BLE001
+                pass
+            for pattern in ("%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M:%S%z"):
+                try:
+                    return datetime.strptime(text, pattern)
+                except Exception:  # noqa: BLE001
+                    continue
+            try:
+                return datetime.fromisoformat(text.replace("Z", "+00:00")).replace(tzinfo=None)
             except Exception:  # noqa: BLE001
                 return None
 
-        selected_row = run_row
-        if realtime_row:
-            realtime_time = parse_time(realtime_row.get("scanned_at"))
-            latest_time = parse_time(run_row.get("scanned_at")) if run_row else None
-            if not run_row:
-                selected_row = realtime_row
-            elif realtime_time and (not latest_time or realtime_time >= latest_time):
-                selected_row = realtime_row
-
-        if not selected_row:
+        base_row = scan_row or realtime_row
+        if not base_row:
             raise IXBrowserNotFoundError(f"未找到分组 {group_title} 的扫描历史")
 
-        response = self._build_response_from_run_row(selected_row)
+        response = self._build_response_from_run_row(base_row)
         if with_fallback:
             self._apply_fallback_from_history(response)
+
+        # 始终以“完整扫描”作为底图，再用“实时使用”覆盖配额信息（不覆盖账号/套餐字段）
+        if realtime_row and int(realtime_row.get("id") or 0) and int(base_row.get("id") or 0) != int(realtime_row.get("id") or 0):
+            try:
+                realtime_results = sqlite_db.get_ixbrowser_scan_results_by_run(int(realtime_row["id"]))
+            except Exception:  # noqa: BLE001
+                realtime_results = []
+
+            base_map = {int(item.profile_id): item for item in response.results}
+            for row in realtime_results:
+                try:
+                    profile_id = int(row.get("profile_id") or 0)
+                except Exception:  # noqa: BLE001
+                    continue
+                if profile_id <= 0:
+                    continue
+                base_item = base_map.get(profile_id)
+                if not base_item:
+                    continue
+
+                base_time = parse_time(base_item.scanned_at)
+                realtime_time = parse_time(row.get("scanned_at"))
+                if base_time and realtime_time and realtime_time < base_time:
+                    continue
+
+                # remaining_count 必然存在才会写入 realtime 结果，这里直接覆盖即可
+                base_item.quota_remaining_count = row.get("quota_remaining_count")
+                if row.get("quota_total_count") is not None:
+                    base_item.quota_total_count = row.get("quota_total_count")
+
+                reset_at = row.get("quota_reset_at")
+                if isinstance(reset_at, str) and reset_at.strip():
+                    base_item.quota_reset_at = reset_at.strip()
+
+                payload = row.get("quota_payload_json")
+                if isinstance(payload, dict):
+                    base_item.quota_payload = payload
+
+                base_item.quota_error = row.get("quota_error")
+                base_item.quota_source = "realtime"
+
+                row_scanned_at = row.get("scanned_at")
+                if row_scanned_at:
+                    base_item.scanned_at = str(row_scanned_at)
         return response
 
     def get_sora_scan_history(
@@ -5323,6 +5379,98 @@ class IXBrowserService:
             "payload": payload if isinstance(payload, dict) else None,
             "error": None,
         }
+
+    async def _fetch_sora_subscription_plan(
+        self,
+        browser,
+        profile_id: int,
+        session_obj: Optional[dict] = None
+    ) -> Optional[str]:
+        """
+        使用 accessToken 请求 Sora 订阅接口，尽可能识别账号套餐（Free/Plus）。
+
+        注意：该信息仅用于 UI/调度标识，失败时必须静默降级，不影响扫描成功与否。
+        """
+        access_token = self._extract_access_token(session_obj)
+        if not access_token:
+            return None
+
+        try:
+            context = browser.contexts[0] if getattr(browser, "contexts", None) else await browser.new_context()
+            page = context.pages[0] if getattr(context, "pages", None) else await context.new_page()
+            await self._prepare_sora_page(page, profile_id)
+        except Exception:  # noqa: BLE001
+            return None
+
+        try:
+            response_data = await page.evaluate(
+                """
+                async (token) => {
+                  const endpoint = "https://sora.chatgpt.com/backend/billing/subscriptions";
+                  try {
+                    const resp = await fetch(endpoint, {
+                      method: "GET",
+                      credentials: "include",
+                      headers: {
+                        "Authorization": `Bearer ${token}`,
+                        "Accept": "application/json"
+                      }
+                    });
+                    const text = await resp.text();
+                    let parsed = null;
+                    try {
+                      parsed = JSON.parse(text);
+                    } catch (e) {}
+                    return {
+                      status: resp.status,
+                      raw: text,
+                      json: parsed,
+                      source: endpoint
+                    };
+                  } catch (e) {
+                    return {
+                      status: null,
+                      raw: null,
+                      json: null,
+                      source: endpoint,
+                      error: String(e)
+                    };
+                  }
+                }
+                """,
+                access_token
+            )
+        except Exception:  # noqa: BLE001
+            return None
+
+        if not isinstance(response_data, dict):
+            return None
+        if response_data.get("error"):
+            return None
+        if response_data.get("status") != 200:
+            return None
+
+        payload = response_data.get("json")
+        if not isinstance(payload, dict):
+            return None
+
+        items = payload.get("data")
+        if not isinstance(items, list) or not items:
+            return None
+
+        first = items[0] if isinstance(items[0], dict) else None
+        if not first:
+            return None
+
+        plan = first.get("plan")
+        if not isinstance(plan, dict):
+            plan = {}
+
+        for value in (plan.get("id"), plan.get("title")):
+            normalized = self._normalize_account_plan(value)
+            if normalized:
+                return normalized
+        return None
 
     def _parse_sora_nf_check(self, payload: Dict[str, Any]) -> Dict[str, Optional[Any]]:
         rate_info = payload.get("rate_limit_and_credit_balance")

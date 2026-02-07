@@ -563,6 +563,27 @@ class SQLiteDB:
         conn.close()
         return dict(row) if row else None
 
+    def get_ixbrowser_latest_scan_run_excluding_operator(
+        self,
+        group_title: str,
+        operator_username: str,
+    ) -> Optional[Dict[str, Any]]:
+        conn = self._get_conn()
+        cursor = conn.cursor()
+        cursor.execute(
+            '''
+            SELECT * FROM ixbrowser_scan_runs
+            WHERE group_title = ?
+              AND (operator_username IS NULL OR operator_username != ?)
+            ORDER BY id DESC
+            LIMIT 1
+            ''',
+            (group_title, operator_username)
+        )
+        row = cursor.fetchone()
+        conn.close()
+        return dict(row) if row else None
+
     def get_ixbrowser_latest_scan_run_by_operator(self, group_title: str, operator_username: str) -> Optional[Dict[str, Any]]:
         conn = self._get_conn()
         cursor = conn.cursor()

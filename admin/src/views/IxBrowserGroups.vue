@@ -19,10 +19,6 @@
             <span>Run</span>
             <strong>{{ currentRunId }}</strong>
           </div>
-          <div class="meta-info">
-            <span>最新批次</span>
-            <strong>{{ lastScannedAt }}</strong>
-          </div>
           <div class="meta-info" v-if="selectedGroup">
             <span>窗口数</span>
             <strong>{{ selectedGroup.window_count || 0 }}</strong>
@@ -295,7 +291,6 @@ const metrics = computed(() => {
 })
 
 const currentRunId = computed(() => scanData.value?.run_id || '-')
-const lastScannedAt = computed(() => formatTime(scanData.value?.scanned_at))
 
 const statusText = computed(() => {
   if (scanLoading.value) return '扫描中'
@@ -310,15 +305,6 @@ const statusTagType = computed(() => {
   if (scanData.value.failed_count > 0) return 'danger'
   return 'success'
 })
-
-const formatTime = (value) => {
-  if (!value) return '-'
-  try {
-    return new Date(value).toLocaleString()
-  } catch {
-    return String(value)
-  }
-}
 
 const formatUpdatedTime = (value) => formatRelativeTimeZh(value, nowTick.value)
 

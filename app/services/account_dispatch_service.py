@@ -227,7 +227,11 @@ class AccountDispatchService:
             pass
 
         # Fallback to latest scan results (works even when ixBrowser is temporarily unavailable).
-        run_row = sqlite_db.get_ixbrowser_latest_scan_run(str(group_title or "Sora"))
+        safe_group = str(group_title or "Sora")
+        run_row = (
+            sqlite_db.get_ixbrowser_latest_scan_run_excluding_operator(safe_group, "实时使用")
+            or sqlite_db.get_ixbrowser_latest_scan_run(safe_group)
+        )
         if not run_row:
             return []
         rows = sqlite_db.get_ixbrowser_scan_results_by_run(int(run_row["id"]))
@@ -249,7 +253,10 @@ class AccountDispatchService:
         return windows
 
     def _load_latest_scan_map(self, group_title: str) -> Dict[int, dict]:
-        run_row = sqlite_db.get_ixbrowser_latest_scan_run(group_title)
+        run_row = (
+            sqlite_db.get_ixbrowser_latest_scan_run_excluding_operator(group_title, "实时使用")
+            or sqlite_db.get_ixbrowser_latest_scan_run(group_title)
+        )
         if not run_row:
             return {}
         rows = sqlite_db.get_ixbrowser_scan_results_by_run(int(run_row["id"]))

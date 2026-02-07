@@ -95,3 +95,45 @@ async def test_pick_best_account_excludes_profile_ids(monkeypatch):
 
     weight = await service.pick_best_account(group_title="Sora", exclude_profile_ids=[1])
     assert weight.profile_id == 2
+
+
+def test_load_latest_scan_map_ignores_realtime_run(monkeypatch):
+    service = AccountDispatchService()
+
+    monkeypatch.setattr(
+        "app.services.account_dispatch_service.sqlite_db.get_ixbrowser_latest_scan_run_excluding_operator",
+        lambda _group_title, _operator_username: {"id": 36},
+    )
+    monkeypatch.setattr(
+        "app.services.account_dispatch_service.sqlite_db.get_ixbrowser_latest_scan_run",
+        lambda _group_title: {"id": 27},
+    )
+
+    def _fake_get_results_by_run(run_id: int):
+        if int(run_id) == 36:
+            return [
+                {
+                    "profile_id": 1,
+                    "account_plan": "plus",
+                    "quota_remaining_count": 10,
+                    "account": "a@example.com",
+                }
+            ]
+        if int(run_id) == 27:
+            return [
+                {
+                    "profile_id": 1,
+                    "account_plan": None,
+                    "quota_remaining_count": 9,
+                    "account": None,
+                }
+            ]
+        return []
+
+    monkeypatch.setattr(
+        "app.services.account_dispatch_service.sqlite_db.get_ixbrowser_scan_results_by_run",
+        _fake_get_results_by_run,
+    )
+
+    scan_map = service._load_latest_scan_map("Sora")
+    assert scan_map[1]["account_plan"] == "plus"
