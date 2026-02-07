@@ -10,6 +10,7 @@ from jose import JWTError, jwt
 
 from app.api import admin, auth, ixbrowser, nurture, sora
 from app.core.config import settings
+from app.core.errors import install_exception_handlers
 from app.core.logger import setup_logging
 from app.db.sqlite import sqlite_db
 from app.services.system_settings import apply_runtime_settings
@@ -23,6 +24,7 @@ app = FastAPI(
     version=settings.app_version,
     description="Video2Api - ixBrowser + Sora 自动化后端",
 )
+install_exception_handlers(app)
 
 app.add_middleware(
     CORSMiddleware,
