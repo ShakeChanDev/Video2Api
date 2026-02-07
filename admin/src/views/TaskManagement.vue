@@ -96,7 +96,10 @@
               <div class="task-title">
                 <span class="task-id">#{{ row.job_id }}</span>
                 <span class="task-dot" />
-                <span class="task-window">窗口 {{ row.profile_id }}</span>
+                <span class="task-window">
+                  窗口 {{ row.profile_id }}
+                  <span v-if="isPlusProfile(row.profile_id)" class="task-plus">Plus</span>
+                </span>
                 <span class="task-dot" />
                 <span class="task-meta">{{ row.duration }}</span>
                 <span class="task-dot" />
@@ -333,17 +336,18 @@
 </template>
 
 <script setup>
-  import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
-  import { ElMessage } from 'element-plus'
-  import { formatRelativeTimeZh } from '../utils/relativeTime'
-  import {
-    createSoraJob,
-    getSoraAccountWeights,
-    getIxBrowserGroupWindows,
-    getSystemSettings,
-    listSoraJobEvents,
-    listSoraJobs,
-    retrySoraJob,
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { ElMessage } from 'element-plus'
+import { formatRelativeTimeZh } from '../utils/relativeTime'
+import {
+  createSoraJob,
+  getSoraAccountWeights,
+  getIxBrowserGroupWindows,
+  getLatestIxBrowserSoraSessionAccounts,
+  getSystemSettings,
+  listSoraJobEvents,
+  listSoraJobs,
+  retrySoraJob,
   retrySoraJobWatermark
 } from '../api'
 
@@ -359,22 +363,28 @@ const systemSettings = ref(null)
 const selectedGroupTitle = ref('Sora')
 const statusFilter = ref('all')
 const phaseFilter = ref('all')
-  const keyword = ref('')
-  let pollingTimer = null
-  let relativeTimeTimer = null
-  const nowTick = ref(Date.now())
+const keyword = ref('')
+let pollingTimer = null
+let relativeTimeTimer = null
+const nowTick = ref(Date.now())
 
-  const weightsLoading = ref(false)
-  const accountWeights = ref([])
+const weightsLoading = ref(false)
+const accountWeights = ref([])
 
-  const createForm = ref({
-    group_title: 'Sora',
-    dispatch_mode: 'weighted_auto',
-    profile_id: null,
-    prompt: '',
-    duration: '10s',
-    aspect_ratio: 'landscape'
-  })
+const accountPlanMap = ref({})
+const accountPlanGroupTitle = ref(null)
+const accountPlanUpdatedAt = ref(0)
+const ACCOUNT_PLAN_TTL_MS = 60 * 1000
+let accountPlanLoading = false
+
+const createForm = ref({
+  group_title: 'Sora',
+  dispatch_mode: 'weighted_auto',
+  profile_id: null,
+  prompt: '',
+  duration: '10s',
+  aspect_ratio: 'landscape'
+})
 
 const concurrencyLimit = computed(() => systemSettings.value?.sora?.job_max_concurrency || 2)
 
@@ -504,6 +514,52 @@ const extractShareCode = (url) => {
   return text
 }
 
+const loadAccountPlans = async (force = false) => {
+  const groupTitle = selectedGroupTitle.value || 'Sora'
+  const now = Date.now()
+  const ttlOk =
+    accountPlanGroupTitle.value === groupTitle && now - (accountPlanUpdatedAt.value || 0) < ACCOUNT_PLAN_TTL_MS
+
+  if (accountPlanGroupTitle.value !== groupTitle) {
+    accountPlanMap.value = {}
+    accountPlanGroupTitle.value = groupTitle
+    accountPlanUpdatedAt.value = 0
+  }
+
+  if (!force && ttlOk) return
+  if (accountPlanLoading) return
+
+  accountPlanLoading = true
+  try {
+    const data = await getLatestIxBrowserSoraSessionAccounts(groupTitle, true)
+    const results = Array.isArray(data?.results) ? data.results : []
+    const map = {}
+    for (const item of results) {
+      const pid = item?.profile_id
+      if (pid === null || pid === undefined) continue
+      const plan = String(item?.account_plan || '').trim().toLowerCase()
+      if (plan) {
+        map[String(pid)] = plan
+      }
+    }
+    accountPlanMap.value = map
+    accountPlanGroupTitle.value = groupTitle
+    accountPlanUpdatedAt.value = Date.now()
+  } catch {
+    // 账号套餐信息仅用于 UI 标识：失败时静默降级即可
+    accountPlanUpdatedAt.value = Date.now()
+  } finally {
+    accountPlanLoading = false
+  }
+}
+
+const isPlusProfile = (profileId) => {
+  if (profileId === null || profileId === undefined) return false
+  const plan = accountPlanMap.value?.[String(profileId)]
+  if (!plan) return false
+  return String(plan).toLowerCase().includes('plus')
+}
+
 const hasActiveJobs = computed(() => jobs.value.some((item) => ['queued', 'running'].includes(item.status)))
 
 const stopPolling = () => {
@@ -582,6 +638,7 @@ const loadGroups = async () => {
 }
 
 const loadJobs = async (withLoading = true) => {
+  void loadAccountPlans()
   if (withLoading) {
     loading.value = true
   }
@@ -605,35 +662,35 @@ const loadJobs = async (withLoading = true) => {
   }
 }
 
-  const openCreateDialog = () => {
-    createForm.value = {
-      group_title: selectedGroupTitle.value || 'Sora',
-      dispatch_mode: 'weighted_auto',
-      profile_id: null,
-      prompt: '',
-      duration: '10s',
-      aspect_ratio: 'landscape'
-    }
-    createDialogVisible.value = true
+const openCreateDialog = () => {
+  createForm.value = {
+    group_title: selectedGroupTitle.value || 'Sora',
+    dispatch_mode: 'weighted_auto',
+    profile_id: null,
+    prompt: '',
+    duration: '10s',
+    aspect_ratio: 'landscape'
   }
+  createDialogVisible.value = true
+}
 
-  const loadAccountWeights = async () => {
-    if (!createDialogVisible.value) return
-    if (createForm.value.dispatch_mode !== 'weighted_auto') return
-    weightsLoading.value = true
-    try {
-      const groupTitle = createForm.value.group_title || selectedGroupTitle.value || 'Sora'
-      const data = await getSoraAccountWeights(groupTitle, 12)
-      accountWeights.value = Array.isArray(data) ? data : []
-    } catch (error) {
-      accountWeights.value = []
-      ElMessage.error(error?.response?.data?.detail || '获取账号权重失败')
-    } finally {
-      weightsLoading.value = false
-    }
+const loadAccountWeights = async () => {
+  if (!createDialogVisible.value) return
+  if (createForm.value.dispatch_mode !== 'weighted_auto') return
+  weightsLoading.value = true
+  try {
+    const groupTitle = createForm.value.group_title || selectedGroupTitle.value || 'Sora'
+    const data = await getSoraAccountWeights(groupTitle, 12)
+    accountWeights.value = Array.isArray(data) ? data : []
+  } catch (error) {
+    accountWeights.value = []
+    ElMessage.error(error?.response?.data?.detail || '获取账号权重失败')
+  } finally {
+    weightsLoading.value = false
   }
+}
 
-  const submitTask = async () => {
+const submitTask = async () => {
   const mode = createForm.value.dispatch_mode || (createForm.value.profile_id ? 'manual' : 'weighted_auto')
   if (mode === 'manual' && !createForm.value.profile_id) {
     ElMessage.warning('请输入窗口 ID')
@@ -754,6 +811,7 @@ onMounted(async () => {
   }, 60000)
   await loadSystemSettings()
   await loadGroups()
+  await loadAccountPlans(true)
   await loadJobs()
 })
 
@@ -864,6 +922,20 @@ onUnmounted(() => {
   font-size: 12px;
   color: var(--muted);
   white-space: nowrap;
+}
+
+.task-plus {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 6px;
+  border-radius: 999px;
+  font-size: 11px;
+  line-height: 1.4;
+  font-weight: 650;
+  color: #065f46;
+  background: rgba(16, 185, 129, 0.12);
+  border: 1px solid rgba(16, 185, 129, 0.28);
+  margin-left: 6px;
 }
 
 .task-meta {

@@ -13,7 +13,6 @@ from app.core.config import settings
 from app.core.logger import setup_logging
 from app.db.sqlite import sqlite_db
 from app.services.system_settings import apply_runtime_settings
-from app.services.account_recovery_scheduler import account_recovery_scheduler
 
 setup_logging()
 logger = logging.getLogger(__name__)
@@ -98,16 +97,6 @@ app.include_router(ixbrowser.router)
 app.include_router(sora.router)
 app.include_router(nurture.router)
 app.include_router(admin.router)
-
-
-@app.on_event("startup")
-async def _startup() -> None:
-    account_recovery_scheduler.start()
-
-
-@app.on_event("shutdown")
-async def _shutdown() -> None:
-    await account_recovery_scheduler.stop()
 
 
 @app.get("/health")
