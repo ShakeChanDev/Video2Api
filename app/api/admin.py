@@ -1,15 +1,20 @@
 """后台管理接口"""
 from __future__ import annotations
 
+import asyncio
 import json
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Optional
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.encoders import jsonable_encoder
+from fastapi.responses import StreamingResponse
+from jose import JWTError, jwt
 
 from app.core.auth import get_current_active_user
+from app.core.config import settings
 from app.db.sqlite import sqlite_db
-from app.models.ixbrowser import SystemLogItem
+from app.models.logs import LogEventListResponse, LogEventStatsResponse
 from app.models.settings import (
     ScanSchedulerEnvelope,
     ScanSchedulerSettings,
@@ -43,8 +48,6 @@ def _parse_datetime(value: Optional[str]) -> Optional[str]:
         else:
             normalized = text.replace("Z", "+00:00")
             dt = datetime.fromisoformat(normalized)
-            # 前端使用 Date.toISOString()（UTC）；DB 里存的是本地时间字符串。
-            # 这里将带时区的时间转换为本地时间，避免时区差导致查询范围为空。
             if dt.tzinfo is not None:
                 dt = dt.astimezone().replace(tzinfo=None)
         return dt.strftime("%Y-%m-%d %H:%M:%S")
@@ -52,149 +55,125 @@ def _parse_datetime(value: Optional[str]) -> Optional[str]:
         return None
 
 
-def _parse_metadata(extra_json: Optional[str]) -> Optional[Dict[str, Any]]:
-    if not extra_json:
-        return None
-    try:
-        payload = json.loads(extra_json)
-        return payload if isinstance(payload, dict) else {"raw": payload}
-    except Exception:
-        return {"raw": extra_json}
-
-
-@router.get("/logs", response_model=List[SystemLogItem])
+@router.get("/logs", response_model=LogEventListResponse)
 async def list_system_logs(
-    type: str = Query("all", description="日志类型：all|api|audit|task"),
-    keyword: Optional[str] = Query(None, description="关键词"),
+    source: str = Query("all", description="日志来源：all|api|audit|task|system"),
     status: Optional[str] = Query(None, description="状态过滤"),
     level: Optional[str] = Query(None, description="等级过滤"),
+    keyword: Optional[str] = Query(None, description="关键词"),
     user: Optional[str] = Query(None, description="用户过滤"),
+    action: Optional[str] = Query(None, description="动作过滤"),
+    path: Optional[str] = Query(None, description="路径过滤"),
+    trace_id: Optional[str] = Query(None, description="链路ID"),
+    request_id: Optional[str] = Query(None, description="请求ID"),
     start_at: Optional[str] = Query(None, description="开始时间"),
     end_at: Optional[str] = Query(None, description="结束时间"),
+    slow_only: bool = Query(False, description="仅慢请求"),
     limit: int = Query(200, ge=1, le=500, description="返回条数"),
+    cursor: Optional[str] = Query(None, description="游标"),
     current_user: dict = Depends(get_current_active_user),
 ):
     del current_user
-    log_type = str(type or "all").lower().strip() or "all"
-    safe_limit = min(max(int(limit), 1), 500)
     start_at_str = _parse_datetime(start_at)
     end_at_str = _parse_datetime(end_at)
+    result = sqlite_db.list_event_logs(
+        source=source,
+        status=status,
+        level=level,
+        operator_username=user,
+        keyword=keyword,
+        action=action,
+        path=path,
+        trace_id=trace_id,
+        request_id=request_id,
+        start_at=start_at_str,
+        end_at=end_at_str,
+        slow_only=bool(slow_only),
+        limit=limit,
+        cursor=cursor,
+    )
+    return LogEventListResponse.model_validate(result)
 
-    def build_audit_items(rows: List[Dict[str, Any]]) -> List[SystemLogItem]:
-        items: List[SystemLogItem] = []
-        for row in rows:
-            metadata = {
-                "method": row.get("method"),
-                "path": row.get("path"),
-                "status_code": row.get("status_code"),
-                "ip": row.get("ip"),
-                "user_agent": row.get("user_agent"),
-                "resource_type": row.get("resource_type"),
-                "resource_id": row.get("resource_id"),
-                "extra": _parse_metadata(row.get("extra_json")),
-            }
-            items.append(
-                SystemLogItem(
-                    type=str(row.get("category") or "audit"),
-                    action=str(row.get("action") or ""),
-                    message=row.get("message"),
-                    status=row.get("status"),
-                    level=row.get("level"),
-                    operator_username=row.get("operator_username"),
-                    created_at=row.get("created_at"),
-                    duration_ms=row.get("duration_ms"),
-                    metadata=metadata,
-                )
-            )
-        return items
 
-    def build_task_items(rows: List[Dict[str, Any]]) -> List[SystemLogItem]:
-        items: List[SystemLogItem] = []
-        for row in rows:
-            action = f"sora.job.{row.get('event')}"
-            metadata = {
-                "job_id": row.get("job_id"),
-                "phase": row.get("phase"),
-                "event": row.get("event"),
-                "group_title": row.get("group_title"),
-                "profile_id": row.get("profile_id"),
-                "task_id": row.get("task_id"),
-                "generation_id": row.get("generation_id"),
-                "publish_url": row.get("publish_url"),
-                "prompt": row.get("prompt"),
-                "job_status": row.get("job_status"),
-            }
-            items.append(
-                SystemLogItem(
-                    type="task",
-                    action=action,
-                    message=row.get("message"),
-                    status=row.get("phase"),
-                    level=None,
-                    operator_username=row.get("operator_username"),
-                    created_at=row.get("created_at"),
-                    duration_ms=None,
-                    metadata=metadata,
-                )
-            )
-        return items
+@router.get("/logs/stats", response_model=LogEventStatsResponse)
+async def get_system_log_stats(
+    source: str = Query("all", description="日志来源：all|api|audit|task|system"),
+    status: Optional[str] = Query(None, description="状态过滤"),
+    level: Optional[str] = Query(None, description="等级过滤"),
+    keyword: Optional[str] = Query(None, description="关键词"),
+    user: Optional[str] = Query(None, description="用户过滤"),
+    action: Optional[str] = Query(None, description="动作过滤"),
+    path: Optional[str] = Query(None, description="路径过滤"),
+    trace_id: Optional[str] = Query(None, description="链路ID"),
+    request_id: Optional[str] = Query(None, description="请求ID"),
+    start_at: Optional[str] = Query(None, description="开始时间"),
+    end_at: Optional[str] = Query(None, description="结束时间"),
+    slow_only: bool = Query(False, description="仅慢请求"),
+    current_user: dict = Depends(get_current_active_user),
+):
+    del current_user
+    start_at_str = _parse_datetime(start_at)
+    end_at_str = _parse_datetime(end_at)
+    stats = sqlite_db.stats_event_logs(
+        source=source,
+        status=status,
+        level=level,
+        operator_username=user,
+        keyword=keyword,
+        action=action,
+        path=path,
+        trace_id=trace_id,
+        request_id=request_id,
+        start_at=start_at_str,
+        end_at=end_at_str,
+        slow_only=bool(slow_only),
+    )
+    return LogEventStatsResponse.model_validate(stats)
 
-    items: List[SystemLogItem] = []
 
-    if log_type in {"api", "audit"}:
-        rows = sqlite_db.list_audit_logs(
-            category=log_type,
-            status=status,
-            level=level,
-            operator_username=user,
-            keyword=keyword,
-            start_at=start_at_str,
-            end_at=end_at_str,
-            limit=safe_limit,
-        )
-        items = build_audit_items(rows)
-    elif log_type == "task":
-        rows = sqlite_db.list_sora_job_events_for_logs(
-            operator_username=user,
-            keyword=keyword,
-            start_at=start_at_str,
-            end_at=end_at_str,
-            limit=safe_limit,
-        )
-        items = build_task_items(rows)
-    else:
-        audit_rows = sqlite_db.list_audit_logs(
-            category="audit",
-            status=status,
-            level=level,
-            operator_username=user,
-            keyword=keyword,
-            start_at=start_at_str,
-            end_at=end_at_str,
-            limit=safe_limit,
-        )
-        api_rows = sqlite_db.list_audit_logs(
-            category="api",
-            status=status,
-            level=level,
-            operator_username=user,
-            keyword=keyword,
-            start_at=start_at_str,
-            end_at=end_at_str,
-            limit=safe_limit,
-        )
-        task_rows = sqlite_db.list_sora_job_events_for_logs(
-            operator_username=user,
-            keyword=keyword,
-            start_at=start_at_str,
-            end_at=end_at_str,
-            limit=safe_limit,
-        )
-        items = build_audit_items(audit_rows) + build_audit_items(api_rows) + build_task_items(task_rows)
-        items.sort(key=lambda item: _parse_datetime(item.created_at) or "", reverse=True)
-        items = items[:safe_limit]
+@router.get("/logs/stream")
+async def stream_system_logs(
+    source: str = Query("all", description="日志来源过滤"),
+    token: Optional[str] = Query(None, description="访问令牌"),
+):
+    if not token:
+        raise HTTPException(status_code=401, detail="缺少访问令牌")
+    try:
+        payload = jwt.decode(token, settings.secret_key, algorithms=[settings.algorithm])
+        username = payload.get("sub")
+    except JWTError as exc:
+        raise HTTPException(status_code=401, detail="无效的访问令牌") from exc
 
-    return items
+    if not username or not sqlite_db.get_user_by_username(username):
+        raise HTTPException(status_code=401, detail="无效的访问令牌")
+
+    source_value = str(source or "all").strip().lower() or "all"
+
+    async def event_generator():
+        last_id = 0
+        idle_ticks = 0
+        try:
+            while True:
+                rows = sqlite_db.list_event_logs_since(after_id=last_id, source=source_value, limit=200)
+                if rows:
+                    idle_ticks = 0
+                    for row in rows:
+                        row_id = int(row.get("id") or 0)
+                        if row_id > last_id:
+                            last_id = row_id
+                        payload_json = json.dumps(jsonable_encoder(row), ensure_ascii=False)
+                        yield f"event: log\ndata: {payload_json}\n\n"
+                    continue
+
+                idle_ticks += 1
+                if idle_ticks >= 20:
+                    idle_ticks = 0
+                    yield "event: ping\ndata: {}\n\n"
+                await asyncio.sleep(1)
+        except asyncio.CancelledError:
+            return
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
 
 
 @router.get("/settings/system", response_model=SystemSettingsEnvelope)

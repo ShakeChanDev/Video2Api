@@ -144,8 +144,40 @@ class LoggingSettings(BaseModel):
     log_file: str = "logs/app.log"
     log_max_bytes: int = Field(10 * 1024 * 1024, ge=1_048_576, le=104_857_600)
     log_backup_count: int = Field(5, ge=1, le=100)
+
+    event_log_retention_days: int = Field(30, ge=0, le=3650)
+    event_log_cleanup_interval_sec: int = Field(3600, ge=60, le=86_400)
+    api_log_capture_mode: str = "all"
+    api_slow_threshold_ms: int = Field(2000, ge=100, le=120_000)
+    log_mask_mode: str = "basic"
+    system_logger_ingest_level: str = "DEBUG"
+
     audit_log_retention_days: int = Field(3, ge=0, le=365)
     audit_log_cleanup_interval_sec: int = Field(3600, ge=60, le=86_400)
+
+    @field_validator("api_log_capture_mode")
+    @classmethod
+    def normalize_api_log_capture_mode(cls, value: str) -> str:
+        text = str(value or "").strip().lower()
+        if text not in {"all", "failed_slow", "failed_only"}:
+            raise ValueError("api_log_capture_mode must be all/failed_slow/failed_only")
+        return text
+
+    @field_validator("log_mask_mode")
+    @classmethod
+    def normalize_log_mask_mode(cls, value: str) -> str:
+        text = str(value or "").strip().lower()
+        if text not in {"off", "basic"}:
+            raise ValueError("log_mask_mode must be off/basic")
+        return text
+
+    @field_validator("system_logger_ingest_level")
+    @classmethod
+    def normalize_system_logger_ingest_level(cls, value: str) -> str:
+        text = str(value or "").strip().upper()
+        if text not in {"DEBUG", "INFO", "WARN", "WARNING", "ERROR"}:
+            raise ValueError("system_logger_ingest_level must be DEBUG/INFO/WARN/ERROR")
+        return "WARN" if text == "WARNING" else text
 
 
 class AuthSettings(BaseModel):

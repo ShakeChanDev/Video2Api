@@ -108,6 +108,12 @@ def default_system_settings(mask_sensitive: bool = False) -> SystemSettings:
             "log_file": cfg.log_file,
             "log_max_bytes": cfg.log_max_bytes,
             "log_backup_count": cfg.log_backup_count,
+            "event_log_retention_days": cfg.event_log_retention_days,
+            "event_log_cleanup_interval_sec": cfg.event_log_cleanup_interval_sec,
+            "api_log_capture_mode": cfg.api_log_capture_mode,
+            "api_slow_threshold_ms": cfg.api_slow_threshold_ms,
+            "log_mask_mode": cfg.log_mask_mode,
+            "system_logger_ingest_level": cfg.system_logger_ingest_level,
             "audit_log_retention_days": cfg.audit_log_retention_days,
             "audit_log_cleanup_interval_sec": cfg.audit_log_cleanup_interval_sec,
         },
@@ -200,6 +206,12 @@ def apply_runtime_settings(settings_data: Optional[SystemSettings] = None) -> No
 
     cfg.ixbrowser_api_base = data.ixbrowser.api_base
     cfg.access_token_expire_minutes = data.auth.access_token_expire_minutes
+    cfg.event_log_retention_days = data.logging.event_log_retention_days
+    cfg.event_log_cleanup_interval_sec = data.logging.event_log_cleanup_interval_sec
+    cfg.api_log_capture_mode = data.logging.api_log_capture_mode
+    cfg.api_slow_threshold_ms = data.logging.api_slow_threshold_ms
+    cfg.log_mask_mode = data.logging.log_mask_mode
+    cfg.system_logger_ingest_level = data.logging.system_logger_ingest_level
     cfg.audit_log_retention_days = data.logging.audit_log_retention_days
     cfg.audit_log_cleanup_interval_sec = data.logging.audit_log_cleanup_interval_sec
 

@@ -1,8 +1,9 @@
 """Video2Api FastAPI 入口"""
 import logging
 import os
+from uuid import uuid4
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -36,18 +37,31 @@ app.add_middleware(
 
 
 @app.middleware("http")
-async def log_requests(request, call_next):
+async def log_requests(request: Request, call_next):
     import time
 
+    request_id = str(request.headers.get("x-request-id") or uuid4())
+    trace_id = str(request.headers.get("x-trace-id") or request_id)
+    request.state.request_id = request_id
+    request.state.trace_id = trace_id
+
     start_time = time.time()
-    response = await call_next(request)
+    response: Response | None = None
+    captured_exc: Exception | None = None
+    try:
+        response = await call_next(request)
+    except Exception as exc:  # noqa: BLE001
+        captured_exc = exc
     process_time = time.time() - start_time
+    status_code = int(response.status_code) if response is not None else 500
+    if response is not None:
+        response.headers["X-Request-Id"] = request_id
     logger.info(
         "API访问日志 | %s | %s %s | %s | %.3fs",
         request.client.host if request.client else "unknown",
         request.method,
         request.url.path,
-        response.status_code,
+        status_code,
         process_time,
     )
 
@@ -71,26 +85,45 @@ async def log_requests(request, call_next):
             except Exception:  # noqa: BLE001
                 pass
 
-        status = "success" if response.status_code < 400 else "failed"
-        level = "INFO" if response.status_code < 400 else "WARN"
+        status = "success" if status_code < 400 else "failed"
+        level = "INFO" if status_code < 400 else "WARN"
+        duration_ms = int(process_time * 1000)
+        slow_threshold_ms = int(getattr(settings, "api_slow_threshold_ms", 2000) or 2000)
+        is_slow = duration_ms >= slow_threshold_ms
+        capture_mode = str(getattr(settings, "api_log_capture_mode", "all") or "all").strip().lower()
+        should_capture = True
+        if capture_mode == "failed_slow":
+            should_capture = bool(status_code >= 400 or is_slow)
+        elif capture_mode == "failed_only":
+            should_capture = bool(status_code >= 400)
+        query_text = str(request.url.query or "")
         try:
-            sqlite_db.create_audit_log(
-                category="api",
-                action="api.request",
-                status=status,
-                level=level,
-                message=f"{request.method} {request.url.path}",
-                method=request.method,
-                path=request.url.path,
-                status_code=response.status_code,
-                duration_ms=int(process_time * 1000),
-                ip=request.client.host if request.client else "unknown",
-                user_agent=request.headers.get("user-agent"),
-                operator_user_id=operator_user_id,
-                operator_username=operator_username,
-            )
+            if should_capture:
+                sqlite_db.create_event_log(
+                    source="api",
+                    action="api.request",
+                    event="request",
+                    status=status,
+                    level=level,
+                    message=f"{request.method} {request.url.path}",
+                    trace_id=trace_id,
+                    request_id=request_id,
+                    method=request.method,
+                    path=request.url.path,
+                    query_text=query_text,
+                    status_code=status_code,
+                    duration_ms=duration_ms,
+                    is_slow=is_slow,
+                    ip=request.client.host if request.client else "unknown",
+                    user_agent=request.headers.get("user-agent"),
+                    operator_user_id=operator_user_id,
+                    operator_username=operator_username,
+                    error_type="api_unhandled_exception" if captured_exc is not None else None,
+                )
         except Exception:  # noqa: BLE001
             pass
+    if captured_exc is not None:
+        raise captured_exc
     return response
 
 

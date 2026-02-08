@@ -203,9 +203,22 @@ export const updateWatermarkFreeConfig = async (data) => {
   return response.data
 }
 
-export const listSystemLogs = async (params) => {
+export const listSystemLogsV2 = async (params) => {
   const response = await api.get('/admin/logs', { params })
   return response.data
+}
+
+export const getSystemLogStats = async (params) => {
+  const response = await api.get('/admin/logs/stats', { params })
+  return response.data
+}
+
+export const buildSystemLogStreamUrl = (params = {}) => {
+  const token = localStorage.getItem('token')
+  const query = new URLSearchParams()
+  if (params?.source) query.set('source', params.source)
+  if (token) query.set('token', token)
+  return `/api/v1/admin/logs/stream?${query.toString()}`
 }
 
 export const createNurtureBatch = async (data) => {

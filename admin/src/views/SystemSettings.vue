@@ -331,6 +331,36 @@
                     <el-tag v-if="isRequiresRestart('logging.log_backup_count')" type="warning" size="small">需重启</el-tag>
                   </div>
                 </el-form-item>
+                <el-form-item label="事件日志保留天数">
+                  <el-input-number v-model="systemForm.logging.event_log_retention_days" :min="0" :max="3650" />
+                </el-form-item>
+                <el-form-item label="事件日志清理间隔（秒）">
+                  <el-input-number v-model="systemForm.logging.event_log_cleanup_interval_sec" :min="60" :max="86400" />
+                </el-form-item>
+                <el-form-item label="API 日志采集模式">
+                  <el-select v-model="systemForm.logging.api_log_capture_mode" style="width: 100%">
+                    <el-option label="全部采集 (all)" value="all" />
+                    <el-option label="失败或慢请求 (failed_slow)" value="failed_slow" />
+                    <el-option label="仅失败 (failed_only)" value="failed_only" />
+                  </el-select>
+                </el-form-item>
+                <el-form-item label="慢请求阈值（ms）">
+                  <el-input-number v-model="systemForm.logging.api_slow_threshold_ms" :min="100" :max="120000" />
+                </el-form-item>
+                <el-form-item label="日志脱敏模式">
+                  <el-select v-model="systemForm.logging.log_mask_mode" style="width: 100%">
+                    <el-option label="基础脱敏 (basic)" value="basic" />
+                    <el-option label="关闭脱敏 (off)" value="off" />
+                  </el-select>
+                </el-form-item>
+                <el-form-item label="系统日志入库等级">
+                  <el-select v-model="systemForm.logging.system_logger_ingest_level" style="width: 100%">
+                    <el-option label="DEBUG" value="DEBUG" />
+                    <el-option label="INFO" value="INFO" />
+                    <el-option label="WARN" value="WARN" />
+                    <el-option label="ERROR" value="ERROR" />
+                  </el-select>
+                </el-form-item>
                 <el-form-item label="审计日志保留天数">
                   <el-input-number v-model="systemForm.logging.audit_log_retention_days" :min="0" :max="365" />
                 </el-form-item>
@@ -510,6 +540,12 @@ const defaultSystemForm = {
     log_file: 'logs/app.log',
     log_max_bytes: 10485760,
     log_backup_count: 5,
+    event_log_retention_days: 30,
+    event_log_cleanup_interval_sec: 3600,
+    api_log_capture_mode: 'all',
+    api_slow_threshold_ms: 2000,
+    log_mask_mode: 'basic',
+    system_logger_ingest_level: 'DEBUG',
     audit_log_retention_days: 3,
     audit_log_cleanup_interval_sec: 3600
   },

@@ -33,6 +33,13 @@ def log_audit(
     try:
         ip = request.client.host if request and request.client else "unknown"
         user_agent = request.headers.get("user-agent") if request else None
+        payload_extra = dict(extra or {})
+        trace_id = getattr(getattr(request, "state", None), "trace_id", None) if request else None
+        request_id = getattr(getattr(request, "state", None), "request_id", None) if request else None
+        if trace_id and "trace_id" not in payload_extra:
+            payload_extra["trace_id"] = trace_id
+        if request_id and "request_id" not in payload_extra:
+            payload_extra["request_id"] = request_id
 
         op_uid = None
         op_name = None
@@ -56,8 +63,7 @@ def log_audit(
             resource_id=resource_id,
             operator_user_id=op_uid,
             operator_username=op_name,
-            extra=extra,
+            extra=payload_extra or None,
         )
     except Exception:  # noqa: BLE001
         return
-

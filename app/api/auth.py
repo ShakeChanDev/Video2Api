@@ -13,6 +13,8 @@ router = APIRouter(prefix="/api/v1/auth", tags=["auth"])
 
 @router.post("/login")
 async def login(request: Request, form_data: OAuth2PasswordRequestForm = Depends()):
+    trace_id = getattr(getattr(request, "state", None), "trace_id", None)
+    request_id = getattr(getattr(request, "state", None), "request_id", None)
     user = sqlite_db.get_user_by_username(form_data.username)
     if not user or not verify_password(form_data.password, user["password"]):
         try:
@@ -25,6 +27,7 @@ async def login(request: Request, form_data: OAuth2PasswordRequestForm = Depends
                 ip=request.client.host if request.client else "unknown",
                 user_agent=request.headers.get("user-agent"),
                 operator_username=form_data.username,
+                extra={"trace_id": trace_id, "request_id": request_id},
             )
         except Exception:  # noqa: BLE001
             pass
@@ -58,6 +61,7 @@ async def login(request: Request, form_data: OAuth2PasswordRequestForm = Depends
             user_agent=request.headers.get("user-agent"),
             operator_user_id=user.get("id"),
             operator_username=user.get("username"),
+            extra={"trace_id": trace_id, "request_id": request_id},
         )
     except Exception:  # noqa: BLE001
         pass

@@ -75,8 +75,27 @@ pytest -m e2e
 python -m playwright install
 ```
 
+## 日志 V2（统一事件模型）
+- 新日志统一写入 `event_logs`（`api/audit/task/system`），旧表 `audit_logs`、`sora_job_events` 保留但不再作为日志中心主数据源。
+- 日志中心接口：
+  - `GET /api/v1/admin/logs`：游标分页查询（`items/has_more/next_cursor`）
+  - `GET /api/v1/admin/logs/stats`：统计卡片数据（总量、失败率、P95、Top）
+  - `GET /api/v1/admin/logs/stream`：SSE 实时流（`event: log` / `event: ping`）
+- 默认策略：
+  - API 日志全量采集（可通过配置改为 `failed_slow` 或 `failed_only`）
+  - 仅记录 `path + query`，不记录请求体
+  - 慢请求阈值默认 `2000ms`
+  - 脱敏模式默认 `basic`
+  - 事件日志保留默认 `30` 天
+- 相关环境变量（见 `.env.example`）：
+  - `EVENT_LOG_RETENTION_DAYS`
+  - `EVENT_LOG_CLEANUP_INTERVAL_SEC`
+  - `API_LOG_CAPTURE_MODE`
+  - `API_SLOW_THRESHOLD_MS`
+  - `LOG_MASK_MODE`
+  - `SYSTEM_LOGGER_INGEST_LEVEL`
+
 ## 常见问题排查
 - ixBrowser 连接不上：检查 `.env` 的 `IXBROWSER_API_BASE`，并确认本地 ixBrowser 服务已启动。
 - Playwright 报浏览器缺失：执行 `python -m playwright install` 或 `make playwright-install`。
 - 端口冲突：修改 `.env` 的 `PORT`，并在启动命令或 `make backend-dev PORT=xxxx` 中使用相同端口。
-
