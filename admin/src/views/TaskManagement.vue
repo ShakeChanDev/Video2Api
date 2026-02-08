@@ -7,7 +7,7 @@
           <div class="subtitle">生成 → 进度 → GenID → 发布</div>
         </div>
         <div class="filters">
-          <el-select v-model="selectedGroupTitle" class="w-180" @change="loadJobs">
+          <el-select v-model="selectedGroupTitle" class="w-180" @change="handleRealtimeFilterChange">
             <el-option
               v-for="group in groups"
               :key="group.id"
@@ -16,7 +16,7 @@
             />
           </el-select>
 
-          <el-select v-model="statusFilter" class="w-140" @change="loadJobs">
+          <el-select v-model="statusFilter" class="w-140" @change="handleRealtimeFilterChange">
             <el-option label="全部状态" value="all" />
             <el-option label="排队中" value="queued" />
             <el-option label="运行中" value="running" />
@@ -25,7 +25,7 @@
             <el-option label="已取消" value="canceled" />
           </el-select>
 
-          <el-select v-model="phaseFilter" class="w-140" @change="loadJobs">
+          <el-select v-model="phaseFilter" class="w-140" @change="handleRealtimeFilterChange">
             <el-option label="全部阶段" value="all" />
             <el-option label="排队" value="queue" />
             <el-option label="提交" value="submit" />
@@ -36,7 +36,14 @@
             <el-option label="完成" value="done" />
           </el-select>
 
-          <el-input v-model="keyword" class="w-260" clearable placeholder="搜索 Job/Task/GenID/Prompt" />
+          <el-input
+            v-model="keyword"
+            class="w-260"
+            clearable
+            placeholder="搜索 Job/Task/GenID/Prompt"
+            @clear="handleRealtimeFilterChange"
+            @keyup.enter="handleRealtimeFilterChange"
+          />
         </div>
       </div>
 
@@ -52,7 +59,7 @@
           </div>
         </div>
         <div class="actions">
-          <el-button @click="loadJobs">刷新</el-button>
+          <el-button @click="handleRealtimeFilterChange">刷新</el-button>
           <el-button type="primary" @click="openCreateDialog">新建任务</el-button>
         </div>
       </div>
@@ -340,6 +347,7 @@ import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import { formatRelativeTimeZh } from '../utils/relativeTime'
 import {
+  buildSoraJobStreamUrl,
   createSoraJob,
   getSoraAccountWeights,
   getIxBrowserGroupWindows,
@@ -364,8 +372,12 @@ const selectedGroupTitle = ref('Sora')
 const statusFilter = ref('all')
 const phaseFilter = ref('all')
 const keyword = ref('')
-let pollingTimer = null
 let relativeTimeTimer = null
+let realtimeSource = null
+let realtimeReconnectTimer = null
+let realtimeReconnectDelay = 1000
+let fallbackPollingTimer = null
+let allowRealtime = true
 const nowTick = ref(Date.now())
 
 const weightsLoading = ref(false)
@@ -560,26 +572,6 @@ const isPlusProfile = (profileId) => {
   return String(plan).toLowerCase().includes('plus')
 }
 
-const hasActiveJobs = computed(() => jobs.value.some((item) => ['queued', 'running'].includes(item.status)))
-
-const stopPolling = () => {
-  if (pollingTimer) {
-    clearInterval(pollingTimer)
-    pollingTimer = null
-  }
-}
-
-const startPollingIfNeeded = () => {
-  if (!hasActiveJobs.value) {
-    stopPolling()
-    return
-  }
-  if (pollingTimer) return
-  pollingTimer = setInterval(() => {
-    loadJobs(false)
-  }, 8000)
-}
-
 const applySystemDefaults = () => {
   const defaults = systemSettings.value?.sora || {}
   if (defaults.default_group_title) {
@@ -623,6 +615,57 @@ const normalizeJobs = (data) => {
   }))
 }
 
+const syncDetailJob = () => {
+  const current = detailJob.value
+  if (!current?.job_id) return
+  const currentId = Number(current.job_id || 0)
+  if (!currentId) return
+  const matched = jobs.value.find((item) => Number(item?.job_id || 0) === currentId)
+  if (matched) {
+    detailJob.value = { ...matched }
+  }
+}
+
+const upsertJob = (item) => {
+  const normalized = normalizeJobs([item])[0]
+  if (!normalized?.job_id) return
+  const targetId = Number(normalized.job_id || 0)
+  if (!targetId) return
+  const idx = jobs.value.findIndex((job) => Number(job?.job_id || 0) === targetId)
+  if (idx >= 0) {
+    jobs.value.splice(idx, 1, normalized)
+  } else {
+    jobs.value.unshift(normalized)
+    if (jobs.value.length > 200) {
+      jobs.value = jobs.value.slice(0, 200)
+    }
+  }
+  syncDetailJob()
+}
+
+const removeJob = (jobId) => {
+  const targetId = Number(jobId || 0)
+  if (!targetId) return
+  const next = jobs.value.filter((job) => Number(job?.job_id || 0) !== targetId)
+  if (next.length !== jobs.value.length) {
+    jobs.value = next
+    syncDetailJob()
+  }
+}
+
+const appendDetailEvent = (item) => {
+  if (!detailDrawerVisible.value || !detailJob.value?.job_id) return
+  const detailJobId = Number(detailJob.value.job_id || 0)
+  const eventJobId = Number(item?.job_id || 0)
+  if (!detailJobId || detailJobId !== eventJobId) return
+  const eventId = Number(item?.id || 0)
+  if (!eventId) return
+  if (detailEvents.value.some((eventItem) => Number(eventItem?.id || 0) === eventId)) {
+    return
+  }
+  detailEvents.value = [...detailEvents.value, item].sort((a, b) => Number(a.id || 0) - Number(b.id || 0))
+}
+
 const loadGroups = async () => {
   try {
     const data = await getIxBrowserGroupWindows()
@@ -637,7 +680,8 @@ const loadGroups = async () => {
   }
 }
 
-const loadJobs = async (withLoading = true) => {
+const loadJobs = async (withLoading = true, options = {}) => {
+  const silent = Boolean(options?.silent)
   void loadAccountPlans()
   if (withLoading) {
     loading.value = true
@@ -651,15 +695,128 @@ const loadJobs = async (withLoading = true) => {
       limit: 100
     })
     jobs.value = normalizeJobs(data)
-    startPollingIfNeeded()
+    syncDetailJob()
+    return true
   } catch (error) {
-    ElMessage.error(error?.response?.data?.detail || '获取任务失败')
-    stopPolling()
+    if (!silent) {
+      ElMessage.error(error?.response?.data?.detail || '获取任务失败')
+    }
+    return false
   } finally {
     if (withLoading) {
       loading.value = false
     }
   }
+}
+
+const clearRealtimeReconnectTimer = () => {
+  if (realtimeReconnectTimer) {
+    clearTimeout(realtimeReconnectTimer)
+    realtimeReconnectTimer = null
+  }
+}
+
+const closeJobRealtimeSource = () => {
+  if (realtimeSource) {
+    realtimeSource.close()
+    realtimeSource = null
+  }
+}
+
+const stopJobRealtime = () => {
+  clearRealtimeReconnectTimer()
+  closeJobRealtimeSource()
+}
+
+const scheduleJobRealtimeReconnect = () => {
+  if (!allowRealtime) return
+  clearRealtimeReconnectTimer()
+  realtimeReconnectTimer = setTimeout(() => {
+    if (!allowRealtime) return
+    startJobRealtime()
+  }, realtimeReconnectDelay)
+  realtimeReconnectDelay = Math.min(realtimeReconnectDelay * 2, 10000)
+}
+
+const buildJobRealtimeParams = () => ({
+  group_title: selectedGroupTitle.value || undefined,
+  status: statusFilter.value || undefined,
+  phase: phaseFilter.value || undefined,
+  keyword: keyword.value?.trim() || undefined,
+  limit: 100,
+  with_events: true
+})
+
+const startJobRealtime = () => {
+  if (!allowRealtime) return
+  stopJobRealtime()
+  const url = buildSoraJobStreamUrl(buildJobRealtimeParams())
+  realtimeSource = new EventSource(url)
+
+  realtimeSource.addEventListener('open', () => {
+    realtimeReconnectDelay = 1000
+  })
+
+  realtimeSource.addEventListener('snapshot', (event) => {
+    try {
+      const payload = JSON.parse(event.data || '{}')
+      jobs.value = normalizeJobs(payload?.jobs || [])
+      syncDetailJob()
+    } catch {
+      // noop
+    }
+  })
+
+  realtimeSource.addEventListener('job', (event) => {
+    try {
+      const payload = JSON.parse(event.data || '{}')
+      upsertJob(payload)
+    } catch {
+      // noop
+    }
+  })
+
+  realtimeSource.addEventListener('remove', (event) => {
+    try {
+      const payload = JSON.parse(event.data || '{}')
+      removeJob(payload?.job_id)
+    } catch {
+      // noop
+    }
+  })
+
+  realtimeSource.addEventListener('phase', (event) => {
+    try {
+      const payload = JSON.parse(event.data || '{}')
+      appendDetailEvent(payload)
+    } catch {
+      // noop
+    }
+  })
+
+  realtimeSource.onerror = () => {
+    closeJobRealtimeSource()
+    scheduleJobRealtimeReconnect()
+  }
+}
+
+const startFallbackPolling = () => {
+  if (fallbackPollingTimer) return
+  fallbackPollingTimer = setInterval(() => {
+    void loadJobs(false, { silent: true })
+  }, 30000)
+}
+
+const stopFallbackPolling = () => {
+  if (fallbackPollingTimer) {
+    clearInterval(fallbackPollingTimer)
+    fallbackPollingTimer = null
+  }
+}
+
+const handleRealtimeFilterChange = async () => {
+  await loadJobs()
+  startJobRealtime()
 }
 
 const openCreateDialog = () => {
@@ -769,10 +926,12 @@ const openLink = (url) => {
 }
 
 const openDetail = async (row) => {
-  detailJob.value = row
+  detailJob.value = { ...row }
   detailEvents.value = []
   try {
-    detailEvents.value = await listSoraJobEvents(row.job_id)
+    const data = await listSoraJobEvents(row.job_id)
+    const sorted = (Array.isArray(data) ? data : []).sort((a, b) => Number(a.id || 0) - Number(b.id || 0))
+    detailEvents.value = sorted
   } catch (error) {
     detailEvents.value = []
   }
@@ -805,6 +964,7 @@ watch(
 )
 
 onMounted(async () => {
+  allowRealtime = true
   nowTick.value = Date.now()
   relativeTimeTimer = window.setInterval(() => {
     nowTick.value = Date.now()
@@ -813,14 +973,18 @@ onMounted(async () => {
   await loadGroups()
   await loadAccountPlans(true)
   await loadJobs()
+  startJobRealtime()
+  startFallbackPolling()
 })
 
 onUnmounted(() => {
+  allowRealtime = false
   if (relativeTimeTimer) {
     clearInterval(relativeTimeTimer)
     relativeTimeTimer = null
   }
-  stopPolling()
+  stopFallbackPolling()
+  stopJobRealtime()
 })
 </script>
 

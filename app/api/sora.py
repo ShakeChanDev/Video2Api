@@ -1,14 +1,23 @@
+import asyncio
+import json
+import time
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi.encoders import jsonable_encoder
+from fastapi.responses import StreamingResponse
+from jose import JWTError, jwt
 
 from app.core.audit import log_audit
 from app.core.auth import get_current_active_user
+from app.core.config import settings
+from app.db.sqlite import sqlite_db
 from app.models.ixbrowser import SoraAccountWeight, SoraJob, SoraJobCreateResponse, SoraJobEvent, SoraJobRequest
 from app.services.account_dispatch_service import account_dispatch_service
 from app.services.ixbrowser_service import (
     ixbrowser_service,
 )
+from app.services.sora_job_stream_service import sora_job_stream_service
 
 router = APIRouter(prefix="/api/v1/sora", tags=["sora"])
 
@@ -82,6 +91,101 @@ async def list_sora_jobs(
         phase=phase,
         keyword=keyword,
         limit=limit,
+    )
+
+
+def _format_sse_event(event: str, data: object) -> str:
+    payload_json = json.dumps(jsonable_encoder(data), ensure_ascii=False)
+    return f"event: {event}\ndata: {payload_json}\n\n"
+
+
+@router.get("/jobs/stream")
+async def stream_sora_jobs(
+    token: Optional[str] = Query(None, description="访问令牌"),
+    group_title: Optional[str] = Query(None, description="分组名称"),
+    profile_id: Optional[int] = Query(None, description="按窗口筛选"),
+    status: Optional[str] = Query(None, description="按状态筛选"),
+    phase: Optional[str] = Query(None, description="按阶段筛选"),
+    keyword: Optional[str] = Query(None, description="关键词搜索"),
+    limit: int = Query(100, ge=1, le=200, description="返回条数"),
+    with_events: bool = Query(True, description="是否推送阶段事件"),
+):
+    if not token:
+        raise HTTPException(status_code=401, detail="缺少访问令牌")
+    try:
+        payload = jwt.decode(token, settings.secret_key, algorithms=[settings.algorithm])
+        username = payload.get("sub")
+    except JWTError as exc:
+        raise HTTPException(status_code=401, detail="无效的访问令牌") from exc
+
+    if not username or not sqlite_db.get_user_by_username(username):
+        raise HTTPException(status_code=401, detail="无效的访问令牌")
+
+    stream_filter = sora_job_stream_service.build_filter(
+        group_title=group_title,
+        profile_id=profile_id,
+        status=status,
+        phase=phase,
+        keyword=keyword,
+        limit=limit,
+    )
+    poll_interval = max(0.1, float(sora_job_stream_service.poll_interval_seconds))
+    ping_interval = max(0.2, float(sora_job_stream_service.ping_interval_seconds))
+
+    async def event_generator():
+        try:
+            snapshot_jobs = sora_job_stream_service.list_jobs(stream_filter)
+            fingerprints = sora_job_stream_service.build_fingerprint_map(snapshot_jobs)
+            visible_ids = set(fingerprints.keys())
+            last_phase_event_id = sora_job_stream_service.get_latest_phase_event_id() if with_events else 0
+            last_emit_at = time.monotonic()
+            snapshot_payload = sora_job_stream_service.build_snapshot_payload(snapshot_jobs)
+            yield _format_sse_event("snapshot", snapshot_payload)
+
+            while True:
+                await asyncio.sleep(poll_interval)
+                has_output = False
+
+                latest_jobs = sora_job_stream_service.list_jobs(stream_filter)
+                changed_jobs, removed_job_ids, fingerprints, visible_ids = sora_job_stream_service.diff_jobs(
+                    fingerprints,
+                    latest_jobs,
+                )
+                for item in changed_jobs:
+                    yield _format_sse_event("job", item)
+                    has_output = True
+                for removed_job_id in removed_job_ids:
+                    yield _format_sse_event("remove", {"job_id": int(removed_job_id)})
+                    has_output = True
+
+                if with_events:
+                    phase_events, last_phase_event_id = sora_job_stream_service.list_phase_events_since(
+                        after_id=last_phase_event_id,
+                        visible_job_ids=visible_ids,
+                        limit=int(sora_job_stream_service.phase_poll_limit),
+                    )
+                    for event in phase_events:
+                        yield _format_sse_event("phase", event)
+                        has_output = True
+
+                now = time.monotonic()
+                if has_output:
+                    last_emit_at = now
+                    continue
+                if (now - last_emit_at) >= ping_interval:
+                    yield "event: ping\ndata: {}\n\n"
+                    last_emit_at = now
+        except asyncio.CancelledError:
+            return
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
     )
 
 

@@ -121,6 +121,22 @@ export const listSoraJobEvents = async (jobId) => {
   return response.data
 }
 
+export const buildSoraJobStreamUrl = (params = {}) => {
+  const token = localStorage.getItem('token')
+  const query = new URLSearchParams()
+  if (params?.group_title) query.set('group_title', params.group_title)
+  if (params?.profile_id !== undefined && params?.profile_id !== null) query.set('profile_id', String(params.profile_id))
+  if (params?.status) query.set('status', params.status)
+  if (params?.phase) query.set('phase', params.phase)
+  if (params?.keyword) query.set('keyword', params.keyword)
+  if (params?.limit !== undefined && params?.limit !== null) query.set('limit', String(params.limit))
+  if (params?.with_events !== undefined && params?.with_events !== null) {
+    query.set('with_events', params.with_events ? 'true' : 'false')
+  }
+  if (token) query.set('token', token)
+  return `/api/v1/sora/jobs/stream?${query.toString()}`
+}
+
 export const retrySoraJobWatermark = async (jobId) => {
   const response = await api.post(`/sora/jobs/${jobId}/watermark/retry`)
   return response.data
