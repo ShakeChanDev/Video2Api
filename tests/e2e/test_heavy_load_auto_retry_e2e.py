@@ -10,6 +10,7 @@ from app.models.ixbrowser import IXBrowserGroupWindows, IXBrowserWindow, SoraAcc
 from app.services.account_dispatch_service import account_dispatch_service
 from app.services.ixbrowser_service import IXBrowserServiceError, ixbrowser_service
 from app.services.system_settings import apply_runtime_settings
+from app.services.worker_runner import worker_runner
 from tests.e2e._harness import (
     find_free_port,
     is_headless,
@@ -78,6 +79,7 @@ async def test_heavy_load_submit_auto_retry_spawns_new_job_and_visible_in_tasks(
         ixbrowser_service.heavy_load_retry_max_attempts = 2
 
         server, thread, base_url = start_uvicorn(fastapi_app, port=port, host="127.0.0.1")
+        await worker_runner.start()
 
         try:
             prompt = f"heavy-load-e2e-{int(time.time())}"
@@ -134,5 +136,6 @@ async def test_heavy_load_submit_auto_retry_spawns_new_job_and_visible_in_tasks(
 
                 await browser.close()
         finally:
+            await worker_runner.stop()
             if server and thread:
                 stop_uvicorn(server, thread)
