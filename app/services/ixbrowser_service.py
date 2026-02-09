@@ -338,6 +338,12 @@ class IXBrowserService:
         with_fallback: bool = True,
         operator_user: Optional[dict] = None,
     ) -> None:
+        logger.info(
+            "静默更新任务开始 | job_id=%s | 分组=%s | with_fallback=%s",
+            int(job_id),
+            str(group_title),
+            bool(with_fallback),
+        )
         sqlite_db.update_ixbrowser_silent_refresh_job(
             job_id,
             {
@@ -408,6 +414,15 @@ class IXBrowserService:
                     "failed_count": response.failed_count,
                 },
             )
+            logger.info(
+                "静默更新任务完成 | job_id=%s | 分组=%s | run_id=%s | total=%s | success=%s | failed=%s",
+                int(job_id),
+                str(group_title),
+                int(response.run_id) if response.run_id is not None else None,
+                int(response.total_windows),
+                int(response.success_count),
+                int(response.failed_count),
+            )
         except Exception as exc:  # noqa: BLE001
             sqlite_db.update_ixbrowser_silent_refresh_job(
                 job_id,
@@ -432,6 +447,12 @@ class IXBrowserService:
                 metadata={
                     "group_title": group_title,
                 },
+            )
+            logger.exception(
+                "静默更新任务失败 | job_id=%s | 分组=%s | 错误=%s",
+                int(job_id),
+                str(group_title),
+                str(exc),
             )
 
     async def list_groups(self) -> List[IXBrowserGroup]:
@@ -1113,6 +1134,12 @@ class IXBrowserService:
         processed_windows = 0
         success_windows = 0
         failed_windows = 0
+        logger.info(
+            "开始静默更新账号信息 | 分组=%s | 窗口数=%s | with_fallback=%s",
+            str(target.title),
+            int(total_windows),
+            bool(with_fallback),
+        )
 
         await self._emit_scan_progress(
             progress_callback,
@@ -1146,7 +1173,7 @@ class IXBrowserService:
                 continue
 
         async with async_playwright() as playwright:
-            for window in target_windows:
+            for idx, window in enumerate(target_windows, start=1):
                 await self._emit_scan_progress(
                     progress_callback,
                     {
@@ -1176,6 +1203,23 @@ class IXBrowserService:
 
                 item: Optional[IXBrowserSessionScanItem] = None
                 should_browser_fallback = False
+                proxy_parts: List[str] = []
+                if window.proxy_local_id:
+                    proxy_parts.append(f"local_id={window.proxy_local_id}")
+                if window.proxy_id:
+                    proxy_parts.append(f"ix_id={window.proxy_id}")
+                if window.proxy_type:
+                    proxy_parts.append(f"type={window.proxy_type}")
+                proxy_hint = "无" if not proxy_parts else f"有({', '.join(proxy_parts)})"
+                logger.info(
+                    "静默更新进度 | %s/%s | profile_id=%s | token=%s | keep_open=%s | 代理=%s",
+                    int(idx),
+                    int(total_windows),
+                    int(profile_id),
+                    "命中" if access_token else "缺失",
+                    bool(keep_profile_open),
+                    proxy_hint,
+                )
 
                 if not access_token:
                     should_browser_fallback = True
@@ -1190,8 +1234,19 @@ class IXBrowserService:
                             open_data = None
 
                         if not open_data:
+                            logger.info("静默更新 | profile_id=%s | 打开窗口（优先 headless）", int(profile_id))
+                            open_started_at = time.perf_counter()
                             open_data, _headless_used = await self._open_profile_silent(profile_id)
+                            open_cost_ms = int((time.perf_counter() - open_started_at) * 1000)
+                            logger.info(
+                                "静默更新 | profile_id=%s | 打开窗口完成 | headless=%s | 耗时=%sms",
+                                int(profile_id),
+                                bool(_headless_used),
+                                int(open_cost_ms),
+                            )
                             opened_by_job = True
+                        else:
+                            logger.info("静默更新 | profile_id=%s | 复用已打开窗口（可连接调试端口）", int(profile_id))
 
                         ws_endpoint = open_data.get("ws") if isinstance(open_data, dict) else None
                         if not ws_endpoint and isinstance(open_data, dict):
@@ -1201,7 +1256,14 @@ class IXBrowserService:
                         if not ws_endpoint:
                             raise IXBrowserConnectionError("打开窗口成功，但未返回调试地址（ws/debugging_address）")
 
+                        connect_started_at = time.perf_counter()
                         browser = await playwright.chromium.connect_over_cdp(ws_endpoint, timeout=20_000)
+                        connect_cost_ms = int((time.perf_counter() - connect_started_at) * 1000)
+                        logger.info(
+                            "静默更新 | profile_id=%s | 连接调试端口成功 | 耗时=%sms",
+                            int(profile_id),
+                            int(connect_cost_ms),
+                        )
                         context = browser.contexts[0] if getattr(browser, "contexts", None) else await browser.new_context()
                         page = context.pages[0] if getattr(context, "pages", None) else await context.new_page()
 
@@ -1211,14 +1273,31 @@ class IXBrowserService:
                             pass
 
                         try:
+                            goto_started_at = time.perf_counter()
                             await page.goto("https://sora.chatgpt.com/drafts", wait_until="domcontentloaded", timeout=40_000)
                             await page.wait_for_timeout(1200)
+                            goto_cost_ms = int((time.perf_counter() - goto_started_at) * 1000)
+                            logger.info(
+                                "静默更新 | profile_id=%s | 访问 Sora(drafts) 成功 | 耗时=%sms",
+                                int(profile_id),
+                                int(goto_cost_ms),
+                            )
                         except PlaywrightTimeoutError as exc:
                             raise IXBrowserConnectionError("访问 Sora drafts 超时") from exc
 
+                        fetch_started_at = time.perf_counter()
                         session_status, session_obj, session_raw = await self._fetch_sora_session_via_browser(page, access_token)
                         subscription_info = await self._fetch_sora_subscription_plan_via_browser(page, access_token)
                         quota_info = await self._fetch_sora_quota_via_browser(page, access_token)
+                        fetch_cost_ms = int((time.perf_counter() - fetch_started_at) * 1000)
+                        logger.info(
+                            "静默更新 | profile_id=%s | 拉取完成 | session=%s | subscriptions=%s | nf_check=%s | 耗时=%sms",
+                            int(profile_id),
+                            session_status,
+                            subscription_info.get("status"),
+                            quota_info.get("status"),
+                            int(fetch_cost_ms),
+                        )
 
                         def is_cf(status: Any, raw: Any, error: Any = None) -> bool:
                             if error == "cf_challenge":
@@ -1236,6 +1315,10 @@ class IXBrowserService:
 
                         if cf_challenge:
                             # 轻量重试一次，让浏览器自行完成跳转/挑战页面加载（不做绕过）。
+                            logger.warning(
+                                "静默更新 | profile_id=%s | 命中 Cloudflare 挑战页，等待并重试一次",
+                                int(profile_id),
+                            )
                             try:
                                 await page.wait_for_timeout(2500)
                                 await page.goto("https://sora.chatgpt.com/", wait_until="domcontentloaded", timeout=40_000)
@@ -1252,6 +1335,14 @@ class IXBrowserService:
                                 is_cf(session_status, session_raw)
                                 or is_cf(subscription_info.get("status"), subscription_info.get("raw"), subscription_info.get("error"))
                                 or is_cf(quota_info.get("status"), quota_info.get("raw"), quota_info.get("error"))
+                            )
+                            logger.info(
+                                "静默更新 | profile_id=%s | 重试后状态 | session=%s | subscriptions=%s | nf_check=%s | cf=%s",
+                                int(profile_id),
+                                session_status,
+                                subscription_info.get("status"),
+                                quota_info.get("status"),
+                                bool(cf_challenge),
                             )
 
                         if cf_challenge:
@@ -1334,6 +1425,47 @@ class IXBrowserService:
                                     error=err,
                                     duration_ms=duration_ms,
                                 )
+                            else:
+                                logger.warning(
+                                    "静默更新 | profile_id=%s | token 鉴权失败，进入开窗补扫 | session=%s | subscriptions=%s | nf_check=%s",
+                                    int(profile_id),
+                                    session_status,
+                                    subscription_info.get("status"),
+                                    quota_info.get("status"),
+                                )
+                    except IXBrowserAPIError as exc:
+                        duration_ms = int((time.perf_counter() - started_at) * 1000)
+                        if int(getattr(exc, "code", -1) or -1) == 111003:
+                            err_text = (
+                                "窗口被标记为已打开（111003），可能在其他设备/实例打开或状态残留。"
+                                "请在 ixBrowser 客户端关闭该窗口后重试。"
+                            )
+                        else:
+                            err_text = str(exc)
+                        item = IXBrowserSessionScanItem(
+                            profile_id=profile_id,
+                            window_name=window.name,
+                            group_id=target.id,
+                            group_title=target.title,
+                            proxy_mode=window.proxy_mode,
+                            proxy_id=window.proxy_id,
+                            proxy_type=window.proxy_type,
+                            proxy_ip=window.proxy_ip,
+                            proxy_port=window.proxy_port,
+                            real_ip=window.real_ip,
+                            proxy_local_id=window.proxy_local_id,
+                            success=False,
+                            close_success=True,
+                            error=err_text,
+                            duration_ms=duration_ms,
+                        )
+                        logger.warning(
+                            "静默更新失败 | profile_id=%s | ixBrowser错误 code=%s | %s | 耗时=%sms",
+                            int(profile_id),
+                            getattr(exc, "code", None),
+                            err_text,
+                            int(duration_ms),
+                        )
                     except Exception as exc:  # noqa: BLE001
                         duration_ms = int((time.perf_counter() - started_at) * 1000)
                         item = IXBrowserSessionScanItem(
@@ -1353,6 +1485,12 @@ class IXBrowserService:
                             error=str(exc),
                             duration_ms=duration_ms,
                         )
+                        logger.warning(
+                            "静默更新失败 | profile_id=%s | 错误=%s | 耗时=%sms",
+                            int(profile_id),
+                            str(exc),
+                            int(duration_ms),
+                        )
                     finally:
                         if browser:
                             try:
@@ -1371,8 +1509,14 @@ class IXBrowserService:
                                     item.error = f"窗口关闭失败：{close_exc}"
                             if item is not None:
                                 item.close_success = bool(close_success)
+                            logger.info(
+                                "静默更新 | profile_id=%s | 关闭窗口%s",
+                                int(profile_id),
+                                "成功" if close_success else "失败",
+                            )
 
                 if should_browser_fallback:
+                    logger.info("静默更新 | profile_id=%s | 进入补扫（将打开窗口抓取）", int(profile_id))
                     try:
                         item = await self._scan_single_window_via_browser(
                             playwright=playwright,
@@ -1399,6 +1543,12 @@ class IXBrowserService:
                             error=str(exc),
                             duration_ms=duration_ms,
                         )
+                        logger.warning(
+                            "静默更新补扫失败 | profile_id=%s | 错误=%s | 耗时=%sms",
+                            int(profile_id),
+                            str(exc),
+                            int(duration_ms),
+                        )
 
                 if item is None:
                     duration_ms = int((time.perf_counter() - started_at) * 1000)
@@ -1419,6 +1569,7 @@ class IXBrowserService:
                         error="未知错误",
                         duration_ms=duration_ms,
                     )
+                    logger.warning("静默更新失败 | profile_id=%s | 未生成扫描结果（未知错误）", int(profile_id))
 
                 scanned_items[profile_id] = item
 
@@ -1427,6 +1578,15 @@ class IXBrowserService:
                     success_windows += 1
                 else:
                     failed_windows += 1
+                logger.info(
+                    "静默更新结果 | %s/%s | profile_id=%s | success=%s | 耗时=%sms | error=%s",
+                    int(processed_windows),
+                    int(total_windows),
+                    int(profile_id),
+                    bool(item.success),
+                    int(item.duration_ms or 0),
+                    str(item.error)[:200] if item.error else None,
+                )
                 await self._emit_scan_progress(
                     progress_callback,
                     {
@@ -1474,6 +1634,38 @@ class IXBrowserService:
                 for it in response.results:
                     if it.fallback_applied:
                         sqlite_db.upsert_ixbrowser_scan_result(response.run_id, it.model_dump())
+
+        # 输出一次汇总，便于在终端快速定位失败原因（避免打印账号/email/token/cookie 等敏感信息）。
+        try:
+            reason_counts: Dict[str, int] = {}
+            for it in response.results or []:
+                if it.success:
+                    continue
+                err = str(it.error or "").strip()
+                if not err:
+                    key = "unknown"
+                elif "111003" in err or "当前窗口已经打开" in err or "窗口被标记为已打开" in err:
+                    key = "窗口占用/已打开"
+                elif err == "cf_challenge" or "cloudflare" in err.lower() or "挑战页" in err:
+                    key = "Cloudflare 挑战"
+                elif "accessToken" in err or "token" in err.lower():
+                    key = "token/登录态异常"
+                elif "超时" in err or "timeout" in err.lower():
+                    key = "超时"
+                else:
+                    key = "其他"
+                reason_counts[key] = int(reason_counts.get(key, 0) or 0) + 1
+            logger.info(
+                "静默更新汇总 | 分组=%s | run_id=%s | total=%s | success=%s | failed=%s | 失败原因=%s",
+                str(response.group_title),
+                int(response.run_id) if response.run_id is not None else None,
+                int(response.total_windows),
+                int(response.success_count),
+                int(response.failed_count),
+                json.dumps(reason_counts, ensure_ascii=False),
+            )
+        except Exception:  # noqa: BLE001
+            pass
 
         await self._emit_scan_progress(
             progress_callback,
