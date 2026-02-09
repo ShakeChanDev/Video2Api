@@ -43,7 +43,7 @@ class WorkerRunner:
             self._started = True
             try:
                 sora_cnt = sqlite_db.requeue_stale_sora_jobs()
-                nurture_cnt = sqlite_db.requeue_stale_nurture_batches()
+                nurture_cnt = sqlite_db.requeue_stale_sora_nurture_batches()
                 self._log_event(
                     action="worker.start",
                     event="start",
