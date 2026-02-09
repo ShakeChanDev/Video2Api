@@ -3,16 +3,30 @@ from __future__ import annotations
 
 from typing import List, Optional
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
+
+
+class SoraNurtureBatchTarget(BaseModel):
+    group_title: str
+    profile_id: int = Field(..., ge=1)
+
+    @field_validator("group_title")
+    @classmethod
+    def normalize_group_title(cls, value: str) -> str:
+        text = str(value or "").strip()
+        if not text:
+            raise ValueError("group_title 不能为空")
+        return text
 
 
 class SoraNurtureBatchCreateRequest(BaseModel):
     name: Optional[str] = None
     group_title: str = "Sora"
     profile_ids: List[int] = Field(default_factory=list)
+    targets: List[SoraNurtureBatchTarget] = Field(default_factory=list)
     scroll_count: int = Field(10, ge=1, le=50)
     like_probability: float = Field(0.25, ge=0, le=1)
-    follow_probability: float = Field(0.06, ge=0, le=1)
+    follow_probability: float = Field(0.15, ge=0, le=1)
     # 单号上限：默认放宽到 100，方便养号时更自然地分布动作（仍受概率控制）。
     max_follows_per_profile: int = Field(100, ge=0, le=1000)
     max_likes_per_profile: int = Field(100, ge=0, le=1000)
@@ -48,9 +62,33 @@ class SoraNurtureBatchCreateRequest(BaseModel):
                 continue
             seen.add(pid)
             ids.append(pid)
-        if not ids:
-            raise ValueError("profile_ids 不能为空")
         return ids
+
+    @field_validator("targets")
+    @classmethod
+    def validate_targets(cls, value: List[SoraNurtureBatchTarget]) -> List[SoraNurtureBatchTarget]:
+        targets = value or []
+        normalized: List[SoraNurtureBatchTarget] = []
+        seen = set()
+        for item in targets:
+            group_title = str(item.group_title or "").strip()
+            profile_id = int(item.profile_id)
+            if not group_title or profile_id <= 0:
+                continue
+            key = (group_title, profile_id)
+            if key in seen:
+                continue
+            seen.add(key)
+            normalized.append(SoraNurtureBatchTarget(group_title=group_title, profile_id=profile_id))
+        return normalized
+
+    @model_validator(mode="after")
+    def validate_target_source(self) -> "SoraNurtureBatchCreateRequest":
+        if self.targets:
+            return self
+        if self.profile_ids:
+            return self
+        raise ValueError("targets 或 profile_ids 至少提供一个")
 
 
 class SoraNurtureBatch(BaseModel):
@@ -61,7 +99,7 @@ class SoraNurtureBatch(BaseModel):
     total_jobs: int = 0
     scroll_count: int = 10
     like_probability: float = 0.25
-    follow_probability: float = 0.06
+    follow_probability: float = 0.15
     max_follows_per_profile: int = 100
     max_likes_per_profile: int = 100
     status: str

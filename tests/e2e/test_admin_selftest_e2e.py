@@ -200,10 +200,10 @@ async def test_admin_selftest_ui_smoke(monkeypatch, tmp_path):
                     timeout=15_000,
                 )
 
-                # 勾选 1 个窗口
-                table_row = page.locator(".nurture-page .el-table__body-wrapper tbody tr").first
-                await table_row.wait_for(state="visible", timeout=15_000)
-                await table_row.locator(".el-checkbox").first.click()
+                # 默认折叠下，直接按分组勾选（全选该组窗口）
+                group_checkbox = page.locator(".nurture-page .group-select-panel .pick-group-head .el-checkbox").first
+                await group_checkbox.wait_for(state="visible", timeout=15_000)
+                await group_checkbox.click()
 
                 async with page.expect_response(
                     lambda r: r.url.endswith("/api/v1/nurture/batches") and r.request.method == "POST"

@@ -76,7 +76,40 @@ class SoraNurtureService:
 
     async def create_batch(self, request: SoraNurtureBatchCreateRequest, operator_user: Optional[dict] = None) -> dict:
         group_title = str(request.group_title or "Sora").strip() or "Sora"
-        profile_ids = list(request.profile_ids or [])
+        normalized_targets: List[dict] = []
+        seen_targets = set()
+        if request.targets:
+            for target in request.targets:
+                target_group = str(target.group_title or "").strip() or group_title
+                profile_id = int(target.profile_id)
+                if profile_id <= 0 or not target_group:
+                    continue
+                key = (target_group, profile_id)
+                if key in seen_targets:
+                    continue
+                seen_targets.add(key)
+                normalized_targets.append({"group_title": target_group, "profile_id": profile_id})
+        else:
+            for profile_id in request.profile_ids or []:
+                pid = int(profile_id)
+                if pid <= 0:
+                    continue
+                key = (group_title, pid)
+                if key in seen_targets:
+                    continue
+                seen_targets.add(key)
+                normalized_targets.append({"group_title": group_title, "profile_id": pid})
+        if not normalized_targets:
+            raise SoraNurtureServiceError("未提供可执行的窗口")
+
+        profile_ids: List[int] = []
+        seen_profile_ids = set()
+        for item in normalized_targets:
+            pid = int(item["profile_id"])
+            if pid in seen_profile_ids:
+                continue
+            seen_profile_ids.add(pid)
+            profile_ids.append(pid)
         scroll_count = int(request.scroll_count)
         like_probability = float(request.like_probability)
         follow_probability = float(request.follow_probability)
@@ -85,13 +118,30 @@ class SoraNurtureService:
         name = request.name or f"养号任务组-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
 
         # 尽量填充 window_name，避免前端只看到 id
-        window_name_map: Dict[int, Optional[str]] = {}
+        window_name_map: Dict[Tuple[str, int], Optional[str]] = {}
         try:
             groups = await self._ix.list_group_windows()
-            target = self._find_group_by_title(groups, group_title)
-            if target:
-                for win in target.windows or []:
-                    window_name_map[int(win.profile_id)] = win.name
+            group_lookup = {
+                str(getattr(g, "title", "") or "").strip().lower(): g
+                for g in groups or []
+            }
+            for target in normalized_targets:
+                target_title = str(target.get("group_title") or "").strip()
+                target_pid = int(target.get("profile_id") or 0)
+                if not target_title or target_pid <= 0:
+                    continue
+                key = target_title.lower()
+                group = group_lookup.get(key)
+                if not group:
+                    continue
+                for win in group.windows or []:
+                    try:
+                        pid = int(win.profile_id)
+                    except Exception:
+                        continue
+                    if pid == target_pid:
+                        window_name_map[(key, pid)] = win.name
+                        break
         except Exception:  # noqa: BLE001
             window_name_map = {}
 
@@ -100,7 +150,7 @@ class SoraNurtureService:
                 "name": name,
                 "group_title": group_title,
                 "profile_ids_json": json.dumps(profile_ids, ensure_ascii=False),
-                "total_jobs": len(profile_ids),
+                "total_jobs": len(normalized_targets),
                 "scroll_count": scroll_count,
                 "like_probability": like_probability,
                 "follow_probability": follow_probability,
@@ -112,13 +162,16 @@ class SoraNurtureService:
             }
         )
 
-        for pid in profile_ids:
+        for target in normalized_targets:
+            target_group_title = str(target.get("group_title") or "").strip() or group_title
+            target_profile_id = int(target.get("profile_id") or 0)
+            key = (target_group_title.lower(), target_profile_id)
             self._db.create_sora_nurture_job(
                 {
                     "batch_id": batch_id,
-                    "profile_id": int(pid),
-                    "window_name": window_name_map.get(int(pid)),
-                    "group_title": group_title,
+                    "profile_id": target_profile_id,
+                    "window_name": window_name_map.get(key),
+                    "group_title": target_group_title,
                     "status": "queued",
                     "phase": "queue",
                     "scroll_target": scroll_count,
@@ -215,19 +268,28 @@ class SoraNurtureService:
                     await self._cancel_remaining_jobs(batch_id)
                     return
 
-                group_title = str(batch.get("group_title") or "Sora").strip() or "Sora"
-                profile_ids = batch.get("profile_ids") if isinstance(batch.get("profile_ids"), list) else _safe_json_loads(batch.get("profile_ids_json")) or []
-                profile_ids = [int(x) for x in profile_ids if isinstance(x, (int, float, str)) and str(x).isdigit()]
-                profile_ids = [pid for pid in profile_ids if pid > 0]
+                batch_group_title = str(batch.get("group_title") or "Sora").strip() or "Sora"
 
                 scroll_count = int(batch.get("scroll_count") or 10)
                 like_probability = float(batch.get("like_probability") or 0.25)
-                follow_probability = float(batch.get("follow_probability") or 0.06)
+                follow_probability = float(batch.get("follow_probability") or 0.15)
                 max_follows = int(batch.get("max_follows_per_profile") or 1)
                 max_likes = int(batch.get("max_likes_per_profile") or 3)
 
                 started_at = _now_str()
                 self._db.update_sora_nurture_batch(batch_id, {"status": "running", "started_at": started_at, "error": None})
+
+                jobs_to_run = self._db.list_sora_nurture_jobs(batch_id=int(batch_id), limit=5000)
+                if not jobs_to_run:
+                    self._db.update_sora_nurture_batch(
+                        batch_id,
+                        {
+                            "status": "failed",
+                            "error": "任务明细为空",
+                            "finished_at": _now_str(),
+                        },
+                    )
+                    return
 
                 success_count = 0
                 failed_count = 0
@@ -236,32 +298,55 @@ class SoraNurtureService:
                 follow_total = 0
                 first_error: Optional[str] = None
 
+                active_map_cache: Dict[str, Dict[int, int]] = {}
                 async with async_playwright() as playwright:
-                    for pid in profile_ids:
+                    for job_row in jobs_to_run:
                         latest_batch = self._db.get_sora_nurture_batch(batch_id) or {}
                         if str(latest_batch.get("status") or "").strip().lower() == "canceled":
                             await self._cancel_remaining_jobs(batch_id)
                             break
 
+                        job_id = int(job_row.get("id") or 0)
+                        profile_id = int(job_row.get("profile_id") or 0)
+                        job_group_title = str(job_row.get("group_title") or batch_group_title).strip() or batch_group_title
+                        if job_id <= 0 or profile_id <= 0:
+                            failed_count += 1
+                            first_error = first_error or "任务参数异常"
+                            self._db.update_sora_nurture_batch(
+                                batch_id,
+                                {
+                                    "failed_count": failed_count,
+                                    "like_total": like_total,
+                                    "follow_total": follow_total,
+                                    "error": first_error,
+                                },
+                            )
+                            continue
+
+                        row_status = str(job_row.get("status") or "").strip().lower()
+                        if row_status in {"completed", "failed", "canceled", "skipped"}:
+                            continue
+
                         # 避免抢窗口：若当前窗口存在 Sora 生成任务，跳过
                         try:
-                            active_map = self._db.count_sora_active_jobs_by_profile(group_title)
+                            active_map = active_map_cache.get(job_group_title)
+                            if active_map is None:
+                                active_map = self._db.count_sora_active_jobs_by_profile(job_group_title)
+                                active_map_cache[job_group_title] = active_map
                         except Exception:  # noqa: BLE001
                             active_map = {}
-                        if int(active_map.get(int(pid), 0)) > 0:
-                            job_row = self._find_job_row_by_profile(batch_id, int(pid))
-                            if job_row:
-                                self._db.update_sora_nurture_job(
-                                    int(job_row["id"]),
-                                    {
-                                        "status": "skipped",
-                                        "phase": "done",
-                                        "error": "该窗口存在运行中生成任务，已跳过",
-                                        "finished_at": _now_str(),
-                                    },
-                                )
+                        if int(active_map.get(int(profile_id), 0)) > 0:
+                            self._db.update_sora_nurture_job(
+                                job_id,
+                                {
+                                    "status": "skipped",
+                                    "phase": "done",
+                                    "error": "该窗口存在运行中生成任务，已跳过",
+                                    "finished_at": _now_str(),
+                                },
+                            )
                             failed_count += 1
-                            first_error = first_error or f"profile={pid} skipped: active sora job"
+                            first_error = first_error or f"profile={profile_id} skipped: active sora job"
                             self._db.update_sora_nurture_batch(
                                 batch_id,
                                 {
@@ -277,8 +362,9 @@ class SoraNurtureService:
                             job_result = await self._run_single_job(
                                 playwright=playwright,
                                 batch_id=batch_id,
-                                profile_id=int(pid),
-                                group_title=group_title,
+                                job_id=job_id,
+                                profile_id=profile_id,
+                                group_title=job_group_title,
                                 scroll_target=scroll_count,
                                 like_probability=like_probability,
                                 follow_probability=follow_probability,
@@ -377,6 +463,7 @@ class SoraNurtureService:
         *,
         playwright,
         batch_id: int,
+        job_id: int,
         profile_id: int,
         group_title: str,
         scroll_target: int,
@@ -385,13 +472,20 @@ class SoraNurtureService:
         max_follows: int,
         max_likes: int,
     ) -> Dict[str, Any]:
-        job_row = self._find_job_row_by_profile(batch_id, profile_id)
+        job_row = self._db.get_sora_nurture_job(int(job_id))
         if not job_row:
-            raise SoraNurtureServiceError(f"任务不存在：batch={batch_id} profile={profile_id}")
+            raise SoraNurtureServiceError(f"任务不存在：job={job_id}")
+        if int(job_row.get("batch_id") or 0) != int(batch_id):
+            raise SoraNurtureServiceError(f"任务归属异常：job={job_id} batch={batch_id}")
+
+        runtime_profile_id = int(job_row.get("profile_id") or profile_id or 0)
+        runtime_group_title = str(job_row.get("group_title") or group_title).strip() or group_title
+        if runtime_profile_id <= 0:
+            raise SoraNurtureServiceError(f"任务窗口异常：job={job_id}")
 
         started_at = _now_str()
         self._db.update_sora_nurture_job(
-            int(job_row["id"]),
+            int(job_id),
             {
                 "status": "running",
                 "phase": "open",
@@ -403,7 +497,7 @@ class SoraNurtureService:
 
         browser = None
         try:
-            open_resp = await self._ix.open_profile_window(profile_id=profile_id, group_title=group_title)
+            open_resp = await self._ix.open_profile_window(profile_id=runtime_profile_id, group_title=runtime_group_title)
             ws_endpoint = open_resp.ws
             if not ws_endpoint and open_resp.debugging_address:
                 ws_endpoint = f"http://{open_resp.debugging_address}"
@@ -415,9 +509,9 @@ class SoraNurtureService:
             # 使用新页面避免复用旧 tab 遗留的 route/状态导致 Explore 入口加载异常
             page = await context.new_page()
 
-            await self._prepare_page(page, profile_id)
+            await self._prepare_page(page, runtime_profile_id)
 
-            self._db.update_sora_nurture_job(int(job_row["id"]), {"phase": "explore"})
+            self._db.update_sora_nurture_job(int(job_id), {"phase": "explore"})
             try:
                 await page.goto(EXPLORE_URL, wait_until="domcontentloaded", timeout=40_000)
                 await page.wait_for_timeout(random.randint(1000, 2000))
@@ -428,12 +522,12 @@ class SoraNurtureService:
             if not ok:
                 raise IXBrowserServiceError(f"未登录/会话失效：{detail}")
 
-            self._db.update_sora_nurture_job(int(job_row["id"]), {"phase": "engage"})
+            self._db.update_sora_nurture_job(int(job_id), {"phase": "engage"})
             like_count, follow_count, scroll_done, canceled = await self._run_engage_loop(
                 batch_id=batch_id,
-                job_id=int(job_row["id"]),
-                profile_id=profile_id,
-                group_title=group_title,
+                job_id=int(job_id),
+                profile_id=runtime_profile_id,
+                group_title=runtime_group_title,
                 page=page,
                 scroll_target=int(scroll_target),
                 like_probability=float(like_probability),
@@ -445,7 +539,7 @@ class SoraNurtureService:
             finished_at = _now_str()
             if canceled:
                 self._db.update_sora_nurture_job(
-                    int(job_row["id"]),
+                    int(job_id),
                     {
                         "status": "canceled",
                         "phase": "done",
@@ -465,7 +559,7 @@ class SoraNurtureService:
                 }
 
             self._db.update_sora_nurture_job(
-                int(job_row["id"]),
+                int(job_id),
                 {
                     "status": "completed",
                     "phase": "done",
@@ -484,9 +578,9 @@ class SoraNurtureService:
             }
         except Exception as exc:  # noqa: BLE001
             finished_at = _now_str()
-            current = self._db.get_sora_nurture_job(int(job_row["id"])) or {}
+            current = self._db.get_sora_nurture_job(int(job_id)) or {}
             self._db.update_sora_nurture_job(
-                int(job_row["id"]),
+                int(job_id),
                 {
                     "status": "failed",
                     "phase": "done",
@@ -508,7 +602,7 @@ class SoraNurtureService:
                 except Exception:  # noqa: BLE001
                     pass
             try:
-                await self._ix._close_profile(profile_id)  # noqa: SLF001
+                await self._ix._close_profile(runtime_profile_id)  # noqa: SLF001
             except Exception:  # noqa: BLE001
                 pass
 
@@ -924,7 +1018,7 @@ class SoraNurtureService:
             "total_jobs": int(row.get("total_jobs") or 0),
             "scroll_count": int(row.get("scroll_count") or 10),
             "like_probability": float(row.get("like_probability") or 0.25),
-            "follow_probability": float(row.get("follow_probability") or 0.06),
+            "follow_probability": float(row.get("follow_probability") or 0.15),
             "max_follows_per_profile": int(row.get("max_follows_per_profile") or 100),
             "max_likes_per_profile": int(row.get("max_likes_per_profile") or 100),
             "status": str(row.get("status") or "queued"),

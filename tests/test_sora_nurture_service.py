@@ -28,7 +28,7 @@ class _FakeDB:
         self._job_id = 200
         self.batches = {}
         self.jobs = {}
-        self.active_map = {}
+        self.active_map_by_group = {}
 
     def _now(self):
         return "2026-02-06 12:00:00"
@@ -44,7 +44,7 @@ class _FakeDB:
             "total_jobs": int(data.get("total_jobs") or 0),
             "scroll_count": int(data.get("scroll_count") or 10),
             "like_probability": float(data.get("like_probability") or 0.25),
-            "follow_probability": float(data.get("follow_probability") or 0.06),
+            "follow_probability": float(data.get("follow_probability") or 0.15),
             "max_follows_per_profile": int(data.get("max_follows_per_profile") or 1),
             "max_likes_per_profile": int(data.get("max_likes_per_profile") or 3),
             "status": data.get("status") or "queued",
@@ -139,13 +139,22 @@ class _FakeDB:
             rows.sort(key=lambda r: int(r["id"]))
         return rows[:limit]
 
-    def count_sora_active_jobs_by_profile(self, _group_title):
-        return dict(self.active_map)
+    def count_sora_active_jobs_by_profile(self, group_title):
+        return dict(self.active_map_by_group.get(str(group_title), {}))
 
 
 class _FakeIX:
     async def list_group_windows(self):
         return [
+            IXBrowserGroupWindows(
+                id=2,
+                title="养号",
+                window_count=2,
+                windows=[
+                    IXBrowserWindow(profile_id=1, name="nurture-1"),
+                    IXBrowserWindow(profile_id=4, name="nurture-4"),
+                ],
+            ),
             IXBrowserGroupWindows(
                 id=1,
                 title="Sora",
@@ -178,9 +187,34 @@ async def test_create_batch_creates_jobs(monkeypatch):
     assert batch["group_title"] == "Sora"
     assert batch["profile_ids"] == [1, 2]
     assert batch["total_jobs"] == 2
+    assert batch["follow_probability"] == pytest.approx(0.15)
     assert len(fake_db.jobs) == 2
     names = sorted([j.get("window_name") for j in fake_db.jobs.values()])
     assert names == ["win-1", "win-2"]
+
+
+@pytest.mark.asyncio
+async def test_create_batch_with_targets_creates_multi_group_jobs():
+    fake_db = _FakeDB()
+    service = SoraNurtureService(db=fake_db, ix=_FakeIX())
+
+    req = SoraNurtureBatchCreateRequest(
+        group_title="养号",
+        targets=[
+            {"group_title": "养号", "profile_id": 1},
+            {"group_title": "Sora", "profile_id": 2},
+            {"group_title": "养号", "profile_id": 1},
+        ],
+        scroll_count=10,
+    )
+    batch = await service.create_batch(req, operator_user={"id": 1, "username": "admin"})
+
+    assert batch["group_title"] == "养号"
+    assert batch["total_jobs"] == 2
+    assert batch["profile_ids"] == [1, 2]
+    jobs = fake_db.list_sora_nurture_jobs(batch_id=batch["batch_id"], limit=10)
+    assert [job["group_title"] for job in jobs] == ["养号", "Sora"]
+    assert [job["window_name"] for job in jobs] == ["nurture-1", "win-2"]
 
 
 @pytest.mark.asyncio
@@ -188,7 +222,7 @@ async def test_run_batch_skips_active_sora_jobs(monkeypatch):
     monkeypatch.setattr("app.services.sora_nurture_service.async_playwright", lambda: _FakePlaywrightContext())
 
     fake_db = _FakeDB()
-    fake_db.active_map = {1: 1}
+    fake_db.active_map_by_group = {"Sora": {1: 1}}
     service = SoraNurtureService(db=fake_db, ix=_FakeIX())
 
     req = SoraNurtureBatchCreateRequest(group_title="Sora", profile_ids=[1], scroll_count=10)
@@ -199,6 +233,45 @@ async def test_run_batch_skips_active_sora_jobs(monkeypatch):
     jobs = fake_db.list_sora_nurture_jobs(batch_id=batch["batch_id"], limit=10)
     assert jobs[0]["status"] == "skipped"
     assert fake_db.get_sora_nurture_batch(batch["batch_id"])["status"] == "failed"
+
+
+@pytest.mark.asyncio
+async def test_run_batch_uses_job_group_title(monkeypatch):
+    monkeypatch.setattr("app.services.sora_nurture_service.async_playwright", lambda: _FakePlaywrightContext())
+
+    fake_db = _FakeDB()
+    service = SoraNurtureService(db=fake_db, ix=_FakeIX())
+    req = SoraNurtureBatchCreateRequest(
+        group_title="养号",
+        targets=[
+            {"group_title": "养号", "profile_id": 1},
+            {"group_title": "Sora", "profile_id": 2},
+        ],
+        scroll_count=10,
+    )
+    batch = await service.create_batch(req, operator_user={"id": 1, "username": "admin"})
+
+    called_groups = []
+
+    async def _fake_run_single_job(*_args, **kwargs):
+        called_groups.append(str(kwargs.get("group_title")))
+        job_id = int(kwargs.get("job_id"))
+        fake_db.update_sora_nurture_job(
+            job_id,
+            {
+                "status": "completed",
+                "phase": "done",
+                "scroll_done": 10,
+                "like_count": 0,
+                "follow_count": 0,
+                "finished_at": fake_db._now(),
+            },
+        )
+        return {"status": "completed", "like_count": 0, "follow_count": 0, "scroll_done": 10, "error": None}
+
+    monkeypatch.setattr(service, "_run_single_job", _fake_run_single_job)
+    await service._run_batch_impl(batch["batch_id"])
+    assert called_groups == ["养号", "Sora"]
 
 
 @pytest.mark.asyncio
@@ -231,11 +304,11 @@ async def test_run_batch_updates_totals(monkeypatch):
     batch = await service.create_batch(req, operator_user={"id": 1, "username": "admin"})
 
     async def _fake_run_single_job(*_args, **kwargs):
-        pid = int(kwargs.get("profile_id"))
-        job_row = service._find_job_row_by_profile(batch["batch_id"], pid)  # noqa: SLF001
+        job_id = int(kwargs.get("job_id"))
+        job_row = fake_db.get_sora_nurture_job(job_id)
         assert job_row
         fake_db.update_sora_nurture_job(
-            int(job_row["id"]),
+            int(job_id),
             {
                 "status": "completed",
                 "phase": "done",
@@ -257,4 +330,3 @@ async def test_run_batch_updates_totals(monkeypatch):
     assert batch_row["failed_count"] == 0
     assert batch_row["like_total"] == 3
     assert batch_row["follow_total"] == 3
-

@@ -88,6 +88,25 @@ def test_validation_error_returns_422(client):
     assert data["error"]["meta"]["errors"]
 
 
+def test_validation_targets_only_passes_model(monkeypatch, client):
+    async def _fake_create_batch(*_args, **_kwargs):
+        raise SoraNurtureServiceError("boom")
+
+    monkeypatch.setattr(sora_nurture_service, "create_batch", _fake_create_batch)
+    resp = client.post(
+        "/api/v1/nurture/batches",
+        json={
+            "group_title": "养号",
+            "profile_ids": [],
+            "targets": [{"group_title": "养号", "profile_id": 1}],
+            "scroll_count": 10,
+        },
+    )
+    assert resp.status_code == 400
+    data = resp.json()
+    assert data["error"]["type"] == "nurture_service_error"
+
+
 def test_http_exception_is_wrapped_and_preserves_headers(client):
     # invalid credentials -> HTTPException(401, headers={"WWW-Authenticate": "Bearer"})
     resp = client.post("/api/v1/auth/login", data={"username": "nope", "password": "nope"})

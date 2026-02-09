@@ -19,6 +19,16 @@ async def create_nurture_batch(
 ):
     try:
         batch = await sora_nurture_service.create_batch(payload, operator_user=current_user)
+        target_groups: List[str] = []
+        if payload.targets:
+            for item in payload.targets:
+                title = str(item.group_title or "").strip()
+                if title and title not in target_groups:
+                    target_groups.append(title)
+        else:
+            fallback = str(payload.group_title or "").strip()
+            if fallback:
+                target_groups.append(fallback)
         log_audit(
             request=request,
             current_user=current_user,
@@ -30,6 +40,8 @@ async def create_nurture_batch(
             extra={
                 "group_title": payload.group_title,
                 "profile_ids": payload.profile_ids,
+                "targets_count": len(payload.targets or []),
+                "target_groups": target_groups,
                 "scroll_count": payload.scroll_count,
                 "like_probability": payload.like_probability,
                 "follow_probability": payload.follow_probability,

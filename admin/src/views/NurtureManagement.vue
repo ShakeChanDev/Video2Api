@@ -30,7 +30,7 @@
         <el-button
           type="warning"
           :loading="creating"
-          :disabled="!selectedProfileIds.length"
+          :disabled="!selectedTargets.length"
           @click="createBatch"
         >
           创建并开始
@@ -80,46 +80,58 @@
           </el-form>
 
           <div class="selection-tip">
-            已选 <strong>{{ selectedProfileIds.length }}</strong> 个窗口
+            已选 <strong>{{ selectedTargets.length }}</strong> 个窗口
           </div>
         </div>
 
-        <el-table
-          v-if="windowRows.length"
-          ref="windowTableRef"
-          :data="windowRows"
-          class="card-table"
-          row-key="profile_id"
-          @selection-change="handleSelectionChange"
-        >
-          <el-table-column type="selection" width="46" align="center" reserve-selection />
-          <el-table-column label="窗口" min-width="240">
-            <template #default="{ row }">
-              <div class="window-cell">
-                <div class="window-name">{{ row.window_name || '-' }}</div>
-                <div class="window-meta">ID {{ row.profile_id }}</div>
-                <div v-if="row.proxy_ip && row.proxy_port" class="window-proxy">{{ formatProxy(row) }}</div>
+        <div v-if="visibleSelectableGroups.length" class="group-select-panel">
+          <el-collapse v-model="activeGroupNames">
+            <el-collapse-item
+              v-for="group in visibleSelectableGroups"
+              :key="group.title"
+              :name="group.title"
+            >
+              <template #title>
+                <div class="pick-group-head">
+                  <el-checkbox
+                    :model-value="isGroupChecked(group.title)"
+                    :indeterminate="isGroupIndeterminate(group.title)"
+                    @change="(checked) => toggleGroupTargets(group.title, checked)"
+                    @click.stop
+                  />
+                  <span class="pick-group-title">{{ group.title }}</span>
+                  <span class="pick-group-count">{{ group.rows.length }} 个窗口</span>
+                </div>
+              </template>
+
+              <div class="group-window-list">
+                <div
+                  v-for="row in group.rows"
+                  :key="targetKey(group.title, row.profile_id)"
+                  class="group-window-row"
+                >
+                  <el-checkbox
+                    :model-value="isTargetChecked(group.title, row.profile_id)"
+                    @change="(checked) => toggleSingleTarget(group.title, row, checked)"
+                  />
+                  <div class="window-cell">
+                    <div class="window-name">{{ row.window_name || '-' }}</div>
+                    <div class="window-meta">ID {{ row.profile_id }}</div>
+                    <div v-if="row.proxy_ip && row.proxy_port" class="window-proxy">{{ formatProxy(row) }}</div>
+                  </div>
+                  <div class="account-cell">
+                    <span class="account-text">{{ row.account || '-' }}</span>
+                    <span v-if="row.account_plan === 'plus'" class="plan-badge">Plus</span>
+                  </div>
+                  <div class="window-extra">
+                    可用 {{ row.quota_remaining_count ?? '-' }} · {{ formatTime(row.scanned_at) }}
+                  </div>
+                </div>
               </div>
-            </template>
-          </el-table-column>
-          <el-table-column label="账号" min-width="240">
-            <template #default="{ row }">
-              <div class="account-cell">
-                <span class="account-text">{{ row.account || '-' }}</span>
-                <span v-if="row.account_plan === 'plus'" class="plan-badge">Plus</span>
-              </div>
-            </template>
-          </el-table-column>
-          <el-table-column label="可用次数" width="160" align="center">
-            <template #default="{ row }">
-              <span>{{ row.quota_remaining_count ?? '-' }}</span>
-            </template>
-          </el-table-column>
-          <el-table-column label="更新时间" width="180" align="center">
-            <template #default="{ row }">{{ formatTime(row.scanned_at) }}</template>
-          </el-table-column>
-        </el-table>
-        <el-empty v-else description="暂无窗口数据" :image-size="90">
+            </el-collapse-item>
+          </el-collapse>
+        </div>
+        <el-empty v-else description="暂无可选账号（养号/Sora 分组为空）" :image-size="90">
           <el-button @click="loadGroups" :loading="groupsLoading">重新加载</el-button>
         </el-empty>
       </el-card>
@@ -253,6 +265,8 @@ import {
   getLatestIxBrowserSoraSessionAccounts
 } from '../api'
 
+const TARGET_GROUP_TITLES = ['养号', 'Sora']
+
 const groupsLoading = ref(false)
 const windowsLoading = ref(false)
 const batchesLoading = ref(false)
@@ -264,26 +278,15 @@ const groups = ref([])
 const selectedGroupTitle = ref('Sora')
 const batchStatus = ref('all')
 
-const latestScan = ref(null)
-const scanMap = computed(() => {
-  const rows = latestScan.value?.results || []
-  const map = {}
-  for (const row of rows) {
-    const pid = Number(row?.profile_id)
-    if (!Number.isFinite(pid) || pid <= 0) continue
-    map[pid] = row
-  }
-  return map
-})
-
-const windowTableRef = ref(null)
-const selectedProfileIds = ref([])
+const latestScanByGroup = ref({})
+const activeGroupNames = ref([])
+const selectedTargets = ref([])
 
 const createForm = ref({
   name: '',
   scroll_count: 10,
   like_probability: 0.25,
-  follow_probability: 0.06,
+  follow_probability: 0.15,
   max_follows_per_profile: 100,
   max_likes_per_profile: 100
 })
@@ -294,25 +297,140 @@ const jobs = ref([])
 
 let pollTimer = null
 
-const selectedGroup = computed(() => groups.value.find((g) => g.title === selectedGroupTitle.value) || null)
-const windowRows = computed(() => {
-  const target = selectedGroup.value
-  if (!target || !Array.isArray(target.windows)) return []
-  const rows = target.windows.map((win) => {
-    const pid = Number(win.profile_id)
-    const scan = scanMap.value[pid] || null
-    return {
-      profile_id: pid,
-      window_name: win.name,
-      account: scan?.account || '',
-      account_plan: scan?.account_plan || '',
-      quota_remaining_count: scan?.quota_remaining_count,
-      scanned_at: scan?.scanned_at || ''
+const targetKey = (groupTitle, profileId) => `${String(groupTitle || '').trim()}::${Number(profileId || 0)}`
+
+const visibleSelectableGroups = computed(() => {
+  const result = []
+  for (const title of TARGET_GROUP_TITLES) {
+    const group = groups.value.find((item) => String(item?.title || '').trim() === title)
+    const windows = Array.isArray(group?.windows) ? group.windows : []
+    if (!windows.length) continue
+    const scanRows = latestScanByGroup.value?.[title]?.results || []
+    const scanMap = {}
+    for (const row of scanRows) {
+      const pid = Number(row?.profile_id)
+      if (!Number.isFinite(pid) || pid <= 0) continue
+      scanMap[pid] = row
     }
-  })
-  rows.sort((a, b) => Number(b.profile_id) - Number(a.profile_id))
-  return rows
+    const rows = windows.map((win) => {
+      const pid = Number(win.profile_id)
+      const scan = scanMap[pid] || null
+      return {
+        group_title: title,
+        profile_id: pid,
+        window_name: win.name,
+        account: scan?.account || '',
+        account_plan: scan?.account_plan || '',
+        quota_remaining_count: scan?.quota_remaining_count,
+        scanned_at: scan?.scanned_at || '',
+        proxy_type: win.proxy_type,
+        proxy_ip: win.proxy_ip,
+        proxy_port: win.proxy_port,
+        proxy_local_id: win.proxy_local_id
+      }
+    })
+    rows.sort((a, b) => Number(b.profile_id) - Number(a.profile_id))
+    if (!rows.length) continue
+    result.push({ title, rows })
+  }
+  return result
 })
+
+const selectedTargetKeySet = computed(() => {
+  const set = new Set()
+  for (const item of selectedTargets.value) {
+    set.add(targetKey(item.group_title, item.profile_id))
+  }
+  return set
+})
+
+const selectedProfileIds = computed(() => {
+  const out = []
+  const seen = new Set()
+  for (const item of selectedTargets.value) {
+    const pid = Number(item.profile_id)
+    if (!Number.isFinite(pid) || pid <= 0) continue
+    if (seen.has(pid)) continue
+    seen.add(pid)
+    out.push(pid)
+  }
+  return out
+})
+
+const getRowsByGroup = (groupTitle) => {
+  const row = visibleSelectableGroups.value.find((item) => item.title === groupTitle)
+  return Array.isArray(row?.rows) ? row.rows : []
+}
+
+const isTargetChecked = (groupTitle, profileId) => selectedTargetKeySet.value.has(targetKey(groupTitle, profileId))
+
+const isGroupChecked = (groupTitle) => {
+  const rows = getRowsByGroup(groupTitle)
+  if (!rows.length) return false
+  return rows.every((row) => isTargetChecked(groupTitle, row.profile_id))
+}
+
+const isGroupIndeterminate = (groupTitle) => {
+  const rows = getRowsByGroup(groupTitle)
+  if (!rows.length) return false
+  const checkedCount = rows.filter((row) => isTargetChecked(groupTitle, row.profile_id)).length
+  return checkedCount > 0 && checkedCount < rows.length
+}
+
+const pruneSelectedTargets = () => {
+  const allowedKeys = new Set()
+  for (const group of visibleSelectableGroups.value) {
+    for (const row of group.rows) {
+      allowedKeys.add(targetKey(group.title, row.profile_id))
+    }
+  }
+  selectedTargets.value = selectedTargets.value.filter((item) => allowedKeys.has(targetKey(item.group_title, item.profile_id)))
+}
+
+const syncActiveGroupNames = () => {
+  const visibleNames = new Set(visibleSelectableGroups.value.map((item) => item.title))
+  activeGroupNames.value = activeGroupNames.value.filter((name) => visibleNames.has(name))
+}
+
+const toggleSingleTarget = (groupTitle, row, checked) => {
+  const key = targetKey(groupTitle, row?.profile_id)
+  const targets = selectedTargets.value.slice()
+  const next = []
+  let has = false
+  for (const item of targets) {
+    if (targetKey(item.group_title, item.profile_id) === key) {
+      has = true
+      if (!checked) continue
+    }
+    next.push(item)
+  }
+  if (checked && !has) {
+    next.push({
+      group_title: String(groupTitle || '').trim(),
+      profile_id: Number(row?.profile_id || 0)
+    })
+  }
+  selectedTargets.value = next
+}
+
+const toggleGroupTargets = (groupTitle, checked) => {
+  const rows = getRowsByGroup(groupTitle)
+  if (!rows.length) return
+  if (checked) {
+    const next = selectedTargets.value.slice()
+    const existing = new Set(next.map((item) => targetKey(item.group_title, item.profile_id)))
+    for (const row of rows) {
+      const key = targetKey(groupTitle, row.profile_id)
+      if (existing.has(key)) continue
+      existing.add(key)
+      next.push({ group_title: groupTitle, profile_id: Number(row.profile_id) })
+    }
+    selectedTargets.value = next
+    return
+  }
+  const removeKeys = new Set(rows.map((row) => targetKey(groupTitle, row.profile_id)))
+  selectedTargets.value = selectedTargets.value.filter((item) => !removeKeys.has(targetKey(item.group_title, item.profile_id)))
+}
 
 const loadGroups = async () => {
   groupsLoading.value = true
@@ -324,42 +442,45 @@ const loadGroups = async () => {
       selectedGroupTitle.value = 'Sora'
     } else if (groups.value.length > 0 && !groups.value.some((g) => g.title === selectedGroupTitle.value)) {
       selectedGroupTitle.value = groups.value[0].title
+    } else if (groups.value.length <= 0) {
+      selectedGroupTitle.value = 'Sora'
     }
   } catch (error) {
     ElMessage.error(error?.response?.data?.detail || '获取分组失败')
   } finally {
     groupsLoading.value = false
+    pruneSelectedTargets()
+    syncActiveGroupNames()
   }
 }
 
 const loadLatestScan = async () => {
-  if (!selectedGroupTitle.value) return
   windowsLoading.value = true
   try {
-    const data = await getLatestIxBrowserSoraSessionAccounts(selectedGroupTitle.value, true)
-    latestScan.value = data || null
-  } catch (error) {
-    if (error?.response?.status !== 404) {
-      latestScan.value = null
-    }
+    const targetGroups = TARGET_GROUP_TITLES.filter((title) => groups.value.some((item) => String(item?.title || '').trim() === title))
+    const next = {}
+    await Promise.all(targetGroups.map(async (title) => {
+      try {
+        const data = await getLatestIxBrowserSoraSessionAccounts(title, true)
+        next[title] = data || null
+      } catch (error) {
+        if (error?.response?.status !== 404) {
+          next[title] = null
+          return
+        }
+        next[title] = null
+      }
+    }))
+    latestScanByGroup.value = next
   } finally {
     windowsLoading.value = false
+    pruneSelectedTargets()
+    syncActiveGroupNames()
   }
-}
-
-const handleSelectionChange = (rows) => {
-  const raw = Array.isArray(rows) ? rows : []
-  const ids = raw
-    .map((row) => Number(row?.profile_id))
-    .filter((id) => Number.isFinite(id) && id > 0)
-  selectedProfileIds.value = Array.from(new Set(ids))
 }
 
 const clearSelection = () => {
-  selectedProfileIds.value = []
-  if (windowTableRef.value && typeof windowTableRef.value.clearSelection === 'function') {
-    windowTableRef.value.clearSelection()
-  }
+  selectedTargets.value = []
 }
 
 const loadBatches = async () => {
@@ -398,24 +519,33 @@ const selectBatch = async (row) => {
 }
 
 const refreshAll = async () => {
+  await loadGroups()
   await Promise.all([loadLatestScan(), loadBatches(), loadJobs()])
 }
 
 const onGroupChange = async () => {
-  clearSelection()
   selectedBatch.value = null
   jobs.value = []
-  await Promise.all([loadLatestScan(), loadBatches()])
+  await loadBatches()
 }
 
 const createBatch = async () => {
-  if (!selectedProfileIds.value.length) return
+  if (!selectedTargets.value.length) return
   creating.value = true
   try {
+    const targets = selectedTargets.value
+      .map((item) => ({
+        group_title: String(item.group_title || '').trim(),
+        profile_id: Number(item.profile_id || 0)
+      }))
+      .filter((item) => item.group_title && Number.isFinite(item.profile_id) && item.profile_id > 0)
+    const hasNurtureGroup = targets.some((item) => item.group_title === '养号')
+    const batchGroupTitle = hasNurtureGroup ? '养号' : 'Sora'
     const payload = {
       name: createForm.value.name || null,
-      group_title: selectedGroupTitle.value,
+      group_title: batchGroupTitle,
       profile_ids: selectedProfileIds.value,
+      targets,
       scroll_count: Number(createForm.value.scroll_count),
       like_probability: Number(createForm.value.like_probability),
       follow_probability: Number(createForm.value.follow_probability),
@@ -426,6 +556,9 @@ const createBatch = async () => {
     ElMessage.success(`已创建任务组 #${batch?.batch_id}`)
     clearSelection()
     createForm.value.name = ''
+    if (selectedGroupTitle.value !== batchGroupTitle) {
+      selectedGroupTitle.value = batchGroupTitle
+    }
     await loadBatches()
     if (batch?.batch_id) {
       const found = batches.value.find((b) => b.batch_id === batch.batch_id) || batch
@@ -587,6 +720,51 @@ onBeforeUnmount(() => {
   white-space: nowrap;
 }
 
+.group-select-panel {
+  padding: 10px 16px 14px;
+}
+
+.pick-group-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+}
+
+.pick-group-title {
+  font-weight: 700;
+  color: var(--ink);
+}
+
+.pick-group-count {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.group-window-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px 0 4px;
+}
+
+.group-window-row {
+  display: grid;
+  grid-template-columns: auto minmax(180px, 1fr) minmax(140px, 180px) minmax(180px, 1fr);
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid rgba(148, 163, 184, 0.26);
+  background: rgba(255, 255, 255, 0.96);
+}
+
+.window-extra {
+  font-size: 12px;
+  color: var(--muted);
+  text-align: right;
+}
+
 .advanced-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(140px, 1fr));
@@ -714,6 +892,15 @@ onBeforeUnmount(() => {
 @media (max-width: 1080px) {
   .content-grid {
     grid-template-columns: 1fr;
+  }
+
+  .group-window-row {
+    grid-template-columns: auto 1fr;
+  }
+
+  .window-extra {
+    grid-column: 2;
+    text-align: left;
   }
 }
 </style>
