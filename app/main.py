@@ -42,6 +42,17 @@ app.add_middleware(
 @app.on_event("startup")
 async def startup_background_services() -> None:
     try:
+        recovered_jobs = sqlite_db.fail_running_ixbrowser_silent_refresh_jobs("服务重启中断")
+        if recovered_jobs > 0:
+            sqlite_db.create_event_log(
+                source="ixbrowser",
+                action="ixbrowser.silent_refresh.recover",
+                event="startup",
+                status="success",
+                level="WARN",
+                message=f"已回收 {recovered_jobs} 个中断的静默更新任务",
+                metadata={"recovered_jobs": int(recovered_jobs)},
+            )
         apply_runtime_settings()
         scan_scheduler.apply_settings(load_scan_scheduler_settings())
         account_recovery_scheduler.apply_settings(load_system_settings(mask_sensitive=False).sora.account_dispatch)

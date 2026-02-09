@@ -113,6 +113,26 @@ export const getIxBrowserSoraSessionByRun = async (runId, withFallback = false) 
   return response.data
 }
 
+export const createIxBrowserSilentRefreshJob = async (groupTitle = 'Sora', withFallback = true) => {
+  const response = await api.post('/ixbrowser/sora-session-accounts/silent-refresh', null, {
+    params: { group_title: groupTitle, with_fallback: withFallback }
+  })
+  return response.data
+}
+
+export const getIxBrowserSilentRefreshJob = async (jobId) => {
+  const response = await api.get(`/ixbrowser/sora-session-accounts/silent-refresh/${jobId}`)
+  return response.data
+}
+
+export const buildIxBrowserSilentRefreshStreamUrl = (jobId) => {
+  const token = localStorage.getItem('token')
+  const query = new URLSearchParams()
+  query.set('job_id', String(jobId))
+  if (token) query.set('token', token)
+  return `/api/v1/ixbrowser/sora-session-accounts/silent-refresh/stream?${query.toString()}`
+}
+
 export const createIxBrowserSoraGenerateJob = async (data) => {
   const response = await api.post('/ixbrowser/sora-generate', data, {
     timeout: 60000

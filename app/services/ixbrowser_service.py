@@ -6,11 +6,12 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import inspect
 import logging
 import re
 import time
 from datetime import datetime
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 from urllib.parse import unquote
 from uuid import uuid4
 
@@ -30,6 +31,8 @@ from app.models.ixbrowser import (
     IXBrowserScanRunSummary,
     IXBrowserSessionScanItem,
     IXBrowserSessionScanResponse,
+    IXBrowserSilentRefreshCreateResponse,
+    IXBrowserSilentRefreshJob,
     IXBrowserWindow,
     SoraJob,
     SoraJobCreateResponse,
@@ -215,6 +218,221 @@ class IXBrowserService:
         # 若已初始化 semaphore，则重建以应用新并发；运行中的任务不回收。
         if self._sora_job_semaphore is not None:
             self._sora_job_semaphore = asyncio.Semaphore(n_int)
+
+    def _calc_progress_pct(self, processed_windows: int, total_windows: int) -> float:
+        processed = max(int(processed_windows or 0), 0)
+        total = max(int(total_windows or 0), 1)
+        pct = (processed / total) * 100
+        return round(max(min(pct, 100.0), 0.0), 2)
+
+    def _build_silent_refresh_job(self, row: Dict[str, Any]) -> IXBrowserSilentRefreshJob:
+        return IXBrowserSilentRefreshJob(
+            job_id=int(row.get("id") or 0),
+            group_title=str(row.get("group_title") or ""),
+            status=str(row.get("status") or "queued"),
+            total_windows=int(row.get("total_windows") or 0),
+            processed_windows=int(row.get("processed_windows") or 0),
+            success_count=int(row.get("success_count") or 0),
+            failed_count=int(row.get("failed_count") or 0),
+            progress_pct=float(row.get("progress_pct") or 0),
+            current_profile_id=int(row["current_profile_id"]) if row.get("current_profile_id") is not None else None,
+            current_window_name=row.get("current_window_name"),
+            message=row.get("message"),
+            error=row.get("error"),
+            run_id=int(row["run_id"]) if row.get("run_id") is not None else None,
+            with_fallback=bool(row.get("with_fallback")),
+            operator_user_id=int(row["operator_user_id"]) if row.get("operator_user_id") is not None else None,
+            operator_username=row.get("operator_username"),
+            created_at=str(row.get("created_at") or ""),
+            updated_at=str(row.get("updated_at") or ""),
+            finished_at=str(row.get("finished_at")) if row.get("finished_at") else None,
+        )
+
+    def get_silent_refresh_job(self, job_id: int) -> IXBrowserSilentRefreshJob:
+        row = sqlite_db.get_ixbrowser_silent_refresh_job(job_id)
+        if not row:
+            raise IXBrowserNotFoundError(f"未找到静默更新任务：{job_id}")
+        return self._build_silent_refresh_job(row)
+
+    async def start_silent_refresh(
+        self,
+        group_title: str = "Sora",
+        operator_user: Optional[dict] = None,
+        with_fallback: bool = True,
+    ) -> IXBrowserSilentRefreshCreateResponse:
+        normalized_group = str(group_title or "Sora").strip() or "Sora"
+        with_fallback_bool = bool(with_fallback)
+        operator_user_id = operator_user.get("id") if isinstance(operator_user, dict) else None
+        operator_username = operator_user.get("username") if isinstance(operator_user, dict) else None
+
+        running = sqlite_db.get_running_ixbrowser_silent_refresh_job(normalized_group)
+        if running:
+            sqlite_db.create_event_log(
+                source="ixbrowser",
+                action="ixbrowser.silent_refresh.reused",
+                event="reused",
+                status="success",
+                level="INFO",
+                message="复用运行中静默更新任务",
+                resource_type="ixbrowser_silent_refresh_job",
+                resource_id=str(running.get("id")),
+                operator_user_id=operator_user_id,
+                operator_username=operator_username,
+                metadata={
+                    "group_title": normalized_group,
+                    "with_fallback": with_fallback_bool,
+                },
+            )
+            return IXBrowserSilentRefreshCreateResponse(
+                job=self._build_silent_refresh_job(running),
+                reused=True,
+            )
+
+        job_id = sqlite_db.create_ixbrowser_silent_refresh_job(
+            {
+                "group_title": normalized_group,
+                "status": "queued",
+                "with_fallback": with_fallback_bool,
+                "message": "任务已创建，等待执行",
+                "operator_user_id": operator_user_id,
+                "operator_username": operator_username,
+            }
+        )
+        row = sqlite_db.get_ixbrowser_silent_refresh_job(job_id)
+        if not row:
+            raise IXBrowserServiceError(f"静默更新任务创建失败：{job_id}")
+
+        sqlite_db.create_event_log(
+            source="ixbrowser",
+            action="ixbrowser.silent_refresh.start",
+            event="start",
+            status="success",
+            level="INFO",
+            message="静默更新任务已启动",
+            resource_type="ixbrowser_silent_refresh_job",
+            resource_id=str(job_id),
+            operator_user_id=operator_user_id,
+            operator_username=operator_username,
+            metadata={
+                "group_title": normalized_group,
+                "with_fallback": with_fallback_bool,
+            },
+        )
+
+        spawn(
+            self._run_silent_refresh_job(
+                job_id=job_id,
+                group_title=normalized_group,
+                with_fallback=with_fallback_bool,
+                operator_user=operator_user,
+            ),
+            task_name="ixbrowser.silent_refresh.run",
+            metadata={"job_id": int(job_id), "group_title": normalized_group},
+        )
+        return IXBrowserSilentRefreshCreateResponse(job=self._build_silent_refresh_job(row), reused=False)
+
+    async def _run_silent_refresh_job(
+        self,
+        job_id: int,
+        group_title: str,
+        with_fallback: bool = True,
+        operator_user: Optional[dict] = None,
+    ) -> None:
+        sqlite_db.update_ixbrowser_silent_refresh_job(
+            job_id,
+            {
+                "status": "running",
+                "message": "开始静默更新账号信息",
+                "error": None,
+            },
+        )
+
+        def _apply_progress(payload: Dict[str, Any]) -> None:
+            patch: Dict[str, Any] = {
+                "status": str(payload.get("status") or "running"),
+                "total_windows": int(payload.get("total_windows") or 0),
+                "processed_windows": int(payload.get("processed_windows") or 0),
+                "success_count": int(payload.get("success_count") or 0),
+                "failed_count": int(payload.get("failed_count") or 0),
+                "progress_pct": float(payload.get("progress_pct") or 0),
+                "current_profile_id": payload.get("current_profile_id"),
+                "current_window_name": payload.get("current_window_name"),
+                "message": payload.get("message"),
+            }
+            if "run_id" in payload:
+                patch["run_id"] = payload.get("run_id")
+            if "error" in payload:
+                patch["error"] = payload.get("error")
+            sqlite_db.update_ixbrowser_silent_refresh_job(job_id, patch)
+
+        try:
+            response = await self.scan_group_sora_sessions_silent_api(
+                group_title=group_title,
+                operator_user=operator_user,
+                with_fallback=with_fallback,
+                progress_callback=_apply_progress,
+            )
+            sqlite_db.update_ixbrowser_silent_refresh_job(
+                job_id,
+                {
+                    "status": "completed",
+                    "total_windows": int(response.total_windows),
+                    "processed_windows": int(response.total_windows),
+                    "success_count": int(response.success_count),
+                    "failed_count": int(response.failed_count),
+                    "progress_pct": self._calc_progress_pct(response.total_windows, response.total_windows),
+                    "current_profile_id": None,
+                    "current_window_name": None,
+                    "message": "静默更新完成",
+                    "error": None,
+                    "run_id": response.run_id,
+                    "finished_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                },
+            )
+            sqlite_db.create_event_log(
+                source="ixbrowser",
+                action="ixbrowser.silent_refresh.finish",
+                event="finish",
+                status="success",
+                level="INFO",
+                message="静默更新任务完成",
+                resource_type="ixbrowser_silent_refresh_job",
+                resource_id=str(job_id),
+                operator_user_id=operator_user.get("id") if isinstance(operator_user, dict) else None,
+                operator_username=operator_user.get("username") if isinstance(operator_user, dict) else None,
+                metadata={
+                    "group_title": group_title,
+                    "run_id": response.run_id,
+                    "total_windows": response.total_windows,
+                    "success_count": response.success_count,
+                    "failed_count": response.failed_count,
+                },
+            )
+        except Exception as exc:  # noqa: BLE001
+            sqlite_db.update_ixbrowser_silent_refresh_job(
+                job_id,
+                {
+                    "status": "failed",
+                    "message": "静默更新失败",
+                    "error": str(exc),
+                    "finished_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                },
+            )
+            sqlite_db.create_event_log(
+                source="ixbrowser",
+                action="ixbrowser.silent_refresh.fail",
+                event="fail",
+                status="failed",
+                level="ERROR",
+                message=f"静默更新任务失败: {exc}",
+                resource_type="ixbrowser_silent_refresh_job",
+                resource_id=str(job_id),
+                operator_user_id=operator_user.get("id") if isinstance(operator_user, dict) else None,
+                operator_username=operator_user.get("username") if isinstance(operator_user, dict) else None,
+                metadata={
+                    "group_title": group_title,
+                },
+            )
 
     async def list_groups(self) -> List[IXBrowserGroup]:
         """
@@ -542,6 +760,740 @@ class IXBrowserService:
             return int(data_section or 0) > 0
         except Exception:  # noqa: BLE001
             return False
+
+    async def _emit_scan_progress(
+        self,
+        progress_callback: Optional[Callable[[Dict[str, Any]], Any]],
+        payload: Dict[str, Any],
+    ) -> None:
+        if not progress_callback:
+            return
+        try:
+            callback_result = progress_callback(payload)
+            if inspect.isawaitable(callback_result):
+                await callback_result
+        except Exception:  # noqa: BLE001
+            return
+
+    async def _scan_single_window_via_browser(
+        self,
+        playwright,
+        window: IXBrowserWindow,
+        target_group: IXBrowserGroupWindows,
+        keep_profile_open: bool = False,
+    ) -> IXBrowserSessionScanItem:
+        started_at = time.perf_counter()
+        close_success = False
+        success = False
+        session_status: Optional[int] = None
+        account: Optional[str] = None
+        account_plan: Optional[str] = None
+        session_obj: Optional[dict] = None
+        session_raw: Optional[str] = None
+        quota_remaining_count: Optional[int] = None
+        quota_total_count: Optional[int] = None
+        quota_reset_at: Optional[str] = None
+        quota_source: Optional[str] = None
+        quota_payload: Optional[dict] = None
+        quota_error: Optional[str] = None
+        error: Optional[str] = None
+        browser = None
+
+        try:
+            open_data = await self._open_profile(window.profile_id, restart_if_opened=True)
+            ws_endpoint = open_data.get("ws")
+            if not ws_endpoint:
+                debugging_address = open_data.get("debugging_address")
+                if debugging_address:
+                    ws_endpoint = f"http://{debugging_address}"
+
+            if not ws_endpoint:
+                raise IXBrowserConnectionError("打开窗口成功，但未返回调试地址（ws/debugging_address）")
+
+            browser = await playwright.chromium.connect_over_cdp(
+                ws_endpoint,
+                timeout=15_000
+            )
+            session_status, session_obj, session_raw = await self._fetch_sora_session(
+                browser,
+                window.profile_id,
+            )
+            account = self._extract_account(session_obj)
+            plan_from_sub = await self._fetch_sora_subscription_plan(
+                browser,
+                window.profile_id,
+                session_obj,
+            )
+            account_plan = plan_from_sub or self._extract_account_plan(session_obj)
+            try:
+                quota_info = await self._fetch_sora_quota(
+                    browser,
+                    window.profile_id,
+                    session_obj,
+                )
+                quota_remaining_count = quota_info.get("remaining_count")
+                quota_total_count = quota_info.get("total_count")
+                quota_reset_at = quota_info.get("reset_at")
+                quota_source = quota_info.get("source")
+                quota_payload = quota_info.get("payload")
+                quota_error = quota_info.get("error")
+            except Exception as quota_exc:  # noqa: BLE001
+                quota_error = str(quota_exc)
+            success = session_status == 200 and session_obj is not None
+        except Exception as exc:  # noqa: BLE001
+            error = str(exc)
+        finally:
+            if browser:
+                try:
+                    await browser.close()
+                except Exception:  # noqa: BLE001
+                    pass
+
+            if keep_profile_open:
+                close_success = True
+            else:
+                try:
+                    close_success = await self._close_profile(window.profile_id)
+                except Exception as close_exc:  # noqa: BLE001
+                    close_success = False
+                    if not error:
+                        error = f"窗口关闭失败：{close_exc}"
+
+        duration_ms = int((time.perf_counter() - started_at) * 1000)
+        return IXBrowserSessionScanItem(
+            profile_id=window.profile_id,
+            window_name=window.name,
+            group_id=target_group.id,
+            group_title=target_group.title,
+            session_status=session_status,
+            account=account,
+            account_plan=account_plan,
+            session=session_obj,
+            session_raw=session_raw,
+            quota_remaining_count=quota_remaining_count,
+            quota_total_count=quota_total_count,
+            quota_reset_at=quota_reset_at,
+            quota_source=quota_source,
+            quota_payload=quota_payload,
+            quota_error=quota_error,
+            proxy_mode=window.proxy_mode,
+            proxy_id=window.proxy_id,
+            proxy_type=window.proxy_type,
+            proxy_ip=window.proxy_ip,
+            proxy_port=window.proxy_port,
+            real_ip=window.real_ip,
+            proxy_local_id=window.proxy_local_id,
+            success=success,
+            close_success=close_success,
+            error=error,
+            duration_ms=duration_ms,
+        )
+
+    def _is_sora_cf_challenge(self, status: Optional[int], raw: Optional[str]) -> bool:
+        try:
+            status_int = int(status) if status is not None else None
+        except Exception:  # noqa: BLE001
+            status_int = None
+        if status_int != 403:
+            return False
+        if not isinstance(raw, str) or not raw.strip():
+            return False
+        lowered = raw.lower()
+        markers = ("just a moment", "challenge-platform", "cf-mitigated", "cloudflare")
+        return any(marker in lowered for marker in markers)
+
+    def _is_sora_token_auth_failure(
+        self,
+        status: Optional[int],
+        raw: Optional[str] = None,
+        payload: Optional[Dict[str, Any]] = None,
+    ) -> bool:
+        if status in (401, 403):
+            return True
+
+        candidate_texts: List[str] = []
+        if isinstance(raw, str) and raw.strip():
+            candidate_texts.append(raw.strip().lower())
+        if isinstance(payload, dict):
+            try:
+                candidate_texts.append(json.dumps(payload, ensure_ascii=False).lower())
+            except Exception:  # noqa: BLE001
+                pass
+            error_obj = payload.get("error")
+            if isinstance(error_obj, dict):
+                code = str(error_obj.get("code") or "").strip().lower()
+                message = str(error_obj.get("message") or "").strip().lower()
+                if code in {"token_expired", "invalid_token", "token_invalid"}:
+                    return True
+                if "token expired" in message or "invalid token" in message:
+                    return True
+
+        markers = (
+            "token_expired",
+            "token expired",
+            "invalid token",
+            "invalid_token",
+        )
+        for text in candidate_texts:
+            if any(marker in text for marker in markers):
+                return True
+        return False
+
+    async def _request_sora_api_via_page(self, page, url: str, access_token: str) -> Dict[str, Any]:
+        """
+        在 ixBrowser 的真实浏览器上下文内发起 API 请求，确保走 profile 代理与浏览器网络栈。
+        """
+        endpoint = str(url or "").strip()
+        token = str(access_token or "").strip()
+        if not endpoint:
+            return {"status": None, "raw": None, "json": None, "error": "缺少 url", "source": ""}
+        if not token:
+            return {"status": None, "raw": None, "json": None, "error": "缺少 accessToken", "source": endpoint}
+
+        headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
+        result = await self._sora_fetch_json_via_page(
+            page,
+            endpoint,
+            headers=headers,
+            timeout_ms=20_000,
+            retries=2,
+        )
+        status = result.get("status")
+        raw_text = result.get("raw") if isinstance(result.get("raw"), str) else None
+        payload = result.get("json") if isinstance(result.get("json"), dict) else None
+        error = result.get("error")
+        if result.get("is_cf") or self._is_sora_cf_challenge(status if isinstance(status, int) else None, raw_text):
+            error = "cf_challenge"
+        return {
+            "status": int(status) if isinstance(status, int) else status,
+            "raw": raw_text,
+            "json": payload,
+            "error": str(error) if error else None,
+            "source": endpoint,
+        }
+
+    async def _fetch_sora_session_via_browser(
+        self,
+        page,
+        access_token: str,
+    ) -> Tuple[Optional[int], Optional[dict], Optional[str]]:
+        """
+        使用 accessToken 在浏览器上下文内请求 session 数据（API 形式），失败再回退 /backend/me。
+        """
+        token = str(access_token or "").strip()
+        if not token:
+            return None, None, None
+
+        session_resp = await self._request_sora_api_via_page(page, "https://sora.chatgpt.com/api/auth/session", token)
+        session_status = session_resp.get("status")
+        session_payload = session_resp.get("json")
+        session_raw = session_resp.get("raw")
+
+        if int(session_status or 0) == 200 and isinstance(session_payload, dict):
+            session_obj = dict(session_payload)
+            if not self._extract_access_token(session_obj):
+                session_obj["accessToken"] = token
+            raw_text = (
+                session_raw
+                if isinstance(session_raw, str) and session_raw.strip()
+                else json.dumps(session_obj, ensure_ascii=False)
+            )
+            return int(session_status), session_obj, raw_text
+
+        me_resp = await self._request_sora_api_via_page(page, "https://sora.chatgpt.com/backend/me", token)
+        me_status = me_resp.get("status")
+        me_payload = me_resp.get("json")
+        if int(me_status or 0) == 200 and isinstance(me_payload, dict):
+            user_obj = me_payload.get("user") if isinstance(me_payload.get("user"), dict) else {}
+            user_obj = dict(user_obj) if isinstance(user_obj, dict) else {}
+            for field in ("email", "name", "id", "username"):
+                value = me_payload.get(field)
+                if value and field not in user_obj:
+                    user_obj[field] = value
+            session_obj2: Dict[str, Any] = {"accessToken": token, "user": user_obj}
+            for field in ("plan", "planType", "plan_type", "chatgpt_plan_type"):
+                if me_payload.get(field) is not None:
+                    session_obj2[field] = me_payload.get(field)
+            return 200, session_obj2, json.dumps(session_obj2, ensure_ascii=False)
+
+        status = int(session_status) if isinstance(session_status, int) else me_status
+        raw_text = session_raw if isinstance(session_raw, str) else None
+        return status, session_payload if isinstance(session_payload, dict) else None, raw_text
+
+    async def _fetch_sora_subscription_plan_via_browser(self, page, access_token: str) -> Dict[str, Any]:
+        result = await self._request_sora_api_via_page(
+            page,
+            "https://sora.chatgpt.com/backend/billing/subscriptions",
+            access_token,
+        )
+        plan = None
+        payload = result.get("json")
+        if int(result.get("status") or 0) == 200 and isinstance(payload, dict):
+            items = payload.get("data")
+            if isinstance(items, list) and items:
+                first = items[0] if isinstance(items[0], dict) else None
+                plan_obj = first.get("plan") if isinstance(first, dict) and isinstance(first.get("plan"), dict) else {}
+                for value in (plan_obj.get("id"), plan_obj.get("title")):
+                    normalized = self._normalize_account_plan(value)
+                    if normalized:
+                        plan = normalized
+                        break
+        return {
+            "plan": plan,
+            "status": result.get("status"),
+            "raw": result.get("raw"),
+            "payload": payload if isinstance(payload, dict) else None,
+            "error": result.get("error"),
+            "source": result.get("source"),
+        }
+
+    async def _fetch_sora_quota_via_browser(self, page, access_token: str) -> Dict[str, Any]:
+        result = await self._request_sora_api_via_page(
+            page,
+            "https://sora.chatgpt.com/backend/nf/check",
+            access_token,
+        )
+        payload = result.get("json")
+        status = result.get("status")
+        source = str(result.get("source") or "https://sora.chatgpt.com/backend/nf/check")
+
+        if result.get("error"):
+            return {
+                "remaining_count": None,
+                "total_count": None,
+                "reset_at": None,
+                "source": source,
+                "payload": payload if isinstance(payload, dict) else None,
+                "error": str(result.get("error")),
+                "status": status,
+                "raw": result.get("raw"),
+            }
+
+        if int(status or 0) != 200:
+            raw_text = result.get("raw")
+            detail = raw_text if isinstance(raw_text, str) and raw_text.strip() else "unknown error"
+            return {
+                "remaining_count": None,
+                "total_count": None,
+                "reset_at": None,
+                "source": source,
+                "payload": payload if isinstance(payload, dict) else None,
+                "error": f"nf/check 状态码 {status}: {str(detail)[:200]}",
+                "status": status,
+                "raw": raw_text,
+            }
+
+        parsed = self._parse_sora_nf_check(payload if isinstance(payload, dict) else {})
+        return {
+            "remaining_count": parsed.get("remaining_count"),
+            "total_count": parsed.get("total_count"),
+            "reset_at": parsed.get("reset_at"),
+            "source": source,
+            "payload": payload if isinstance(payload, dict) else None,
+            "error": None,
+            "status": status,
+            "raw": result.get("raw"),
+        }
+
+    async def scan_group_sora_sessions_silent_api(
+        self,
+        group_title: str = "Sora",
+        operator_user: Optional[dict] = None,
+        with_fallback: bool = True,
+        progress_callback: Optional[Callable[[Dict[str, Any]], Any]] = None,
+    ) -> IXBrowserSessionScanResponse:
+        groups = await self.list_group_windows()
+        target = self._find_group_by_title(groups, group_title)
+        if not target:
+            raise IXBrowserNotFoundError(f"未找到分组：{group_title}")
+
+        target_windows = list(target.windows or [])
+        scanned_items: Dict[int, IXBrowserSessionScanItem] = {}
+        total_windows = len(target_windows)
+        processed_windows = 0
+        success_windows = 0
+        failed_windows = 0
+
+        await self._emit_scan_progress(
+            progress_callback,
+            {
+                "event": "start",
+                "status": "running",
+                "group_title": target.title,
+                "total_windows": total_windows,
+                "processed_windows": 0,
+                "success_count": 0,
+                "failed_count": 0,
+                "progress_pct": self._calc_progress_pct(0, total_windows),
+                "current_profile_id": None,
+                "current_window_name": None,
+                "message": "开始静默更新账号信息",
+                "error": None,
+                "run_id": None,
+            },
+        )
+
+        try:
+            opened_before_ids = await self._list_opened_profile_ids()
+        except Exception:  # noqa: BLE001
+            opened_before_ids = []
+
+        opened_before_set: set[int] = set()
+        for raw in opened_before_ids or []:
+            try:
+                opened_before_set.add(int(raw))
+            except (TypeError, ValueError):
+                continue
+
+        async with async_playwright() as playwright:
+            for window in target_windows:
+                await self._emit_scan_progress(
+                    progress_callback,
+                    {
+                        "event": "window_start",
+                        "status": "running",
+                        "group_title": target.title,
+                        "total_windows": total_windows,
+                        "processed_windows": processed_windows,
+                        "success_count": success_windows,
+                        "failed_count": failed_windows,
+                        "progress_pct": self._calc_progress_pct(processed_windows, total_windows),
+                        "current_profile_id": int(window.profile_id),
+                        "current_window_name": window.name,
+                        "message": f"正在静默更新 {window.name}",
+                        "error": None,
+                        "run_id": None,
+                    },
+                )
+
+                started_at = time.perf_counter()
+                profile_id = int(window.profile_id)
+                keep_profile_open = profile_id in opened_before_set
+
+                history_session = sqlite_db.get_latest_ixbrowser_profile_session(target.title, profile_id)
+                session_seed = history_session.get("session_json") if isinstance(history_session, dict) else None
+                access_token = self._extract_access_token(session_seed)
+
+                item: Optional[IXBrowserSessionScanItem] = None
+                should_browser_fallback = False
+
+                if not access_token:
+                    should_browser_fallback = True
+                else:
+                    browser = None
+                    opened_by_job = False
+                    try:
+                        open_data: Optional[dict] = None
+                        try:
+                            open_data = await self._get_opened_profile(profile_id)
+                        except Exception:  # noqa: BLE001
+                            open_data = None
+
+                        if not open_data:
+                            open_data, _headless_used = await self._open_profile_silent(profile_id)
+                            opened_by_job = True
+
+                        ws_endpoint = open_data.get("ws") if isinstance(open_data, dict) else None
+                        if not ws_endpoint and isinstance(open_data, dict):
+                            debugging_address = open_data.get("debugging_address")
+                            if debugging_address:
+                                ws_endpoint = f"http://{debugging_address}"
+                        if not ws_endpoint:
+                            raise IXBrowserConnectionError("打开窗口成功，但未返回调试地址（ws/debugging_address）")
+
+                        browser = await playwright.chromium.connect_over_cdp(ws_endpoint, timeout=20_000)
+                        context = browser.contexts[0] if getattr(browser, "contexts", None) else await browser.new_context()
+                        page = context.pages[0] if getattr(context, "pages", None) else await context.new_page()
+
+                        try:
+                            await self._prepare_sora_page(page, profile_id)
+                        except Exception:  # noqa: BLE001
+                            pass
+
+                        try:
+                            await page.goto("https://sora.chatgpt.com/drafts", wait_until="domcontentloaded", timeout=40_000)
+                            await page.wait_for_timeout(1200)
+                        except PlaywrightTimeoutError as exc:
+                            raise IXBrowserConnectionError("访问 Sora drafts 超时") from exc
+
+                        session_status, session_obj, session_raw = await self._fetch_sora_session_via_browser(page, access_token)
+                        subscription_info = await self._fetch_sora_subscription_plan_via_browser(page, access_token)
+                        quota_info = await self._fetch_sora_quota_via_browser(page, access_token)
+
+                        def is_cf(status: Any, raw: Any, error: Any = None) -> bool:
+                            if error == "cf_challenge":
+                                return True
+                            return self._is_sora_cf_challenge(
+                                status if isinstance(status, int) else None,
+                                raw if isinstance(raw, str) else None,
+                            )
+
+                        cf_challenge = (
+                            is_cf(session_status, session_raw)
+                            or is_cf(subscription_info.get("status"), subscription_info.get("raw"), subscription_info.get("error"))
+                            or is_cf(quota_info.get("status"), quota_info.get("raw"), quota_info.get("error"))
+                        )
+
+                        if cf_challenge:
+                            # 轻量重试一次，让浏览器自行完成跳转/挑战页面加载（不做绕过）。
+                            try:
+                                await page.wait_for_timeout(2500)
+                                await page.goto("https://sora.chatgpt.com/", wait_until="domcontentloaded", timeout=40_000)
+                                await page.wait_for_timeout(1200)
+                                await page.goto("https://sora.chatgpt.com/drafts", wait_until="domcontentloaded", timeout=40_000)
+                                await page.wait_for_timeout(1200)
+                            except Exception:  # noqa: BLE001
+                                pass
+
+                            session_status, session_obj, session_raw = await self._fetch_sora_session_via_browser(page, access_token)
+                            subscription_info = await self._fetch_sora_subscription_plan_via_browser(page, access_token)
+                            quota_info = await self._fetch_sora_quota_via_browser(page, access_token)
+                            cf_challenge = (
+                                is_cf(session_status, session_raw)
+                                or is_cf(subscription_info.get("status"), subscription_info.get("raw"), subscription_info.get("error"))
+                                or is_cf(quota_info.get("status"), quota_info.get("raw"), quota_info.get("error"))
+                            )
+
+                        if cf_challenge:
+                            duration_ms = int((time.perf_counter() - started_at) * 1000)
+                            item = IXBrowserSessionScanItem(
+                                profile_id=profile_id,
+                                window_name=window.name,
+                                group_id=target.id,
+                                group_title=target.title,
+                                session_status=int(session_status) if isinstance(session_status, int) else None,
+                                session=session_obj if isinstance(session_obj, dict) else None,
+                                session_raw=session_raw if isinstance(session_raw, str) else None,
+                                quota_source=str(quota_info.get("source") or "https://sora.chatgpt.com/backend/nf/check"),
+                                quota_payload=quota_info.get("payload") if isinstance(quota_info.get("payload"), dict) else None,
+                                quota_error="命中 Cloudflare 挑战页（403），请手动打开窗口完成验证/登录后重试",
+                                proxy_mode=window.proxy_mode,
+                                proxy_id=window.proxy_id,
+                                proxy_type=window.proxy_type,
+                                proxy_ip=window.proxy_ip,
+                                proxy_port=window.proxy_port,
+                                real_ip=window.real_ip,
+                                proxy_local_id=window.proxy_local_id,
+                                success=False,
+                                close_success=True,
+                                error="cf_challenge",
+                                duration_ms=duration_ms,
+                            )
+                        else:
+                            session_auth_failed = self._is_sora_token_auth_failure(
+                                session_status if isinstance(session_status, int) else None,
+                                session_raw if isinstance(session_raw, str) else None,
+                                session_obj if isinstance(session_obj, dict) else None,
+                            )
+                            subscription_auth_failed = self._is_sora_token_auth_failure(
+                                subscription_info.get("status") if isinstance(subscription_info.get("status"), int) else None,
+                                subscription_info.get("raw"),
+                                subscription_info.get("payload"),
+                            )
+                            quota_auth_failed = self._is_sora_token_auth_failure(
+                                quota_info.get("status") if isinstance(quota_info.get("status"), int) else None,
+                                quota_info.get("raw"),
+                                quota_info.get("payload"),
+                            )
+                            should_browser_fallback = session_auth_failed or subscription_auth_failed or quota_auth_failed
+
+                            if not should_browser_fallback:
+                                account_plan = subscription_info.get("plan") or self._extract_account_plan(session_obj)
+                                success = int(session_status or 0) == 200 and isinstance(session_obj, dict)
+                                err = None
+                                if not success and session_status is not None:
+                                    err = f"session 状态码 {session_status}"
+                                if not err and quota_info.get("error"):
+                                    err = str(quota_info.get("error"))
+                                duration_ms = int((time.perf_counter() - started_at) * 1000)
+                                item = IXBrowserSessionScanItem(
+                                    profile_id=profile_id,
+                                    window_name=window.name,
+                                    group_id=target.id,
+                                    group_title=target.title,
+                                    session_status=int(session_status) if isinstance(session_status, int) else None,
+                                    account=self._extract_account(session_obj),
+                                    account_plan=account_plan,
+                                    session=session_obj if isinstance(session_obj, dict) else None,
+                                    session_raw=session_raw if isinstance(session_raw, str) else None,
+                                    quota_remaining_count=quota_info.get("remaining_count"),
+                                    quota_total_count=quota_info.get("total_count"),
+                                    quota_reset_at=quota_info.get("reset_at"),
+                                    quota_source=quota_info.get("source"),
+                                    quota_payload=quota_info.get("payload") if isinstance(quota_info.get("payload"), dict) else None,
+                                    quota_error=quota_info.get("error"),
+                                    proxy_mode=window.proxy_mode,
+                                    proxy_id=window.proxy_id,
+                                    proxy_type=window.proxy_type,
+                                    proxy_ip=window.proxy_ip,
+                                    proxy_port=window.proxy_port,
+                                    real_ip=window.real_ip,
+                                    proxy_local_id=window.proxy_local_id,
+                                    success=success,
+                                    close_success=True,
+                                    error=err,
+                                    duration_ms=duration_ms,
+                                )
+                    except Exception as exc:  # noqa: BLE001
+                        duration_ms = int((time.perf_counter() - started_at) * 1000)
+                        item = IXBrowserSessionScanItem(
+                            profile_id=profile_id,
+                            window_name=window.name,
+                            group_id=target.id,
+                            group_title=target.title,
+                            proxy_mode=window.proxy_mode,
+                            proxy_id=window.proxy_id,
+                            proxy_type=window.proxy_type,
+                            proxy_ip=window.proxy_ip,
+                            proxy_port=window.proxy_port,
+                            real_ip=window.real_ip,
+                            proxy_local_id=window.proxy_local_id,
+                            success=False,
+                            close_success=True,
+                            error=str(exc),
+                            duration_ms=duration_ms,
+                        )
+                    finally:
+                        if browser:
+                            try:
+                                await browser.close()
+                            except Exception:  # noqa: BLE001
+                                pass
+
+                        # 若本次任务打开了窗口，且后续不需要继续补扫，则按“尽量静默”的策略关闭窗口。
+                        if opened_by_job and not keep_profile_open and not should_browser_fallback:
+                            close_success = True
+                            try:
+                                close_success = await self._close_profile(profile_id)
+                            except Exception as close_exc:  # noqa: BLE001
+                                close_success = False
+                                if item is not None and not item.error:
+                                    item.error = f"窗口关闭失败：{close_exc}"
+                            if item is not None:
+                                item.close_success = bool(close_success)
+
+                if should_browser_fallback:
+                    try:
+                        item = await self._scan_single_window_via_browser(
+                            playwright=playwright,
+                            window=window,
+                            target_group=target,
+                            keep_profile_open=keep_profile_open,
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        duration_ms = int((time.perf_counter() - started_at) * 1000)
+                        item = IXBrowserSessionScanItem(
+                            profile_id=profile_id,
+                            window_name=window.name,
+                            group_id=target.id,
+                            group_title=target.title,
+                            proxy_mode=window.proxy_mode,
+                            proxy_id=window.proxy_id,
+                            proxy_type=window.proxy_type,
+                            proxy_ip=window.proxy_ip,
+                            proxy_port=window.proxy_port,
+                            real_ip=window.real_ip,
+                            proxy_local_id=window.proxy_local_id,
+                            success=False,
+                            close_success=False,
+                            error=str(exc),
+                            duration_ms=duration_ms,
+                        )
+
+                if item is None:
+                    duration_ms = int((time.perf_counter() - started_at) * 1000)
+                    item = IXBrowserSessionScanItem(
+                        profile_id=profile_id,
+                        window_name=window.name,
+                        group_id=target.id,
+                        group_title=target.title,
+                        proxy_mode=window.proxy_mode,
+                        proxy_id=window.proxy_id,
+                        proxy_type=window.proxy_type,
+                        proxy_ip=window.proxy_ip,
+                        proxy_port=window.proxy_port,
+                        real_ip=window.real_ip,
+                        proxy_local_id=window.proxy_local_id,
+                        success=False,
+                        close_success=True,
+                        error="未知错误",
+                        duration_ms=duration_ms,
+                    )
+
+                scanned_items[profile_id] = item
+
+                processed_windows += 1
+                if item.success:
+                    success_windows += 1
+                else:
+                    failed_windows += 1
+                await self._emit_scan_progress(
+                    progress_callback,
+                    {
+                        "event": "window_done",
+                        "status": "running",
+                        "group_title": target.title,
+                        "total_windows": total_windows,
+                        "processed_windows": processed_windows,
+                        "success_count": success_windows,
+                        "failed_count": failed_windows,
+                        "progress_pct": self._calc_progress_pct(processed_windows, total_windows),
+                        "current_profile_id": profile_id,
+                        "current_window_name": window.name,
+                        "message": f"窗口 {window.name} 更新完成",
+                        "error": item.error,
+                        "run_id": None,
+                    },
+                )
+
+        final_results = [scanned_items[int(window.profile_id)] for window in target_windows]
+        response = IXBrowserSessionScanResponse(
+            group_id=target.id,
+            group_title=target.title,
+            total_windows=len(target_windows),
+            success_count=sum(1 for it in final_results if it.success),
+            failed_count=sum(1 for it in final_results if not it.success),
+            results=final_results,
+        )
+        run_id = self._save_scan_response(
+            response=response,
+            operator_user=operator_user,
+            keep_latest_runs=self.scan_history_limit,
+        )
+        response.run_id = run_id
+        run_row = sqlite_db.get_ixbrowser_scan_run(run_id)
+        response.scanned_at = str(run_row.get("scanned_at")) if run_row else None
+        if response.scanned_at:
+            for it in response.results:
+                it.scanned_at = response.scanned_at
+
+        if with_fallback:
+            self._apply_fallback_from_history(response)
+            if response.run_id is not None:
+                sqlite_db.update_ixbrowser_scan_run_fallback_count(response.run_id, response.fallback_applied_count)
+                for it in response.results:
+                    if it.fallback_applied:
+                        sqlite_db.upsert_ixbrowser_scan_result(response.run_id, it.model_dump())
+
+        await self._emit_scan_progress(
+            progress_callback,
+            {
+                "event": "finished",
+                "status": "completed",
+                "group_title": target.title,
+                "total_windows": total_windows,
+                "processed_windows": processed_windows,
+                "success_count": success_windows,
+                "failed_count": failed_windows,
+                "progress_pct": self._calc_progress_pct(processed_windows, total_windows),
+                "current_profile_id": None,
+                "current_window_name": None,
+                "message": "静默更新完成",
+                "error": None,
+                "run_id": response.run_id,
+            },
+        )
+        return response
 
     async def scan_group_sora_sessions(
         self,
@@ -5316,7 +6268,7 @@ class IXBrowserService:
                 return window
         return None
 
-    async def _open_profile(self, profile_id: int, restart_if_opened: bool = False) -> dict:
+    async def _open_profile(self, profile_id: int, restart_if_opened: bool = False, headless: bool = False) -> dict:
         payload = {
             "profile_id": profile_id,
             "args": ["--disable-extension-welcome-page"],
@@ -5325,6 +6277,8 @@ class IXBrowserService:
             "cookies_backup": True,
             "cookie": ""
         }
+        if headless:
+            payload["headless"] = True
         try:
             data = await self._post("/api/v2/profile-open", payload)
         except IXBrowserAPIError as exc:
@@ -5357,6 +6311,45 @@ class IXBrowserService:
         if not isinstance(result, dict):
             raise IXBrowserConnectionError("打开窗口返回格式异常")
         return result
+
+    def _should_degrade_silent_open(self, exc: IXBrowserAPIError) -> bool:
+        """
+        判断 headless 打开失败时是否需要降级为普通打开。
+
+        说明：不同版本 ixBrowser 对 headless 支持不一致，且部分状态（如云备份）会导致打开失败。
+        这里仅做“尽量不打断”的降级，不做额外重试或绕过策略。
+        """
+        code = getattr(exc, "code", None)
+        if code in {2012}:
+            return True
+        message = str(getattr(exc, "message", "") or "")
+        lowered = message.lower()
+        markers = [
+            "headless",
+            "无头",
+            "后台",
+            "cloud backup",
+        ]
+        if any(marker in lowered for marker in markers):
+            return True
+        if "云备份" in message or "备份" in message:
+            return True
+        return False
+
+    async def _open_profile_silent(self, profile_id: int) -> Tuple[dict, bool]:
+        """
+        尝试以 headless 模式打开窗口（尽量静默）；若失败且命中已知不兼容场景，则降级为普通打开。
+
+        Returns:
+            (open_data, headless_used)
+        """
+        try:
+            return await self._open_profile(profile_id, restart_if_opened=True, headless=True), True
+        except IXBrowserAPIError as exc:
+            if not self._should_degrade_silent_open(exc):
+                raise
+            # 降级为普通打开（可能会弹窗），并由上层在进度信息中提示。
+            return await self._open_profile(profile_id, restart_if_opened=True, headless=False), False
 
     async def _list_opened_profile_ids(self) -> List[int]:
         items = await self._list_opened_profiles()

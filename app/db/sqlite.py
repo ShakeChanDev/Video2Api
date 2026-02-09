@@ -264,6 +264,38 @@ class SQLiteDB:
 
         cursor.execute(
             '''
+            CREATE TABLE IF NOT EXISTS ixbrowser_silent_refresh_jobs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                group_title TEXT NOT NULL,
+                status TEXT NOT NULL,
+                total_windows INTEGER NOT NULL DEFAULT 0,
+                processed_windows INTEGER NOT NULL DEFAULT 0,
+                success_count INTEGER NOT NULL DEFAULT 0,
+                failed_count INTEGER NOT NULL DEFAULT 0,
+                progress_pct REAL NOT NULL DEFAULT 0,
+                current_profile_id INTEGER,
+                current_window_name TEXT,
+                message TEXT,
+                error TEXT,
+                run_id INTEGER,
+                with_fallback INTEGER NOT NULL DEFAULT 1,
+                operator_user_id INTEGER,
+                operator_username TEXT,
+                created_at TIMESTAMP NOT NULL,
+                updated_at TIMESTAMP NOT NULL,
+                finished_at TIMESTAMP
+            )
+            '''
+        )
+        cursor.execute(
+            'CREATE INDEX IF NOT EXISTS idx_ix_silent_jobs_group ON ixbrowser_silent_refresh_jobs(group_title, id DESC)'
+        )
+        cursor.execute(
+            'CREATE INDEX IF NOT EXISTS idx_ix_silent_jobs_status ON ixbrowser_silent_refresh_jobs(status, updated_at DESC)'
+        )
+
+        cursor.execute(
+            '''
             CREATE TABLE IF NOT EXISTS ixbrowser_sora_generate_jobs (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 profile_id INTEGER NOT NULL,
@@ -810,6 +842,141 @@ class SQLiteDB:
         conn.close()
         return success
 
+    def _normalize_ixbrowser_silent_refresh_job_row(self, row: Dict[str, Any]) -> Dict[str, Any]:
+        data = dict(row)
+        data["with_fallback"] = bool(data.get("with_fallback"))
+        return data
+
+    def create_ixbrowser_silent_refresh_job(self, data: Dict[str, Any]) -> int:
+        conn = self._get_conn()
+        cursor = conn.cursor()
+        now = self._now_str()
+        cursor.execute(
+            '''
+            INSERT INTO ixbrowser_silent_refresh_jobs (
+                group_title, status, total_windows, processed_windows, success_count, failed_count,
+                progress_pct, current_profile_id, current_window_name, message, error, run_id, with_fallback,
+                operator_user_id, operator_username, created_at, updated_at, finished_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''',
+            (
+                str(data.get("group_title") or ""),
+                str(data.get("status") or "queued"),
+                int(data.get("total_windows") or 0),
+                int(data.get("processed_windows") or 0),
+                int(data.get("success_count") or 0),
+                int(data.get("failed_count") or 0),
+                float(data.get("progress_pct") or 0),
+                data.get("current_profile_id"),
+                data.get("current_window_name"),
+                data.get("message"),
+                data.get("error"),
+                data.get("run_id"),
+                1 if bool(data.get("with_fallback", True)) else 0,
+                data.get("operator_user_id"),
+                data.get("operator_username"),
+                now,
+                now,
+                data.get("finished_at"),
+            ),
+        )
+        job_id = int(cursor.lastrowid)
+        conn.commit()
+        conn.close()
+        return job_id
+
+    def get_ixbrowser_silent_refresh_job(self, job_id: int) -> Optional[Dict[str, Any]]:
+        conn = self._get_conn()
+        cursor = conn.cursor()
+        cursor.execute('SELECT * FROM ixbrowser_silent_refresh_jobs WHERE id = ?', (int(job_id),))
+        row = cursor.fetchone()
+        conn.close()
+        return self._normalize_ixbrowser_silent_refresh_job_row(dict(row)) if row else None
+
+    def get_running_ixbrowser_silent_refresh_job(self, group_title: str) -> Optional[Dict[str, Any]]:
+        conn = self._get_conn()
+        cursor = conn.cursor()
+        cursor.execute(
+            '''
+            SELECT * FROM ixbrowser_silent_refresh_jobs
+            WHERE group_title = ?
+              AND status IN ('queued', 'running')
+            ORDER BY id DESC
+            LIMIT 1
+            ''',
+            (str(group_title or ""),),
+        )
+        row = cursor.fetchone()
+        conn.close()
+        return self._normalize_ixbrowser_silent_refresh_job_row(dict(row)) if row else None
+
+    def update_ixbrowser_silent_refresh_job(self, job_id: int, patch: Dict[str, Any]) -> bool:
+        if not patch:
+            return False
+
+        allow_keys = {
+            "group_title",
+            "status",
+            "total_windows",
+            "processed_windows",
+            "success_count",
+            "failed_count",
+            "progress_pct",
+            "current_profile_id",
+            "current_window_name",
+            "message",
+            "error",
+            "run_id",
+            "with_fallback",
+            "operator_user_id",
+            "operator_username",
+            "finished_at",
+        }
+        sets = []
+        params = []
+        for key, value in patch.items():
+            if key not in allow_keys:
+                continue
+            if key == "with_fallback":
+                value = 1 if bool(value) else 0
+            sets.append(f"{key} = ?")
+            params.append(value)
+        if not sets:
+            return False
+
+        sets.append("updated_at = ?")
+        params.append(self._now_str())
+        params.append(int(job_id))
+
+        conn = self._get_conn()
+        cursor = conn.cursor()
+        cursor.execute(f"UPDATE ixbrowser_silent_refresh_jobs SET {', '.join(sets)} WHERE id = ?", params)
+        success = cursor.rowcount > 0
+        conn.commit()
+        conn.close()
+        return success
+
+    def fail_running_ixbrowser_silent_refresh_jobs(self, reason: str) -> int:
+        now = self._now_str()
+        conn = self._get_conn()
+        cursor = conn.cursor()
+        cursor.execute(
+            '''
+            UPDATE ixbrowser_silent_refresh_jobs
+            SET status = 'failed',
+                error = ?,
+                message = ?,
+                updated_at = ?,
+                finished_at = COALESCE(finished_at, ?)
+            WHERE status IN ('queued', 'running')
+            ''',
+            (str(reason or ""), str(reason or ""), now, now),
+        )
+        affected = int(cursor.rowcount or 0)
+        conn.commit()
+        conn.close()
+        return affected
+
     def get_ixbrowser_scan_runs(self, group_title: str, limit: int = 10) -> List[Dict[str, Any]]:
         conn = self._get_conn()
         cursor = conn.cursor()
@@ -820,6 +987,35 @@ class SQLiteDB:
         rows = cursor.fetchall()
         conn.close()
         return [dict(row) for row in rows]
+
+    def get_latest_ixbrowser_profile_session(self, group_title: str, profile_id: int) -> Optional[Dict[str, Any]]:
+        conn = self._get_conn()
+        cursor = conn.cursor()
+        cursor.execute(
+            '''
+            SELECT run_id, profile_id, group_title, session_json, session_raw, scanned_at
+            FROM ixbrowser_scan_results
+            WHERE group_title = ?
+              AND profile_id = ?
+              AND session_json IS NOT NULL
+              AND TRIM(session_json) != ''
+            ORDER BY run_id DESC, id DESC
+            LIMIT 1
+            ''',
+            (str(group_title or ""), int(profile_id)),
+        )
+        row = cursor.fetchone()
+        conn.close()
+        if not row:
+            return None
+        data = dict(row)
+        session_json = data.get("session_json")
+        if isinstance(session_json, str):
+            try:
+                data["session_json"] = json.loads(session_json)
+            except Exception:
+                data["session_json"] = None
+        return data
 
     def get_ixbrowser_scan_results_by_run(self, run_id: int) -> List[Dict[str, Any]]:
         conn = self._get_conn()

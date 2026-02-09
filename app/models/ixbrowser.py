@@ -99,6 +99,33 @@ class IXBrowserScanRunSummary(BaseModel):
     operator_username: Optional[str] = None
 
 
+class IXBrowserSilentRefreshJob(BaseModel):
+    job_id: int
+    group_title: str
+    status: str
+    total_windows: int = 0
+    processed_windows: int = 0
+    success_count: int = 0
+    failed_count: int = 0
+    progress_pct: float = 0
+    current_profile_id: Optional[int] = None
+    current_window_name: Optional[str] = None
+    message: Optional[str] = None
+    error: Optional[str] = None
+    run_id: Optional[int] = None
+    with_fallback: bool = True
+    operator_user_id: Optional[int] = None
+    operator_username: Optional[str] = None
+    created_at: str
+    updated_at: str
+    finished_at: Optional[str] = None
+
+
+class IXBrowserSilentRefreshCreateResponse(BaseModel):
+    job: IXBrowserSilentRefreshJob
+    reused: bool = False
+
+
 class IXBrowserGenerateRequest(BaseModel):
     profile_id: int
     prompt: str

@@ -49,3 +49,22 @@ def test_ixbrowser_stream_rejects_token_of_missing_user(client):
     )
     assert resp.status_code == 401
 
+
+def test_ixbrowser_silent_refresh_stream_requires_token(client):
+    resp = client.get("/api/v1/ixbrowser/sora-session-accounts/silent-refresh/stream", params={"job_id": 1})
+    assert resp.status_code == 401
+
+    bad_resp = client.get(
+        "/api/v1/ixbrowser/sora-session-accounts/silent-refresh/stream",
+        params={"job_id": 1, "token": "bad"},
+    )
+    assert bad_resp.status_code == 401
+
+
+def test_ixbrowser_silent_refresh_stream_rejects_token_of_missing_user(client):
+    token = create_access_token({"sub": "no-such-user"})
+    resp = client.get(
+        "/api/v1/ixbrowser/sora-session-accounts/silent-refresh/stream",
+        params={"token": token, "job_id": 1},
+    )
+    assert resp.status_code == 401

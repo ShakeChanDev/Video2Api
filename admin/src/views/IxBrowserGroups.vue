@@ -24,12 +24,16 @@
             <strong>{{ selectedGroup.window_count || 0 }}</strong>
           </div>
         </div>
+        <div class="command-note">静默更新优先通过 API 拉取账号数据；token 异常时会自动补扫窗口（可能短暂弹窗）。</div>
       </div>
       <div class="command-right">
         <el-tag size="large" :type="statusTagType">{{ statusText }}</el-tag>
-        <el-button size="large" @click="refreshAll" :loading="latestLoading">刷新</el-button>
-        <el-button size="large" type="warning" :loading="scanLoading" @click="scanNow">
+        <el-button size="large" @click="refreshAll" :loading="latestLoading" :disabled="actionLockedBySilentRefresh">刷新</el-button>
+        <el-button size="large" type="warning" :loading="scanLoading" :disabled="actionLockedBySilentRefresh" @click="scanNow">
           扫描账号与次数
+        </el-button>
+        <el-button size="large" type="primary" :loading="silentRefreshStarting" :disabled="actionLockedBySilentRefresh || scanLoading" @click="startSilentRefresh">
+          {{ silentRefreshButtonText }}
         </el-button>
       </div>
     </section>
@@ -184,7 +188,7 @@
         </el-table-column>
       </el-table>
       <el-empty v-else description="暂无扫描结果" :image-size="90">
-        <el-button type="primary" :loading="scanLoading" @click="scanNow">立即扫描</el-button>
+        <el-button type="primary" :loading="scanLoading" :disabled="actionLockedBySilentRefresh" @click="scanNow">立即扫描</el-button>
       </el-empty>
     </el-card>
 
@@ -199,6 +203,9 @@ import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { formatRelativeTimeZh } from '../utils/relativeTime'
 import {
+  buildIxBrowserSilentRefreshStreamUrl,
+  createIxBrowserSilentRefreshJob,
+  getIxBrowserSilentRefreshJob,
   getIxBrowserGroupWindows,
   getLatestIxBrowserSoraSessionAccounts,
   getSoraAccountWeights,
@@ -213,6 +220,9 @@ const weightsLoading = ref(false)
 const realtimeStatus = ref('disconnected')
 let realtimeSource = null
 let relativeTimeTimer = null
+let silentRefreshSource = null
+let silentRefreshReconnectTimer = null
+let silentRefreshReconnectAttempt = 0
 const cachePrefix = 'sora_accounts_cache_'
 const nowTick = ref(Date.now())
 
@@ -227,6 +237,10 @@ const currentSessionText = ref('')
 const openingProfileIds = ref({})
 const scanTableRef = ref(null)
 const selectedProfileIds = ref([])
+const silentRefreshState = ref(null)
+const silentRefreshStarting = ref(false)
+const silentRefreshJobId = ref(null)
+const silentRefreshWarned = ref(false)
 
 const parseScanTime = (value) => {
   if (!value) return 0
@@ -297,8 +311,28 @@ const metrics = computed(() => {
 
 const currentRunId = computed(() => scanData.value?.run_id || '-')
 
+const isSilentRefreshRunning = computed(() => {
+  const status = String(silentRefreshState.value?.status || '').trim().toLowerCase()
+  return status === 'queued' || status === 'running'
+})
+
+const actionLockedBySilentRefresh = computed(() => {
+  if (silentRefreshStarting.value) return true
+  return isSilentRefreshRunning.value
+})
+
+const silentRefreshButtonText = computed(() => {
+  if (!actionLockedBySilentRefresh.value) return '静默更新账号信息'
+  const total = Number(silentRefreshState.value?.total_windows || 0)
+  const processed = Number(silentRefreshState.value?.processed_windows || 0)
+  const pctRaw = Number(silentRefreshState.value?.progress_pct || 0)
+  const pct = Number.isFinite(pctRaw) ? Math.max(0, Math.min(100, Math.round(pctRaw))) : 0
+  return `更新中 ${processed}/${total} (${pct}%)`
+})
+
 const statusText = computed(() => {
   if (scanLoading.value) return '扫描中'
+  if (isSilentRefreshRunning.value) return '静默更新中'
   if (!scanData.value) return '暂无数据'
   if (scanData.value.failed_count > 0) return '有失败'
   return '正常'
@@ -306,6 +340,7 @@ const statusText = computed(() => {
 
 const statusTagType = computed(() => {
   if (scanLoading.value) return 'warning'
+  if (isSilentRefreshRunning.value) return 'warning'
   if (!scanData.value) return 'info'
   if (scanData.value.failed_count > 0) return 'danger'
   return 'success'
@@ -439,6 +474,162 @@ const startRealtimeStream = () => {
   }
 }
 
+const clearSilentRefreshReconnectTimer = () => {
+  if (silentRefreshReconnectTimer) {
+    clearTimeout(silentRefreshReconnectTimer)
+    silentRefreshReconnectTimer = null
+  }
+}
+
+const stopSilentRefreshStream = () => {
+  clearSilentRefreshReconnectTimer()
+  if (silentRefreshSource) {
+    silentRefreshSource.close()
+    silentRefreshSource = null
+  }
+}
+
+const resetSilentRefreshState = () => {
+  stopSilentRefreshStream()
+  silentRefreshReconnectAttempt = 0
+  silentRefreshJobId.value = null
+  silentRefreshState.value = null
+  silentRefreshStarting.value = false
+  silentRefreshWarned.value = false
+}
+
+const normalizeSilentRefreshPayload = (payload) => {
+  if (!payload || typeof payload !== 'object') return null
+  const normalized = { ...payload }
+  normalized.job_id = Number(normalized.job_id || 0)
+  normalized.total_windows = Number(normalized.total_windows || 0)
+  normalized.processed_windows = Number(normalized.processed_windows || 0)
+  normalized.success_count = Number(normalized.success_count || 0)
+  normalized.failed_count = Number(normalized.failed_count || 0)
+  normalized.progress_pct = Number(normalized.progress_pct || 0)
+  normalized.run_id = normalized.run_id === null || normalized.run_id === undefined ? null : Number(normalized.run_id)
+  return normalized
+}
+
+const applySilentRefreshPayload = (payload) => {
+  const normalized = normalizeSilentRefreshPayload(payload)
+  if (!normalized) return null
+  if (silentRefreshJobId.value && Number(normalized.job_id || 0) !== Number(silentRefreshJobId.value)) return null
+  silentRefreshState.value = normalized
+  return normalized
+}
+
+const scheduleSilentRefreshReconnect = (jobId) => {
+  silentRefreshReconnectAttempt += 1
+  const delay = Math.min(10000, 1000 * (2 ** Math.max(0, silentRefreshReconnectAttempt - 1)))
+  clearSilentRefreshReconnectTimer()
+  silentRefreshReconnectTimer = window.setTimeout(() => {
+    connectSilentRefreshStream(jobId)
+  }, delay)
+}
+
+const handleSilentRefreshDone = async (payload) => {
+  const normalized = applySilentRefreshPayload(payload)
+  stopSilentRefreshStream()
+  silentRefreshStarting.value = false
+  silentRefreshReconnectAttempt = 0
+
+  if (normalized?.status === 'failed' && !silentRefreshWarned.value) {
+    silentRefreshWarned.value = true
+    ElMessage.warning(normalized?.error || normalized?.message || '静默更新失败')
+  }
+
+  await loadLatest()
+  await loadWeights()
+}
+
+const probeSilentRefreshJobStatus = async (jobId) => {
+  try {
+    const job = await getIxBrowserSilentRefreshJob(jobId)
+    const normalized = applySilentRefreshPayload(job)
+    if (!normalized) return false
+    if (normalized.status === 'completed' || normalized.status === 'failed') {
+      await handleSilentRefreshDone(normalized)
+      return true
+    }
+  } catch {
+  }
+  return false
+}
+
+const connectSilentRefreshStream = (jobId) => {
+  stopSilentRefreshStream()
+  if (!jobId || Number(jobId) <= 0) return
+
+  const currentJobId = Number(jobId)
+  const url = buildIxBrowserSilentRefreshStreamUrl(currentJobId)
+  silentRefreshSource = new EventSource(url)
+
+  silentRefreshSource.addEventListener('snapshot', (event) => {
+    try {
+      const payload = JSON.parse(event.data)
+      applySilentRefreshPayload(payload)
+    } catch {
+    }
+  })
+
+  silentRefreshSource.addEventListener('progress', (event) => {
+    try {
+      const payload = JSON.parse(event.data)
+      applySilentRefreshPayload(payload)
+    } catch {
+    }
+  })
+
+  silentRefreshSource.addEventListener('done', (event) => {
+    try {
+      const payload = JSON.parse(event.data)
+      handleSilentRefreshDone(payload)
+    } catch {
+      handleSilentRefreshDone(silentRefreshState.value || {})
+    }
+  })
+
+  silentRefreshSource.onerror = async () => {
+    if (!silentRefreshJobId.value || Number(silentRefreshJobId.value) !== currentJobId) return
+    stopSilentRefreshStream()
+    const ended = await probeSilentRefreshJobStatus(currentJobId)
+    if (!ended) {
+      scheduleSilentRefreshReconnect(currentJobId)
+    }
+  }
+}
+
+const startSilentRefresh = async () => {
+  if (!selectedGroupTitle.value) {
+    ElMessage.warning('请先选择分组')
+    return
+  }
+  if (actionLockedBySilentRefresh.value || scanLoading.value) return
+
+  silentRefreshStarting.value = true
+  silentRefreshWarned.value = false
+  try {
+    const data = await createIxBrowserSilentRefreshJob(selectedGroupTitle.value, true)
+    const job = normalizeSilentRefreshPayload(data?.job)
+    if (!job || !job.job_id) {
+      throw new Error('静默更新任务创建失败')
+    }
+    silentRefreshJobId.value = Number(job.job_id)
+    silentRefreshState.value = job
+    silentRefreshReconnectAttempt = 0
+    if (job.status === 'completed' || job.status === 'failed') {
+      await handleSilentRefreshDone(job)
+      return
+    }
+    connectSilentRefreshStream(silentRefreshJobId.value)
+  } catch (error) {
+    ElMessage.error(error?.response?.data?.detail || error?.message || '静默更新失败')
+  } finally {
+    silentRefreshStarting.value = false
+  }
+}
+
 const refreshAll = async () => {
   await loadLatest()
   await loadWeights()
@@ -479,6 +670,7 @@ const scanNow = async () => {
 }
 
 const onGroupChange = async () => {
+  resetSilentRefreshState()
   clearSelection()
   loadCache(selectedGroupTitle.value)
   await loadLatest()
@@ -609,6 +801,7 @@ onBeforeUnmount(() => {
     relativeTimeTimer = null
   }
   stopRealtimeStream()
+  stopSilentRefreshStream()
 })
 </script>
 
@@ -638,6 +831,12 @@ onBeforeUnmount(() => {
   align-items: center;
   gap: 16px;
   flex-wrap: wrap;
+}
+
+.command-note {
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--muted);
 }
 
 .meta-item {
