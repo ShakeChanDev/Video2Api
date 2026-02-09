@@ -12,6 +12,15 @@ class IXBrowserGroup(BaseModel):
 class IXBrowserWindow(BaseModel):
     profile_id: int
     name: str
+    # 代理绑定（来源：ixBrowser profile-list）
+    proxy_mode: Optional[int] = None
+    proxy_id: Optional[int] = None
+    proxy_type: Optional[str] = None
+    proxy_ip: Optional[str] = None
+    proxy_port: Optional[str] = None
+    real_ip: Optional[str] = None
+    # 本系统代理表映射（proxies.id）
+    proxy_local_id: Optional[int] = None
 
 
 class IXBrowserGroupWindows(BaseModel):
@@ -46,6 +55,14 @@ class IXBrowserSessionScanItem(BaseModel):
     quota_source: Optional[str] = None
     quota_payload: Optional[Dict[str, Any]] = None
     quota_error: Optional[str] = None
+    # 代理绑定（来源：ixBrowser profile-list / 扫描时透传并落库）
+    proxy_mode: Optional[int] = None
+    proxy_id: Optional[int] = None
+    proxy_type: Optional[str] = None
+    proxy_ip: Optional[str] = None
+    proxy_port: Optional[str] = None
+    real_ip: Optional[str] = None
+    proxy_local_id: Optional[int] = None
     fallback_applied: bool = False
     fallback_run_id: Optional[int] = None
     fallback_scanned_at: Optional[str] = None
@@ -177,6 +194,14 @@ class SoraJob(BaseModel):
     dispatch_quality_score: Optional[float] = None
     dispatch_reason: Optional[str] = None
     error: Optional[str] = None
+    # 代理绑定（只读，按 ixBrowser 绑定关系）
+    proxy_mode: Optional[int] = None
+    proxy_id: Optional[int] = None
+    proxy_type: Optional[str] = None
+    proxy_ip: Optional[str] = None
+    proxy_port: Optional[str] = None
+    real_ip: Optional[str] = None
+    proxy_local_id: Optional[int] = None
     started_at: Optional[str] = None
     finished_at: Optional[str] = None
     created_at: str
@@ -201,6 +226,14 @@ class SoraAccountWeight(BaseModel):
     profile_id: int
     window_name: Optional[str] = None
     account: Optional[str] = None
+    # 代理绑定（只读，按 ixBrowser 绑定关系）
+    proxy_mode: Optional[int] = None
+    proxy_id: Optional[int] = None
+    proxy_type: Optional[str] = None
+    proxy_ip: Optional[str] = None
+    proxy_port: Optional[str] = None
+    real_ip: Optional[str] = None
+    proxy_local_id: Optional[int] = None
     selectable: bool = False
     cooldown_until: Optional[str] = None
     quota_remaining_count: Optional[int] = None

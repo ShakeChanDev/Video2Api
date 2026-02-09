@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from app.core.audit import log_audit
 from app.core.auth import get_current_active_user
 from app.models.nurture import SoraNurtureBatch, SoraNurtureBatchCreateRequest, SoraNurtureJob
+from app.services.ixbrowser_service import ixbrowser_service
 from app.services.sora_nurture_service import sora_nurture_service
 
 router = APIRouter(prefix="/api/v1/nurture", tags=["nurture"])
@@ -79,6 +80,10 @@ async def list_nurture_jobs(
     del current_user
     # 校验 batch 存在
     sora_nurture_service.get_batch(batch_id)
+    try:
+        await ixbrowser_service.ensure_proxy_bindings()
+    except Exception:  # noqa: BLE001
+        pass
     return sora_nurture_service.list_jobs(batch_id=batch_id, status=status, limit=limit)
 
 
@@ -88,6 +93,10 @@ async def get_nurture_job(
     current_user: dict = Depends(get_current_active_user),
 ):
     del current_user
+    try:
+        await ixbrowser_service.ensure_proxy_bindings()
+    except Exception:  # noqa: BLE001
+        pass
     return sora_nurture_service.get_job(job_id)
 
 

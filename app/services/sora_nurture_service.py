@@ -942,12 +942,20 @@ class SoraNurtureService:
         }
 
     def _normalize_job_row(self, row: dict) -> dict:
+        proxy_bind = ixbrowser_service.get_cached_proxy_binding(int(row.get("profile_id") or 0))
         return {
             "job_id": int(row.get("id") or 0),
             "batch_id": int(row.get("batch_id") or 0),
             "profile_id": int(row.get("profile_id") or 0),
             "window_name": row.get("window_name"),
             "group_title": str(row.get("group_title") or "Sora"),
+            "proxy_mode": proxy_bind.get("proxy_mode"),
+            "proxy_id": proxy_bind.get("proxy_id"),
+            "proxy_type": proxy_bind.get("proxy_type"),
+            "proxy_ip": proxy_bind.get("proxy_ip"),
+            "proxy_port": proxy_bind.get("proxy_port"),
+            "real_ip": proxy_bind.get("real_ip"),
+            "proxy_local_id": proxy_bind.get("proxy_local_id"),
             "status": str(row.get("status") or "queued"),
             "phase": str(row.get("phase") or "queue"),
             "scroll_target": int(row.get("scroll_target") or 10),

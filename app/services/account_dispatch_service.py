@@ -140,6 +140,13 @@ class AccountDispatchService:
                     profile_id=profile_id,
                     window_name=window.name,
                     account=account,
+                    proxy_mode=getattr(window, "proxy_mode", None),
+                    proxy_id=getattr(window, "proxy_id", None),
+                    proxy_type=getattr(window, "proxy_type", None),
+                    proxy_ip=getattr(window, "proxy_ip", None),
+                    proxy_port=getattr(window, "proxy_port", None),
+                    real_ip=getattr(window, "real_ip", None),
+                    proxy_local_id=getattr(window, "proxy_local_id", None),
                     selectable=selectable,
                     cooldown_until=_fmt_dt(cooldown_until),
                     quota_remaining_count=quota_remaining if isinstance(quota_remaining, int) else None,
@@ -247,8 +254,31 @@ class AccountDispatchService:
                 IXBrowserWindow(
                     profile_id=profile_id,
                     name=str(row.get("window_name") or f"窗口-{profile_id}"),
+                    proxy_mode=row.get("proxy_mode"),
+                    proxy_id=row.get("proxy_id"),
+                    proxy_type=row.get("proxy_type"),
+                    proxy_ip=row.get("proxy_ip"),
+                    proxy_port=row.get("proxy_port"),
+                    real_ip=row.get("real_ip"),
                 )
             )
+        proxy_ix_ids: List[int] = []
+        for win in windows:
+            try:
+                ix_id = int(win.proxy_id or 0)
+            except Exception:
+                continue
+            if ix_id > 0:
+                proxy_ix_ids.append(ix_id)
+        proxy_local_map = sqlite_db.get_proxy_local_id_map_by_ix_ids(proxy_ix_ids)
+        if proxy_local_map:
+            for win in windows:
+                try:
+                    ix_id = int(win.proxy_id or 0)
+                except Exception:
+                    ix_id = 0
+                if ix_id > 0 and ix_id in proxy_local_map:
+                    win.proxy_local_id = int(proxy_local_map[ix_id])
         windows.sort(key=lambda item: int(item.profile_id), reverse=True)
         return windows
 

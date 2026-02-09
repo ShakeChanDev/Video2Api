@@ -136,6 +136,10 @@ async def list_sora_jobs(
     current_user: dict = Depends(get_current_active_user),
 ):
     del current_user
+    try:
+        await ixbrowser_service.ensure_proxy_bindings()
+    except Exception:  # noqa: BLE001
+        pass
     return ixbrowser_service.list_sora_jobs(
         group_title=group_title,
         profile_id=profile_id,
@@ -172,6 +176,11 @@ async def stream_sora_jobs(
 
     if not username or not sqlite_db.get_user_by_username(username):
         raise HTTPException(status_code=401, detail="无效的访问令牌")
+
+    try:
+        await ixbrowser_service.ensure_proxy_bindings()
+    except Exception:  # noqa: BLE001
+        pass
 
     stream_filter = sora_job_stream_service.build_filter(
         group_title=group_title,
@@ -247,6 +256,10 @@ async def get_sora_job(
     current_user: dict = Depends(get_current_active_user),
 ):
     del current_user
+    try:
+        await ixbrowser_service.ensure_proxy_bindings()
+    except Exception:  # noqa: BLE001
+        pass
     return ixbrowser_service.get_sora_job(job_id)
 
 

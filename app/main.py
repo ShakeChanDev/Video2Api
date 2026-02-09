@@ -9,7 +9,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from jose import JWTError, jwt
 
-from app.api import admin, auth, ixbrowser, nurture, sora
+from app.api import admin, auth, ixbrowser, nurture, proxy, sora
 from app.core.config import settings
 from app.core.errors import install_exception_handlers
 from app.core.logger import setup_logging
@@ -195,6 +195,7 @@ app.include_router(auth.router)
 app.include_router(ixbrowser.router)
 app.include_router(sora.router)
 app.include_router(nurture.router)
+app.include_router(proxy.router)
 app.include_router(admin.router)
 
 

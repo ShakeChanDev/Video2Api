@@ -1,0 +1,168 @@
+"""代理管理相关模型。"""
+
+from __future__ import annotations
+
+from typing import List, Optional
+
+from pydantic import BaseModel, Field, field_validator
+
+
+class ProxyItem(BaseModel):
+    id: int
+    ix_id: Optional[int] = None
+    proxy_type: str
+    proxy_ip: str
+    proxy_port: str
+    proxy_user: str = ""
+    proxy_password: str = ""
+    tag: Optional[str] = None
+    note: Optional[str] = None
+
+    ix_type: Optional[int] = None
+    ix_tag_id: Optional[str] = None
+    ix_tag_name: Optional[str] = None
+    ix_country: Optional[str] = None
+    ix_city: Optional[str] = None
+    ix_timezone: Optional[str] = None
+    ix_query: Optional[str] = None
+    ix_active_window: Optional[int] = None
+
+    check_status: Optional[str] = None
+    check_error: Optional[str] = None
+    check_ip: Optional[str] = None
+    check_country: Optional[str] = None
+    check_city: Optional[str] = None
+    check_timezone: Optional[str] = None
+    check_at: Optional[str] = None
+
+    created_at: str
+    updated_at: str
+
+
+class ProxyListResponse(BaseModel):
+    total: int
+    page: int
+    limit: int
+    items: List[ProxyItem] = Field(default_factory=list)
+
+
+class ProxyBatchImportRequest(BaseModel):
+    text: str = Field(..., description="多行代理文本，每行 ip:port 或 ip:port:user:pass")
+    default_type: str = Field("http", description="未携带协议时默认代理类型")
+    tag: Optional[str] = Field(None, description="批量导入时统一写入 tag")
+    note: Optional[str] = Field(None, description="批量导入时统一写入 note")
+
+    @field_validator("default_type")
+    @classmethod
+    def normalize_default_type(cls, value: str) -> str:
+        text = str(value or "").strip().lower()
+        return text or "http"
+
+    @field_validator("text")
+    @classmethod
+    def validate_text(cls, value: str) -> str:
+        text = str(value or "")
+        if not text.strip():
+            raise ValueError("text 不能为空")
+        return text
+
+
+class ProxyBatchImportResponse(BaseModel):
+    created: int = 0
+    updated: int = 0
+    skipped: int = 0
+    errors: List[str] = Field(default_factory=list)
+
+
+class ProxyBatchUpdateRequest(BaseModel):
+    proxy_ids: List[int] = Field(default_factory=list)
+    proxy_type: Optional[str] = None
+    proxy_user: Optional[str] = None
+    proxy_password: Optional[str] = None
+    tag: Optional[str] = None
+    note: Optional[str] = None
+    sync_to_ixbrowser: bool = False
+
+    @field_validator("proxy_ids")
+    @classmethod
+    def validate_ids(cls, value: List[int]) -> List[int]:
+        ids: List[int] = []
+        seen = set()
+        for raw in value or []:
+            try:
+                pid = int(raw)
+            except Exception:
+                continue
+            if pid <= 0 or pid in seen:
+                continue
+            seen.add(pid)
+            ids.append(pid)
+        if not ids:
+            raise ValueError("proxy_ids 不能为空")
+        return ids
+
+
+class ProxyActionResult(BaseModel):
+    proxy_id: int
+    ok: bool
+    ix_id: Optional[int] = None
+    message: Optional[str] = None
+
+
+class ProxyBatchUpdateResponse(BaseModel):
+    results: List[ProxyActionResult] = Field(default_factory=list)
+
+
+class ProxyBatchCheckRequest(BaseModel):
+    proxy_ids: List[int] = Field(default_factory=list)
+    check_url: Optional[str] = Field(None, description="探测 URL（默认 https://ipinfo.io/json）")
+    concurrency: int = Field(20, ge=1, le=100)
+    timeout_sec: float = Field(8.0, ge=1.0, le=60.0)
+
+    @field_validator("proxy_ids")
+    @classmethod
+    def validate_ids(cls, value: List[int]) -> List[int]:
+        ids: List[int] = []
+        seen = set()
+        for raw in value or []:
+            try:
+                pid = int(raw)
+            except Exception:
+                continue
+            if pid <= 0 or pid in seen:
+                continue
+            seen.add(pid)
+            ids.append(pid)
+        if not ids:
+            raise ValueError("proxy_ids 不能为空")
+        return ids
+
+
+class ProxyBatchCheckItem(BaseModel):
+    proxy_id: int
+    ok: bool
+    ip: Optional[str] = None
+    country: Optional[str] = None
+    city: Optional[str] = None
+    timezone: Optional[str] = None
+    error: Optional[str] = None
+    checked_at: Optional[str] = None
+
+
+class ProxyBatchCheckResponse(BaseModel):
+    results: List[ProxyBatchCheckItem] = Field(default_factory=list)
+
+
+class ProxySyncPullResponse(BaseModel):
+    created: int = 0
+    updated: int = 0
+    total: int = 0
+
+
+class ProxySyncPushRequest(BaseModel):
+    proxy_ids: Optional[List[int]] = None
+
+
+class ProxySyncPushResponse(BaseModel):
+    results: List[ProxyActionResult] = Field(default_factory=list)
+

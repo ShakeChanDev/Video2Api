@@ -29,6 +29,33 @@ from app.services.ixbrowser_service import (
 
 router = APIRouter(prefix="/api/v1/ixbrowser", tags=["ixBrowser"])
 
+def _apply_profile_proxy_binding(scan_response: IXBrowserSessionScanResponse) -> IXBrowserSessionScanResponse:
+    """
+    用当前 ixBrowser 绑定关系覆盖扫描结果的 proxy 字段（只读透传）。
+
+    注意：scan_response 的 quota/session 等信息仍以数据库记录为准，仅覆盖 proxy 相关字段。
+    """
+    if not scan_response or not getattr(scan_response, "results", None):
+        return scan_response
+    for item in scan_response.results or []:
+        try:
+            pid = int(getattr(item, "profile_id", 0) or 0)
+        except Exception:  # noqa: BLE001
+            pid = 0
+        if pid <= 0:
+            continue
+        bind = ixbrowser_service.get_cached_proxy_binding(pid)
+        if not bind:
+            continue
+        item.proxy_mode = bind.get("proxy_mode")
+        item.proxy_id = bind.get("proxy_id")
+        item.proxy_type = bind.get("proxy_type")
+        item.proxy_ip = bind.get("proxy_ip")
+        item.proxy_port = bind.get("proxy_port")
+        item.real_ip = bind.get("real_ip")
+        item.proxy_local_id = bind.get("proxy_local_id")
+    return scan_response
+
 
 @router.get("/groups", response_model=List[IXBrowserGroup])
 async def get_ixbrowser_groups(current_user: dict = Depends(get_current_active_user)):
@@ -140,7 +167,12 @@ async def get_latest_sora_session_accounts(
     current_user: dict = Depends(get_current_active_user),
 ):
     del current_user
-    return ixbrowser_service.get_latest_sora_scan(group_title=group_title, with_fallback=with_fallback)
+    try:
+        await ixbrowser_service.ensure_proxy_bindings()
+    except Exception:  # noqa: BLE001
+        pass
+    data = ixbrowser_service.get_latest_sora_scan(group_title=group_title, with_fallback=with_fallback)
+    return _apply_profile_proxy_binding(data)
 
 
 @router.get("/sora-session-accounts/stream")
@@ -177,6 +209,11 @@ async def stream_sora_session_accounts(
                     data = ixbrowser_service.get_latest_sora_scan(group_title=group_title, with_fallback=True)
                 except Exception:  # noqa: BLE001
                     continue
+                try:
+                    await ixbrowser_service.ensure_proxy_bindings()
+                except Exception:  # noqa: BLE001
+                    pass
+                data = _apply_profile_proxy_binding(data)
                 payload_json = json.dumps(jsonable_encoder(data), ensure_ascii=False)
                 yield f"event: update\\ndata: {payload_json}\\n\\n"
         finally:

@@ -124,6 +124,9 @@ class IXBrowserService:
         self._group_windows_cache: List[IXBrowserGroupWindows] = []
         self._group_windows_cache_at: float = 0.0
         self._group_windows_cache_ttl: float = 120.0
+        # profile_id -> proxy binding snapshot（来源：profile-list）
+        self._profile_proxy_map: Dict[int, Dict[str, Any]] = {}
+        self._proxy_binding_last_failed_at: float = 0.0
         self._realtime_quota_cache_ttl: float = 30.0
         self._realtime_operator_username: str = "实时使用"
         self._service_error_cls = IXBrowserServiceError
@@ -159,8 +162,44 @@ class IXBrowserService:
         """对外公开关闭窗口（供 e2e/业务复用）。"""
         return await self._close_profile(profile_id)
 
+    def get_cached_proxy_binding(self, profile_id: int) -> Dict[str, Any]:
+        """获取缓存的代理绑定信息（按 profile_id），可能为空。"""
+        try:
+            pid = int(profile_id)
+        except Exception:
+            pid = 0
+        if pid <= 0:
+            return {}
+        cached = self._profile_proxy_map.get(pid)
+        return dict(cached) if isinstance(cached, dict) else {}
+
     def set_group_windows_cache_ttl(self, ttl_sec: float) -> None:
         self._group_windows_cache_ttl = float(ttl_sec)
+
+    async def ensure_proxy_bindings(self, max_age_sec: Optional[float] = None) -> None:
+        """
+        尽量确保 profile->proxy 绑定缓存可用。
+
+        - 优先复用最近一次 list_group_windows 的缓存
+        - 若缓存缺失或过期，则主动刷新一次
+        """
+        ttl = float(max_age_sec) if max_age_sec is not None else float(self._group_windows_cache_ttl)
+        now = time.time()
+        if (
+            self._group_windows_cache
+            and (now - float(self._group_windows_cache_at or 0.0)) < ttl
+            and self._profile_proxy_map
+        ):
+            return
+        # 若最近刷新失败过，避免每次都打到 ixBrowser（尤其是 unit test / 离线场景）
+        if self._proxy_binding_last_failed_at and (now - float(self._proxy_binding_last_failed_at)) < ttl:
+            return
+        try:
+            await self.list_group_windows()
+        except Exception:  # noqa: BLE001
+            self._proxy_binding_last_failed_at = now
+            return
+        self._proxy_binding_last_failed_at = 0.0
 
     def set_realtime_quota_cache_ttl(self, ttl_sec: float) -> None:
         self._realtime_quota_cache_ttl = float(ttl_sec)
@@ -268,7 +307,16 @@ class IXBrowserService:
                 grouped[group_id_int] = IXBrowserGroupWindows(id=group_id_int, title=group_name)
 
             grouped[group_id_int].windows.append(
-                IXBrowserWindow(profile_id=profile_id_int, name=str(name))
+                IXBrowserWindow(
+                    profile_id=profile_id_int,
+                    name=str(name),
+                    proxy_mode=profile.get("proxy_mode"),
+                    proxy_id=profile.get("proxy_id"),
+                    proxy_type=profile.get("proxy_type"),
+                    proxy_ip=profile.get("proxy_ip"),
+                    proxy_port=profile.get("proxy_port"),
+                    real_ip=profile.get("real_ip"),
+                )
             )
 
         result = sorted(grouped.values(), key=lambda item: item.id)
@@ -276,8 +324,51 @@ class IXBrowserService:
             item.windows.sort(key=lambda window: window.profile_id, reverse=True)
             item.window_count = len(item.windows)
 
+        proxy_ix_ids: List[int] = []
+        for group in result:
+            for window in group.windows or []:
+                try:
+                    ix_id = int(window.proxy_id or 0)
+                except Exception:  # noqa: BLE001
+                    continue
+                if ix_id > 0:
+                    proxy_ix_ids.append(ix_id)
+        try:
+            proxy_local_map = sqlite_db.get_proxy_local_id_map_by_ix_ids(proxy_ix_ids)
+        except Exception:  # noqa: BLE001
+            proxy_local_map = {}
+        if proxy_local_map:
+            for group in result:
+                for window in group.windows or []:
+                    try:
+                        ix_id = int(window.proxy_id or 0)
+                    except Exception:  # noqa: BLE001
+                        ix_id = 0
+                    if ix_id > 0 and ix_id in proxy_local_map:
+                        window.proxy_local_id = int(proxy_local_map[ix_id])
+
         self._group_windows_cache = result
         self._group_windows_cache_at = time.time()
+        # 更新 profile 代理绑定缓存（供任务/养号等接口透传）
+        proxy_map: Dict[int, Dict[str, Any]] = {}
+        for group in result:
+            for window in group.windows or []:
+                try:
+                    pid = int(window.profile_id or 0)
+                except Exception:
+                    continue
+                if pid <= 0:
+                    continue
+                proxy_map[pid] = {
+                    "proxy_mode": window.proxy_mode,
+                    "proxy_id": window.proxy_id,
+                    "proxy_type": window.proxy_type,
+                    "proxy_ip": window.proxy_ip,
+                    "proxy_port": window.proxy_port,
+                    "real_ip": window.real_ip,
+                    "proxy_local_id": window.proxy_local_id,
+                }
+        self._profile_proxy_map = proxy_map
         return result
 
     async def open_profile_window(
@@ -347,6 +438,12 @@ class IXBrowserService:
                         "name": str(item.get("name") or f"窗口-{profile_id_int}"),
                         "group_id": item.get("group_id"),
                         "group_name": item.get("group_name"),
+                        "proxy_mode": self._safe_int(item.get("proxy_mode")),
+                        "proxy_id": self._safe_int(item.get("proxy_id")),
+                        "proxy_type": self._safe_str(item.get("proxy_type")),
+                        "proxy_ip": self._safe_str(item.get("proxy_ip")),
+                        "proxy_port": self._safe_str(item.get("proxy_port")),
+                        "real_ip": self._safe_str(item.get("real_ip")),
                     }
                 )
 
@@ -356,6 +453,95 @@ class IXBrowserService:
             page += 1
 
         return profiles
+
+    @staticmethod
+    def _safe_int(value: Any) -> Optional[int]:
+        if value is None:
+            return None
+        if isinstance(value, bool):
+            return int(value)
+        text = str(value).strip()
+        if not text:
+            return None
+        try:
+            return int(float(text))
+        except Exception:  # noqa: BLE001
+            return None
+
+    @staticmethod
+    def _safe_str(value: Any) -> Optional[str]:
+        if value is None:
+            return None
+        text = str(value).strip()
+        return text or None
+
+    async def list_proxies(self) -> List[dict]:
+        """获取全部代理列表（自动翻页）。"""
+        page = 1
+        limit = 200
+        total = None
+        items: List[dict] = []
+        seen_ids: set[int] = set()
+
+        while total is None or len(items) < total:
+            payload = {
+                "page": page,
+                "limit": limit,
+                "id": 0,
+                "type": 0,
+                "proxy_ip": "",
+                "tag_id": 0,
+            }
+            data = await self._post("/api/v2/proxy-list", payload)
+            data_section = data.get("data", {}) if isinstance(data, dict) else {}
+            if total is None:
+                total = int(data_section.get("total", 0) or 0)
+
+            page_items = data_section.get("data", [])
+            if not isinstance(page_items, list) or not page_items:
+                break
+
+            for item in page_items:
+                if not isinstance(item, dict):
+                    continue
+                try:
+                    ix_id = int(item.get("id") or 0)
+                except Exception:  # noqa: BLE001
+                    continue
+                if ix_id <= 0 or ix_id in seen_ids:
+                    continue
+                seen_ids.add(ix_id)
+                items.append(item)
+
+            if len(page_items) < limit:
+                break
+            page += 1
+
+        return items
+
+    async def create_proxy(self, payload: dict) -> int:
+        data = await self._post("/api/v2/proxy-create", payload)
+        data_section = data.get("data") if isinstance(data, dict) else None
+        try:
+            return int(data_section or 0)
+        except Exception:  # noqa: BLE001
+            raise IXBrowserServiceError("创建代理失败：返回数据异常")
+
+    async def update_proxy(self, payload: dict) -> bool:
+        data = await self._post("/api/v2/proxy-update", payload)
+        data_section = data.get("data") if isinstance(data, dict) else None
+        try:
+            return int(data_section or 0) > 0
+        except Exception:  # noqa: BLE001
+            return False
+
+    async def delete_proxy(self, proxy_ix_id: int) -> bool:
+        data = await self._post("/api/v2/proxy-delete", {"id": int(proxy_ix_id)})
+        data_section = data.get("data") if isinstance(data, dict) else None
+        try:
+            return int(data_section or 0) > 0
+        except Exception:  # noqa: BLE001
+            return False
 
     async def scan_group_sora_sessions(
         self,
@@ -513,6 +699,13 @@ class IXBrowserService:
                     quota_source=quota_source,
                     quota_payload=quota_payload,
                     quota_error=quota_error,
+                    proxy_mode=window.proxy_mode,
+                    proxy_id=window.proxy_id,
+                    proxy_type=window.proxy_type,
+                    proxy_ip=window.proxy_ip,
+                    proxy_port=window.proxy_port,
+                    real_ip=window.real_ip,
+                    proxy_local_id=window.proxy_local_id,
                     success=success,
                     close_success=close_success,
                     error=error,
@@ -523,30 +716,33 @@ class IXBrowserService:
         final_results: List[IXBrowserSessionScanItem] = []
         for window in target_windows:
             profile_id = int(window.profile_id)
-            scanned = scanned_items.get(profile_id)
-            if scanned:
-                final_results.append(scanned)
-                continue
+            item = scanned_items.get(profile_id)
+            if not item:
+                previous = previous_map.get(profile_id)
+                if previous:
+                    item = IXBrowserSessionScanItem(**previous.model_dump())
+                    item.profile_id = profile_id
+                    item.window_name = window.name
+                    item.group_id = int(target.id)
+                    item.group_title = str(target.title)
+                else:
+                    item = IXBrowserSessionScanItem(
+                        profile_id=profile_id,
+                        window_name=window.name,
+                        group_id=target.id,
+                        group_title=target.title,
+                        success=False,
+                    )
 
-            previous = previous_map.get(profile_id)
-            if previous:
-                cloned = IXBrowserSessionScanItem(**previous.model_dump())
-                cloned.profile_id = profile_id
-                cloned.window_name = window.name
-                cloned.group_id = int(target.id)
-                cloned.group_title = str(target.title)
-                final_results.append(cloned)
-                continue
-
-            final_results.append(
-                IXBrowserSessionScanItem(
-                    profile_id=profile_id,
-                    window_name=window.name,
-                    group_id=target.id,
-                    group_title=target.title,
-                    success=False,
-                )
-            )
+            # 强制按 ixBrowser 当前绑定关系覆盖（避免回填历史 proxy 关系）
+            item.proxy_mode = window.proxy_mode
+            item.proxy_id = window.proxy_id
+            item.proxy_type = window.proxy_type
+            item.proxy_ip = window.proxy_ip
+            item.proxy_port = window.proxy_port
+            item.real_ip = window.real_ip
+            item.proxy_local_id = window.proxy_local_id
+            final_results.append(item)
 
         success_count = sum(1 for item in final_results if item.success)
         failed_count = len(final_results) - success_count
@@ -4537,9 +4733,11 @@ class IXBrowserService:
         publish_url = row.get("publish_url")
         if publish_url and not self._is_valid_publish_url(publish_url):
             publish_url = None
+        profile_id = int(row.get("profile_id") or 0)
+        proxy_bind = self.get_cached_proxy_binding(profile_id)
         return SoraJob(
             job_id=int(row["id"]),
-            profile_id=int(row["profile_id"]),
+            profile_id=profile_id,
             window_name=row.get("window_name"),
             group_title=row.get("group_title"),
             prompt=str(row.get("prompt") or ""),
@@ -4563,6 +4761,13 @@ class IXBrowserService:
             dispatch_quality_score=row.get("dispatch_quality_score"),
             dispatch_reason=row.get("dispatch_reason"),
             error=row.get("error"),
+            proxy_mode=proxy_bind.get("proxy_mode"),
+            proxy_id=proxy_bind.get("proxy_id"),
+            proxy_type=proxy_bind.get("proxy_type"),
+            proxy_ip=proxy_bind.get("proxy_ip"),
+            proxy_port=proxy_bind.get("proxy_port"),
+            real_ip=proxy_bind.get("real_ip"),
+            proxy_local_id=proxy_bind.get("proxy_local_id"),
             started_at=row.get("started_at"),
             finished_at=row.get("finished_at"),
             created_at=str(row.get("created_at")),
@@ -4826,12 +5031,39 @@ class IXBrowserService:
                     quota_source=row.get("quota_source"),
                     quota_payload=row.get("quota_payload_json") if isinstance(row.get("quota_payload_json"), dict) else None,
                     quota_error=row.get("quota_error"),
+                    proxy_mode=row.get("proxy_mode"),
+                    proxy_id=row.get("proxy_id"),
+                    proxy_type=row.get("proxy_type"),
+                    proxy_ip=row.get("proxy_ip"),
+                    proxy_port=row.get("proxy_port"),
+                    real_ip=row.get("real_ip"),
                     success=bool(row.get("success")),
                     close_success=bool(row.get("close_success")),
                     error=row.get("error"),
                     duration_ms=int(row.get("duration_ms") or 0),
                 )
             )
+
+        proxy_ix_ids: List[int] = []
+        for item in results:
+            try:
+                ix_id = int(item.proxy_id or 0)
+            except Exception:  # noqa: BLE001
+                continue
+            if ix_id > 0:
+                proxy_ix_ids.append(ix_id)
+        try:
+            proxy_local_map = sqlite_db.get_proxy_local_id_map_by_ix_ids(proxy_ix_ids)
+        except Exception:  # noqa: BLE001
+            proxy_local_map = {}
+        if proxy_local_map:
+            for item in results:
+                try:
+                    ix_id = int(item.proxy_id or 0)
+                except Exception:  # noqa: BLE001
+                    ix_id = 0
+                if ix_id > 0 and ix_id in proxy_local_map:
+                    item.proxy_local_id = int(proxy_local_map[ix_id])
         return IXBrowserSessionScanResponse(
             run_id=run_id,
             scanned_at=str(run_row.get("scanned_at")),

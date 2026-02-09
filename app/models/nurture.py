@@ -84,6 +84,14 @@ class SoraNurtureJob(BaseModel):
     profile_id: int
     window_name: Optional[str] = None
     group_title: str
+    # 代理绑定（只读，按 ixBrowser 绑定关系）
+    proxy_mode: Optional[int] = None
+    proxy_id: Optional[int] = None
+    proxy_type: Optional[str] = None
+    proxy_ip: Optional[str] = None
+    proxy_port: Optional[str] = None
+    real_ip: Optional[str] = None
+    proxy_local_id: Optional[int] = None
     status: str
     phase: str
     scroll_target: int = 10
