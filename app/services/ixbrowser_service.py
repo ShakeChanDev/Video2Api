@@ -1932,12 +1932,17 @@ class IXBrowserService:
                             profile_id=profile_id,
                         )
                         fetch_cost_ms = int((time.perf_counter() - fetch_started_at) * 1000)
+                        account_plan_hint = subscription_info.get("plan") or self._extract_account_plan(session_obj)
                         logger.info(
-                            "静默更新 | profile_id=%s | API 拉取完成 | session=%s | subscriptions=%s | nf_check=%s | 耗时=%sms",
+                            "静默更新 | profile_id=%s | API 拉取完成 | session=%s | subscriptions=%s | plan=%s | nf_check=%s | remaining=%s | total=%s | reset_at=%s | 耗时=%sms",
                             int(profile_id),
                             session_status,
                             subscription_info.get("status"),
+                            account_plan_hint,
                             quota_info.get("status"),
+                            quota_info.get("remaining_count"),
+                            quota_info.get("total_count"),
+                            quota_info.get("reset_at"),
                             int(fetch_cost_ms),
                         )
 
