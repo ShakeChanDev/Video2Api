@@ -3120,6 +3120,143 @@ class IXBrowserService:
             return match.group(1)
         return None
 
+    async def _sora_fetch_json_via_page(
+        self,
+        page,
+        url: str,
+        *,
+        headers: Optional[Dict[str, str]] = None,
+        timeout_ms: int = 20_000,
+        retries: int = 2,
+    ) -> Dict[str, Any]:
+        """
+        在浏览器页面上下文内发起 GET 请求并解析 JSON。
+
+        目的：确保走 ixBrowser profile 的代理与浏览器网络栈，避免服务端直连触发风控。
+        """
+        endpoint = str(url or "").strip()
+        if not endpoint:
+            return {"status": None, "raw": None, "json": None, "error": "缺少 url", "is_cf": False}
+
+        safe_headers: Dict[str, str] = {"Accept": "application/json"}
+        for key, value in (headers or {}).items():
+            k = str(key or "").strip()
+            if not k:
+                continue
+            v = "" if value is None else str(value)
+            safe_headers[k] = v
+
+        timeout_ms_int = int(timeout_ms) if int(timeout_ms or 0) > 0 else 20_000
+        retries_int = int(retries) if int(retries or 0) > 0 else 0
+
+        last_result: Dict[str, Any] = {"status": None, "raw": None, "json": None, "error": None, "is_cf": False}
+        for attempt in range(retries_int + 1):
+            try:
+                resp = await page.evaluate(
+                    """
+                    async ({ endpoint, headers, timeoutMs }) => {
+                      const result = { status: null, raw: null, json: null, error: null, is_cf: false };
+                      if (!endpoint) {
+                        result.error = "missing endpoint";
+                        return result;
+                      }
+                      const controller = new AbortController();
+                      const timeoutId = setTimeout(() => controller.abort(), Math.max(1, timeoutMs || 20000));
+                      try {
+                        const finalHeaders = Object.assign({}, headers || {});
+                        if (!finalHeaders["Accept"]) finalHeaders["Accept"] = "application/json";
+                        try {
+                          const didMatch = document.cookie.match(/(?:^|; )oai-did=([^;]+)/);
+                          if (didMatch && didMatch[1] && !finalHeaders["OAI-Device-Id"]) {
+                            finalHeaders["OAI-Device-Id"] = decodeURIComponent(didMatch[1]);
+                          }
+                        } catch (e) {}
+                        const resp = await fetch(endpoint, {
+                          method: "GET",
+                          credentials: "include",
+                          headers: finalHeaders,
+                          signal: controller.signal
+                        });
+                        const text = await resp.text();
+                        let parsed = null;
+                        try { parsed = JSON.parse(text); } catch (e) {}
+                        const lowered = (text || "").toString().toLowerCase();
+                        const isCf = lowered.includes("just a moment")
+                          || lowered.includes("challenge-platform")
+                          || lowered.includes("cf-mitigated")
+                          || lowered.includes("cloudflare");
+                        result.status = resp.status;
+                        result.raw = text;
+                        result.json = parsed;
+                        result.is_cf = isCf;
+                        return result;
+                      } catch (e) {
+                        result.error = String(e && e.message ? e.message : e);
+                        return result;
+                      } finally {
+                        clearTimeout(timeoutId);
+                      }
+                    }
+                    """,
+                    {"endpoint": endpoint, "headers": safe_headers, "timeoutMs": timeout_ms_int},
+                )
+            except Exception as exc:  # noqa: BLE001
+                resp = {"status": None, "raw": None, "json": None, "error": str(exc), "is_cf": False}
+
+            if not isinstance(resp, dict):
+                resp = {"status": None, "raw": None, "json": None, "error": "返回格式异常", "is_cf": False}
+
+            status = resp.get("status")
+            raw_text = resp.get("raw") if isinstance(resp.get("raw"), str) else None
+            error_text = resp.get("error")
+            is_cf = bool(resp.get("is_cf"))
+            parsed_json = resp.get("json")
+            if not isinstance(parsed_json, (dict, list)):
+                parsed_json = None
+
+            if raw_text and len(raw_text) > 20_000:
+                raw_text = raw_text[:20_000]
+
+            last_result = {
+                "status": int(status) if isinstance(status, int) else status,
+                "raw": raw_text,
+                "json": parsed_json,
+                "error": str(error_text) if error_text else None,
+                "is_cf": is_cf,
+            }
+
+            should_retry = False
+            if attempt < retries_int:
+                if last_result["error"]:
+                    should_retry = True
+                elif last_result["is_cf"]:
+                    should_retry = True
+                else:
+                    code = last_result.get("status")
+                    if code is None:
+                        should_retry = True
+                    else:
+                        try:
+                            code_int = int(code)
+                        except Exception:  # noqa: BLE001
+                            code_int = 0
+                        if code_int in (403, 408, 429) or code_int >= 500:
+                            should_retry = True
+
+            if not should_retry:
+                break
+
+            delay_ms = int(1000 * (2**attempt))
+            try:
+                if hasattr(page, "wait_for_timeout"):
+                    await page.wait_for_timeout(delay_ms)
+                else:
+                    await asyncio.sleep(delay_ms / 1000.0)
+            except Exception:  # noqa: BLE001
+                pass
+
+        return last_result
+
     async def _fetch_draft_item_by_task_id_via_context(
         self,
         context,
@@ -3130,105 +3267,131 @@ class IXBrowserService:
         if not task_id or context is None:
             return None
 
-        headers: Dict[str, str] = {"Accept": "application/json"}
+        # 通过页面上下文 fetch，确保走 profile 的浏览器网络栈（含代理/TLS 指纹）。
         try:
-            cookies = await context.cookies("https://sora.chatgpt.com")
-            for cookie in cookies:
-                if cookie.get("name") == "oai-did" and cookie.get("value"):
-                    headers["OAI-Device-Id"] = cookie["value"]
-                    break
+            pages = getattr(context, "pages", None)
+            page = pages[0] if isinstance(pages, list) and pages else None
         except Exception:  # noqa: BLE001
-            pass
+            page = None
+        if page is None:
+            try:
+                page = await context.new_page()
+            except Exception:  # noqa: BLE001
+                return None
 
         try:
-            session_resp = await context.request.get("https://sora.chatgpt.com/api/auth/session")
-            if session_resp.ok:
-                session_json = await session_resp.json()
-                access_token = session_json.get("accessToken") if isinstance(session_json, dict) else None
-                if access_token:
-                    headers["Authorization"] = f"Bearer {access_token}"
+            current_url = str(getattr(page, "url", "") or "")
         except Exception:  # noqa: BLE001
-            pass
+            current_url = ""
+        if not current_url.startswith("https://sora.chatgpt.com"):
+            try:
+                await page.goto(
+                    "https://sora.chatgpt.com/drafts",
+                    wait_until="domcontentloaded",
+                    timeout=40_000,
+                )
+                if hasattr(page, "wait_for_timeout"):
+                    await page.wait_for_timeout(800)
+            except Exception:  # noqa: BLE001
+                pass
+
+        headers: Dict[str, str] = {"Accept": "application/json"}
+        session_result = await self._sora_fetch_json_via_page(
+            page,
+            "https://sora.chatgpt.com/api/auth/session",
+            headers=headers,
+            timeout_ms=20_000,
+            retries=2,
+        )
+        if int(session_result.get("status") or 0) == 200 and isinstance(session_result.get("json"), dict):
+            token = session_result["json"].get("accessToken")
+            if isinstance(token, str) and token.strip():
+                headers["Authorization"] = f"Bearer {token.strip()}"
 
         base_url = "https://sora.chatgpt.com/backend/project_y/profile/drafts"
-        cursor = None
+        cursor: Optional[str] = None
         task_id_norm = self._normalize_task_id(task_id)
+
+        def pick_items(obj: Any) -> Optional[List[Any]]:
+            if not isinstance(obj, dict):
+                return None
+            items = obj.get("items") or obj.get("data")
+            return items if isinstance(items, list) else None
 
         for page_index in range(max(int(max_pages), 1)):
             if cursor:
                 url = f"{base_url}?limit={limit}&cursor={cursor}"
             else:
                 url = f"{base_url}?limit={limit}"
-            try:
-                resp = await context.request.get(url, headers=headers)
-            except Exception:  # noqa: BLE001
-                break
-            if not resp.ok:
-                if resp.status == 403:
-                    logger.info("获取 genid drafts 被拒绝(可能 CF): status=403 url=%s", url)
-                else:
-                    logger.info("获取 genid drafts 请求失败: status=%s url=%s", resp.status, url)
-                break
-            try:
-                payload = await resp.json()
-            except Exception:  # noqa: BLE001
-                text = await resp.text()
-                try:
-                    payload = json.loads(text)
-                except Exception:  # noqa: BLE001
-                    payload = {}
-                if text and "Just a moment" in text:
-                    logger.info("获取 genid drafts 命中 CF 页面(Just a moment)")
 
-            items = payload.get("items") or payload.get("data")
+            result = await self._sora_fetch_json_via_page(
+                page,
+                url,
+                headers=headers,
+                timeout_ms=20_000,
+                retries=2,
+            )
+            status = result.get("status")
+            payload = result.get("json")
+            if int(status or 0) != 200 or not isinstance(payload, dict):
+                if int(status or 0) == 403:
+                    logger.info("获取 genid drafts 被拒绝(可能 CF): status=403 url=%s", url)
+                elif status is not None:
+                    logger.info("获取 genid drafts 请求失败: status=%s url=%s", status, url)
+                if result.get("is_cf"):
+                    logger.info("获取 genid drafts 命中 CF 页面(Just a moment)")
+                break
+
+            items = pick_items(payload)
             if not isinstance(items, list):
                 break
             for item in items:
                 if isinstance(item, dict) and task_id_norm and self._match_task_id_in_item(item, task_id_norm):
                     generation_id = self._extract_generation_id(item)
-                    if generation_id:
-                        if "generation_id" not in item:
-                            item["generation_id"] = generation_id
-                        return item
+                    if generation_id and "generation_id" not in item:
+                        item["generation_id"] = generation_id
+                    return item
+
             next_cursor = payload.get("next_cursor") or payload.get("nextCursor") or payload.get("cursor")
             next_url = payload.get("next") if isinstance(payload.get("next"), str) else None
             if next_url:
-                cursor = next_url
+                cursor = str(next_url)
             elif next_cursor:
-                cursor = next_cursor
+                cursor = str(next_cursor)
             elif payload.get("has_more"):
                 cursor = str(page_index + 1)
             else:
                 break
+
+            # cursor 本身是 URL 的场景：先直取一次，再继续按返回 cursor 翻页
             if cursor and isinstance(cursor, str) and cursor.startswith("http"):
-                try:
-                    resp2 = await context.request.get(cursor, headers=headers)
-                except Exception:  # noqa: BLE001
-                    break
-                if not resp2.ok:
-                    if resp2.status == 403:
+                result2 = await self._sora_fetch_json_via_page(
+                    page,
+                    cursor,
+                    headers=headers,
+                    timeout_ms=20_000,
+                    retries=2,
+                )
+                status2 = result2.get("status")
+                payload2 = result2.get("json")
+                if int(status2 or 0) != 200 or not isinstance(payload2, dict):
+                    if int(status2 or 0) == 403:
                         logger.info("获取 genid drafts 被拒绝(可能 CF): status=403 url=%s", cursor)
-                    else:
-                        logger.info("获取 genid drafts 请求失败: status=%s url=%s", resp2.status, cursor)
+                    elif status2 is not None:
+                        logger.info("获取 genid drafts 请求失败: status=%s url=%s", status2, cursor)
                     break
-                try:
-                    payload2 = await resp2.json()
-                except Exception:  # noqa: BLE001
-                    text2 = await resp2.text()
-                    try:
-                        payload2 = json.loads(text2)
-                    except Exception:  # noqa: BLE001
-                        payload2 = {}
-                items2 = payload2.get("items") or payload2.get("data")
+
+                items2 = pick_items(payload2)
                 if isinstance(items2, list):
                     for item in items2:
                         if isinstance(item, dict) and task_id_norm and self._match_task_id_in_item(item, task_id_norm):
                             generation_id = self._extract_generation_id(item)
-                            if generation_id:
-                                if "generation_id" not in item:
-                                    item["generation_id"] = generation_id
-                                return item
+                            if generation_id and "generation_id" not in item:
+                                item["generation_id"] = generation_id
+                            return item
+
                 cursor = payload2.get("next_cursor") or payload2.get("nextCursor") or payload2.get("cursor")
+                cursor = str(cursor) if cursor else None
 
         return None
 
@@ -4450,14 +4613,7 @@ class IXBrowserService:
             "Authorization": f"Bearer {access_token}",
             "Accept": "application/json",
         }
-        try:
-            cookies = await context.cookies("https://sora.chatgpt.com")
-            for cookie in cookies:
-                if cookie.get("name") == "oai-did" and cookie.get("value"):
-                    headers["OAI-Device-Id"] = unquote(str(cookie["value"]))
-                    break
-        except Exception:  # noqa: BLE001
-            pass
+        # OAI-Device-Id 由页面内脚本读取 cookie 自动注入（见 _sora_fetch_json_via_page），避免走 context.request。
 
         def pick_progress(obj: Any) -> Any:
             if not isinstance(obj, dict):
@@ -4495,22 +4651,15 @@ class IXBrowserService:
         pending_missing = True
 
         try:
-            pending_resp = await context.request.get(
+            pending_result = await self._sora_fetch_json_via_page(
+                page,
                 "https://sora.chatgpt.com/backend/nf/pending/v2",
                 headers=headers,
-                timeout=20_000,
+                timeout_ms=20_000,
+                retries=2,
             )
-            pending_json = None
-            try:
-                pending_json = await pending_resp.json()
-            except Exception:  # noqa: BLE001
-                try:
-                    pending_text = await pending_resp.text()
-                    pending_json = json.loads(pending_text) if pending_text else None
-                except Exception:  # noqa: BLE001
-                    pending_json = None
-
-            if pending_resp.status == 200 and isinstance(pending_json, list):
+            pending_json = pending_result.get("json")
+            if int(pending_result.get("status") or 0) == 200 and isinstance(pending_json, list):
                 found_pending = None
                 for item in pending_json:
                     if isinstance(item, dict) and item.get("id") == task_id:
@@ -4555,20 +4704,14 @@ class IXBrowserService:
             }
 
         try:
-            drafts_resp = await context.request.get(
+            drafts_result = await self._sora_fetch_json_via_page(
+                page,
                 "https://sora.chatgpt.com/backend/project_y/profile/drafts?limit=15",
                 headers=headers,
-                timeout=20_000,
+                timeout_ms=20_000,
+                retries=2,
             )
-            drafts_json = None
-            try:
-                drafts_json = await drafts_resp.json()
-            except Exception:  # noqa: BLE001
-                try:
-                    drafts_text = await drafts_resp.text()
-                    drafts_json = json.loads(drafts_text) if drafts_text else None
-                except Exception:  # noqa: BLE001
-                    drafts_json = None
+            drafts_json = drafts_result.get("json")
 
             items = drafts_json.get("items") if isinstance(drafts_json, dict) else None
             if not isinstance(items, list) and isinstance(drafts_json, dict):

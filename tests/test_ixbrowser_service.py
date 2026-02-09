@@ -1248,3 +1248,152 @@ async def test_publish_sora_post_with_backoff_retries_invalid_request():
     assert 2000 in page.waits
     assert 4000 in page.waits
     assert result["publish_url"] == "https://sora.chatgpt.com/p/s_12345678"
+
+
+@pytest.mark.asyncio
+async def test_sora_fetch_json_via_page_retries_on_cf_then_succeeds():
+    service = IXBrowserService()
+
+    class _FakePage:
+        def __init__(self, results):
+            self._results = list(results)
+            self.evaluate_calls = 0
+            self.waits = []
+
+        async def evaluate(self, *_args, **_kwargs):
+            self.evaluate_calls += 1
+            return self._results.pop(0)
+
+        async def wait_for_timeout(self, ms):
+            self.waits.append(int(ms))
+
+    page = _FakePage(
+        [
+            {
+                "status": 403,
+                "raw": "<html>Just a moment</html>",
+                "json": None,
+                "error": None,
+                "is_cf": True,
+            },
+            {
+                "status": 200,
+                "raw": "{\"ok\":true}",
+                "json": {"ok": True},
+                "error": None,
+                "is_cf": False,
+            },
+        ]
+    )
+
+    result = await service._sora_fetch_json_via_page(
+        page,
+        "https://sora.chatgpt.com/backend/billing/subscriptions",
+        headers={"Authorization": "Bearer token"},
+        timeout_ms=2000,
+        retries=2,
+    )
+
+    assert page.evaluate_calls == 2
+    assert page.waits == [1000]
+    assert result["status"] == 200
+    assert result["json"] == {"ok": True}
+    assert result["error"] is None
+    assert result["is_cf"] is False
+
+
+@pytest.mark.asyncio
+async def test_fetch_draft_item_by_task_id_via_context_does_not_use_context_request(monkeypatch):
+    service = IXBrowserService()
+
+    class _NoRequest:
+        async def get(self, *_args, **_kwargs):
+            raise AssertionError("不应调用 context.request.get")
+
+    class _FakePage:
+        def __init__(self):
+            self.url = ""
+            self.goto_calls = []
+            self.waits = []
+
+        async def goto(self, url, **_kwargs):
+            self.goto_calls.append(str(url))
+            self.url = str(url)
+
+        async def wait_for_timeout(self, ms):
+            self.waits.append(int(ms))
+
+    class _FakeContext:
+        def __init__(self, page):
+            self.pages = [page]
+            self.request = _NoRequest()
+
+        async def new_page(self):
+            return self.pages[0]
+
+    page = _FakePage()
+    context = _FakeContext(page)
+
+    async def _fake_fetch(page_obj, url, **_kwargs):
+        del page_obj
+        if "api/auth/session" in str(url):
+            return {"status": 200, "raw": "{\"accessToken\":\"t\"}", "json": {"accessToken": "t"}, "error": None, "is_cf": False}
+        return {
+            "status": 200,
+            "raw": "{\"items\":[{\"id\":\"task_123\",\"generation_id\":\"gen_abc\"}]}",
+            "json": {"items": [{"id": "task_123", "generation_id": "gen_abc"}]},
+            "error": None,
+            "is_cf": False,
+        }
+
+    monkeypatch.setattr(service, "_sora_fetch_json_via_page", _fake_fetch, raising=True)
+
+    item = await service._fetch_draft_item_by_task_id_via_context(
+        context=context,
+        task_id="task_123",
+        limit=15,
+        max_pages=1,
+    )
+
+    assert isinstance(item, dict)
+    assert item.get("generation_id") == "gen_abc"
+    assert page.goto_calls  # 非 Sora 域时会先导航到 drafts
+
+
+@pytest.mark.asyncio
+async def test_poll_sora_task_from_page_does_not_use_context_request(monkeypatch):
+    service = IXBrowserService()
+
+    class _NoRequest:
+        async def get(self, *_args, **_kwargs):
+            raise AssertionError("不应调用 context.request.get")
+
+    class _FakeContext:
+        def __init__(self):
+            self.request = _NoRequest()
+
+    class _FakePage:
+        def __init__(self):
+            self.context = _FakeContext()
+
+    calls = []
+
+    async def _fake_fetch(page_obj, url, **_kwargs):
+        calls.append(str(url))
+        # pending 命中并返回 progress，函数应直接返回 processing，不走 drafts
+        if "backend/nf/pending/v2" in str(url):
+            return {"status": 200, "raw": "[]", "json": [{"id": "task_1", "progress": 0.5}], "error": None, "is_cf": False}
+        raise AssertionError("不应请求 drafts")
+
+    monkeypatch.setattr(service, "_sora_fetch_json_via_page", _fake_fetch, raising=True)
+
+    page = _FakePage()
+    result = await service._poll_sora_task_from_page(
+        page=page,
+        task_id="task_1",
+        access_token="token",
+        fetch_drafts=False,
+    )
+
+    assert calls and any("backend/nf/pending/v2" in url for url in calls)
+    assert result["state"] == "processing"
