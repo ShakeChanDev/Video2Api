@@ -166,7 +166,7 @@ async def test_scan_group_sora_sessions_collects_results(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_scan_group_sora_sessions_silent_api_uses_httpx_when_token_present(monkeypatch):
+async def test_scan_group_sora_sessions_silent_api_uses_curl_when_token_present(monkeypatch):
     service = IXBrowserService()
 
     async def _fake_list_group_windows():
@@ -193,13 +193,13 @@ async def test_scan_group_sora_sessions_silent_api_uses_httpx_when_token_present
         lambda _group, _pid: {"session_json": {"accessToken": "t"}},
     )
 
-    async def _fake_fetch_session(token, *, proxy_url=None, user_agent=None):
-        del proxy_url, user_agent
+    async def _fake_fetch_session(token, *, proxy_url=None, user_agent=None, profile_id=None):
+        del proxy_url, user_agent, profile_id
         assert token == "t"
         return 200, {"user": {"email": "x@example.com"}, "accessToken": "t"}, "{\"ok\":true}"
 
-    async def _fake_fetch_sub(token, *, proxy_url=None, user_agent=None):
-        del proxy_url, user_agent
+    async def _fake_fetch_sub(token, *, proxy_url=None, user_agent=None, profile_id=None):
+        del proxy_url, user_agent, profile_id
         assert token == "t"
         return {
             "plan": "plus",
@@ -210,8 +210,8 @@ async def test_scan_group_sora_sessions_silent_api_uses_httpx_when_token_present
             "source": "https://sora.chatgpt.com/backend/billing/subscriptions",
         }
 
-    async def _fake_fetch_quota(token, *, proxy_url=None, user_agent=None):
-        del proxy_url, user_agent
+    async def _fake_fetch_quota(token, *, proxy_url=None, user_agent=None, profile_id=None):
+        del proxy_url, user_agent, profile_id
         assert token == "t"
         return {
             "remaining_count": 8,
@@ -224,9 +224,9 @@ async def test_scan_group_sora_sessions_silent_api_uses_httpx_when_token_present
             "raw": "{\"ok\":true}",
         }
 
-    monkeypatch.setattr(service, "_fetch_sora_session_via_httpx", _fake_fetch_session, raising=True)
-    monkeypatch.setattr(service, "_fetch_sora_subscription_plan_via_httpx", _fake_fetch_sub, raising=True)
-    monkeypatch.setattr(service, "_fetch_sora_quota_via_httpx", _fake_fetch_quota, raising=True)
+    monkeypatch.setattr(service, "_fetch_sora_session_via_curl_cffi", _fake_fetch_session, raising=True)
+    monkeypatch.setattr(service, "_fetch_sora_subscription_plan_via_curl_cffi", _fake_fetch_sub, raising=True)
+    monkeypatch.setattr(service, "_fetch_sora_quota_via_curl_cffi", _fake_fetch_quota, raising=True)
 
     def _boom_playwright():
         raise AssertionError("不应调用 async_playwright")

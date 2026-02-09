@@ -129,6 +129,8 @@ class IXBrowserService:
         self._group_windows_cache_ttl: float = 120.0
         # profile_id -> proxy binding snapshot（来源：profile-list）
         self._profile_proxy_map: Dict[int, Dict[str, Any]] = {}
+        # profile_id -> oai-did（用于 curl-cffi 静默更新请求，减少 CF 风控）
+        self._oai_did_by_profile: Dict[int, str] = {}
         self._proxy_binding_last_failed_at: float = 0.0
         self._realtime_quota_cache_ttl: float = 30.0
         self._realtime_operator_username: str = "实时使用"
@@ -1026,6 +1028,22 @@ class IXBrowserService:
         text = proxy_url.strip()
         return re.sub(r"://[^@/]+@", "://***:***@", text)
 
+    def _get_or_create_oai_did(self, profile_id: int) -> str:
+        try:
+            pid = int(profile_id)
+        except Exception:  # noqa: BLE001
+            pid = 0
+        if pid <= 0:
+            return str(uuid4())
+
+        cached = self._oai_did_by_profile.get(pid)
+        if isinstance(cached, str) and cached.strip():
+            return cached
+
+        did = str(uuid4())
+        self._oai_did_by_profile[pid] = did
+        return did
+
     async def _sora_fetch_json_via_httpx(
         self,
         url: str,
@@ -1121,6 +1139,108 @@ class IXBrowserService:
 
         return last_result
 
+    async def _sora_fetch_json_via_curl_cffi(
+        self,
+        url: str,
+        *,
+        headers: Optional[Dict[str, str]] = None,
+        proxy_url: Optional[str] = None,
+        timeout_ms: int = 20_000,
+        retries: int = 2,
+        impersonate: str = "safari17_2_ios",
+    ) -> Dict[str, Any]:
+        """
+        通过 curl-cffi 模拟浏览器 TLS 指纹发起请求（可指定代理），并解析 JSON。
+
+        说明：
+        - 该路径用于“服务端直连（走代理）”但需要更像浏览器的指纹的场景（例如静默更新）。
+        - 若 curl_cffi 未安装，将返回 error 并交由上层决定是否回退到浏览器补扫。
+        """
+        try:
+            from curl_cffi.requests import AsyncSession  # type: ignore
+        except Exception:  # noqa: BLE001
+            return {"status": None, "raw": None, "json": None, "error": "curl_cffi 未安装", "is_cf": False}
+
+        endpoint = str(url or "").strip()
+        if not endpoint:
+            return {"status": None, "raw": None, "json": None, "error": "缺少 url", "is_cf": False}
+
+        safe_headers: Dict[str, str] = {"Accept": "application/json"}
+        for key, value in (headers or {}).items():
+            k = str(key or "").strip()
+            if not k:
+                continue
+            v = "" if value is None else str(value)
+            safe_headers[k] = v
+
+        timeout_ms_int = int(timeout_ms) if int(timeout_ms or 0) > 0 else 20_000
+        retries_int = int(retries) if int(retries or 0) > 0 else 0
+        timeout_sec = max(1.0, float(timeout_ms_int) / 1000.0)
+
+        last_result: Dict[str, Any] = {"status": None, "raw": None, "json": None, "error": None, "is_cf": False}
+
+        for attempt in range(retries_int + 1):
+            try:
+                async with AsyncSession(impersonate=str(impersonate or "safari17_2_ios")) as session:
+                    kwargs = {
+                        "headers": safe_headers,
+                        "timeout": timeout_sec,
+                        "allow_redirects": False,
+                    }
+                    if proxy_url:
+                        kwargs["proxy"] = proxy_url
+                    resp = await session.get(endpoint, **kwargs)
+
+                status_code = int(resp.status_code)
+                raw_text = resp.text if isinstance(resp.text, str) else None
+                parsed = None
+                try:
+                    parsed = resp.json()
+                except Exception:  # noqa: BLE001
+                    parsed = None
+                if not isinstance(parsed, (dict, list)):
+                    parsed = None
+                if raw_text and len(raw_text) > 20_000:
+                    raw_text = raw_text[:20_000]
+                is_cf = self._is_sora_cf_challenge(status_code, raw_text)
+                last_result = {
+                    "status": status_code,
+                    "raw": raw_text,
+                    "json": parsed,
+                    "error": None,
+                    "is_cf": bool(is_cf),
+                }
+            except Exception as exc:  # noqa: BLE001
+                last_result = {"status": None, "raw": None, "json": None, "error": str(exc), "is_cf": False}
+
+            should_retry = False
+            if attempt < retries_int:
+                if last_result.get("error"):
+                    should_retry = True
+                elif last_result.get("is_cf"):
+                    should_retry = True
+                else:
+                    code = last_result.get("status")
+                    if code is None:
+                        should_retry = True
+                    else:
+                        try:
+                            code_int = int(code)
+                        except Exception:  # noqa: BLE001
+                            code_int = 0
+                        if code_int in (403, 408, 429) or code_int >= 500:
+                            should_retry = True
+
+            if not should_retry:
+                break
+
+            try:
+                await asyncio.sleep(1.0 * (2**attempt))
+            except Exception:  # noqa: BLE001
+                pass
+
+        return last_result
+
     async def _request_sora_api_via_httpx(
         self,
         url: str,
@@ -1151,6 +1271,59 @@ class IXBrowserService:
             proxy_url=proxy_url,
             timeout_ms=20_000,
             retries=2,
+        )
+        status = result.get("status")
+        raw_text = result.get("raw") if isinstance(result.get("raw"), str) else None
+        payload = result.get("json") if isinstance(result.get("json"), (dict, list)) else None
+        error = result.get("error")
+        if result.get("is_cf") or self._is_sora_cf_challenge(status if isinstance(status, int) else None, raw_text):
+            error = "cf_challenge"
+        return {
+            "status": int(status) if isinstance(status, int) else status,
+            "raw": raw_text,
+            "json": payload,
+            "error": str(error) if error else None,
+            "source": endpoint,
+        }
+
+    async def _request_sora_api_via_curl_cffi(
+        self,
+        url: str,
+        access_token: str,
+        *,
+        proxy_url: Optional[str] = None,
+        user_agent: Optional[str] = None,
+        profile_id: int,
+    ) -> Dict[str, Any]:
+        endpoint = str(url or "").strip()
+        token = str(access_token or "").strip()
+        if not endpoint:
+            return {"status": None, "raw": None, "json": None, "error": "缺少 url", "source": ""}
+        if not token:
+            return {"status": None, "raw": None, "json": None, "error": "缺少 accessToken", "source": endpoint}
+
+        did = self._get_or_create_oai_did(profile_id)
+        headers: Dict[str, str] = {
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/json",
+            "Origin": "https://sora.chatgpt.com",
+            "Referer": "https://sora.chatgpt.com/",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Accept-Encoding": "gzip, deflate, br",
+            "Cookie": f"oai-did={did}",
+        }
+        if user_agent:
+            headers["User-Agent"] = str(user_agent)
+        else:
+            headers["User-Agent"] = self._select_iphone_user_agent(profile_id)
+
+        result = await self._sora_fetch_json_via_curl_cffi(
+            endpoint,
+            headers=headers,
+            proxy_url=proxy_url,
+            timeout_ms=20_000,
+            retries=2,
+            impersonate="safari17_2_ios",
         )
         status = result.get("status")
         raw_text = result.get("raw") if isinstance(result.get("raw"), str) else None
@@ -1223,6 +1396,66 @@ class IXBrowserService:
         raw_text = session_raw if isinstance(session_raw, str) else None
         return status, session_payload if isinstance(session_payload, dict) else None, raw_text
 
+    async def _fetch_sora_session_via_curl_cffi(
+        self,
+        access_token: str,
+        *,
+        proxy_url: Optional[str] = None,
+        user_agent: Optional[str] = None,
+        profile_id: int,
+    ) -> Tuple[Optional[int], Optional[dict], Optional[str]]:
+        token = str(access_token or "").strip()
+        if not token:
+            return None, None, None
+
+        session_resp = await self._request_sora_api_via_curl_cffi(
+            "https://sora.chatgpt.com/api/auth/session",
+            token,
+            proxy_url=proxy_url,
+            user_agent=user_agent,
+            profile_id=profile_id,
+        )
+        session_status = session_resp.get("status")
+        session_payload = session_resp.get("json")
+        session_raw = session_resp.get("raw")
+
+        if int(session_status or 0) == 200 and isinstance(session_payload, dict):
+            session_obj = dict(session_payload)
+            if not self._extract_access_token(session_obj):
+                session_obj["accessToken"] = token
+            raw_text = (
+                session_raw
+                if isinstance(session_raw, str) and session_raw.strip()
+                else json.dumps(session_obj, ensure_ascii=False)
+            )
+            return int(session_status), session_obj, raw_text
+
+        me_resp = await self._request_sora_api_via_curl_cffi(
+            "https://sora.chatgpt.com/backend/me",
+            token,
+            proxy_url=proxy_url,
+            user_agent=user_agent,
+            profile_id=profile_id,
+        )
+        me_status = me_resp.get("status")
+        me_payload = me_resp.get("json")
+        if int(me_status or 0) == 200 and isinstance(me_payload, dict):
+            user_obj = me_payload.get("user") if isinstance(me_payload.get("user"), dict) else {}
+            user_obj = dict(user_obj) if isinstance(user_obj, dict) else {}
+            for field in ("email", "name", "id", "username"):
+                value = me_payload.get(field)
+                if value and field not in user_obj:
+                    user_obj[field] = value
+            session_obj2: Dict[str, Any] = {"accessToken": token, "user": user_obj}
+            for field in ("plan", "planType", "plan_type", "chatgpt_plan_type"):
+                if me_payload.get(field) is not None:
+                    session_obj2[field] = me_payload.get(field)
+            return 200, session_obj2, json.dumps(session_obj2, ensure_ascii=False)
+
+        status = int(session_status) if isinstance(session_status, int) else me_status
+        raw_text = session_raw if isinstance(session_raw, str) else None
+        return status, session_payload if isinstance(session_payload, dict) else None, raw_text
+
     async def _fetch_sora_subscription_plan_via_httpx(
         self,
         access_token: str,
@@ -1257,6 +1490,42 @@ class IXBrowserService:
             "source": result.get("source"),
         }
 
+    async def _fetch_sora_subscription_plan_via_curl_cffi(
+        self,
+        access_token: str,
+        *,
+        proxy_url: Optional[str] = None,
+        user_agent: Optional[str] = None,
+        profile_id: int,
+    ) -> Dict[str, Any]:
+        result = await self._request_sora_api_via_curl_cffi(
+            "https://sora.chatgpt.com/backend/billing/subscriptions",
+            access_token,
+            proxy_url=proxy_url,
+            user_agent=user_agent,
+            profile_id=profile_id,
+        )
+        plan = None
+        payload = result.get("json")
+        if int(result.get("status") or 0) == 200 and isinstance(payload, dict):
+            items = payload.get("data")
+            if isinstance(items, list) and items:
+                first = items[0] if isinstance(items[0], dict) else None
+                plan_obj = first.get("plan") if isinstance(first, dict) and isinstance(first.get("plan"), dict) else {}
+                for value in (plan_obj.get("id"), plan_obj.get("title")):
+                    normalized = self._normalize_account_plan(value)
+                    if normalized:
+                        plan = normalized
+                        break
+        return {
+            "plan": plan,
+            "status": result.get("status"),
+            "raw": result.get("raw"),
+            "payload": payload if isinstance(payload, dict) else None,
+            "error": result.get("error"),
+            "source": result.get("source"),
+        }
+
     async def _fetch_sora_quota_via_httpx(
         self,
         access_token: str,
@@ -1269,6 +1538,63 @@ class IXBrowserService:
             access_token,
             proxy_url=proxy_url,
             user_agent=user_agent,
+        )
+        payload = result.get("json")
+        status = result.get("status")
+        source = str(result.get("source") or "https://sora.chatgpt.com/backend/nf/check")
+
+        if result.get("error"):
+            return {
+                "remaining_count": None,
+                "total_count": None,
+                "reset_at": None,
+                "source": source,
+                "payload": payload if isinstance(payload, dict) else None,
+                "error": str(result.get("error")),
+                "status": status,
+                "raw": result.get("raw"),
+            }
+
+        if int(status or 0) != 200:
+            raw_text = result.get("raw")
+            detail = raw_text if isinstance(raw_text, str) and raw_text.strip() else "unknown error"
+            return {
+                "remaining_count": None,
+                "total_count": None,
+                "reset_at": None,
+                "source": source,
+                "payload": payload if isinstance(payload, dict) else None,
+                "error": f"nf/check 状态码 {status}: {str(detail)[:200]}",
+                "status": status,
+                "raw": raw_text,
+            }
+
+        parsed = self._parse_sora_nf_check(payload if isinstance(payload, dict) else {})
+        return {
+            "remaining_count": parsed.get("remaining_count"),
+            "total_count": parsed.get("total_count"),
+            "reset_at": parsed.get("reset_at"),
+            "source": source,
+            "payload": payload if isinstance(payload, dict) else None,
+            "error": None,
+            "status": status,
+            "raw": result.get("raw"),
+        }
+
+    async def _fetch_sora_quota_via_curl_cffi(
+        self,
+        access_token: str,
+        *,
+        proxy_url: Optional[str] = None,
+        user_agent: Optional[str] = None,
+        profile_id: int,
+    ) -> Dict[str, Any]:
+        result = await self._request_sora_api_via_curl_cffi(
+            "https://sora.chatgpt.com/backend/nf/check",
+            access_token,
+            proxy_url=proxy_url,
+            user_agent=user_agent,
+            profile_id=profile_id,
         )
         payload = result.get("json")
         status = result.get("status")
@@ -1587,20 +1913,23 @@ class IXBrowserService:
                         )
 
                         fetch_started_at = time.perf_counter()
-                        session_status, session_obj, session_raw = await self._fetch_sora_session_via_httpx(
+                        session_status, session_obj, session_raw = await self._fetch_sora_session_via_curl_cffi(
                             access_token,
                             proxy_url=proxy_url,
                             user_agent=user_agent,
+                            profile_id=profile_id,
                         )
-                        subscription_info = await self._fetch_sora_subscription_plan_via_httpx(
+                        subscription_info = await self._fetch_sora_subscription_plan_via_curl_cffi(
                             access_token,
                             proxy_url=proxy_url,
                             user_agent=user_agent,
+                            profile_id=profile_id,
                         )
-                        quota_info = await self._fetch_sora_quota_via_httpx(
+                        quota_info = await self._fetch_sora_quota_via_curl_cffi(
                             access_token,
                             proxy_url=proxy_url,
                             user_agent=user_agent,
+                            profile_id=profile_id,
                         )
                         fetch_cost_ms = int((time.perf_counter() - fetch_started_at) * 1000)
                         logger.info(
