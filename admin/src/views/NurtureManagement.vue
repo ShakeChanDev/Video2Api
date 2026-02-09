@@ -98,6 +98,7 @@
               <div class="window-cell">
                 <div class="window-name">{{ row.window_name || '-' }}</div>
                 <div class="window-meta">ID {{ row.profile_id }}</div>
+                <div v-if="row.proxy_ip && row.proxy_port" class="window-proxy">{{ formatProxy(row) }}</div>
               </div>
             </template>
           </el-table-column>
@@ -194,14 +195,15 @@
           </template>
 
           <el-table :data="jobs" class="card-table" empty-text="暂无任务">
-            <el-table-column label="窗口" min-width="240">
-              <template #default="{ row }">
-                <div class="window-cell">
-                  <div class="window-name">{{ row.window_name || '-' }}</div>
-                  <div class="window-meta">ID {{ row.profile_id }}</div>
-                </div>
-              </template>
-            </el-table-column>
+          <el-table-column label="窗口" min-width="240">
+            <template #default="{ row }">
+              <div class="window-cell">
+                <div class="window-name">{{ row.window_name || '-' }}</div>
+                <div class="window-meta">ID {{ row.profile_id }}</div>
+                <div v-if="row.proxy_ip && row.proxy_port" class="window-proxy">{{ formatProxy(row) }}</div>
+              </div>
+            </template>
+          </el-table-column>
             <el-table-column label="状态" width="120" align="center">
               <template #default="{ row }">
                 <el-tag size="small" :type="jobStatusTag(row.status)">{{ row.status }}</el-tag>
@@ -495,6 +497,16 @@ const shorten = (text, maxLen) => {
   return `${raw.slice(0, maxLen)}...`
 }
 
+const formatProxy = (row) => {
+  const ip = String(row?.proxy_ip || '').trim()
+  const port = String(row?.proxy_port || '').trim()
+  if (!ip || !port) return '-'
+  const ptype = String(row?.proxy_type || 'http').trim().toLowerCase() || 'http'
+  const localId = Number(row?.proxy_local_id || 0)
+  const suffix = localId > 0 ? `#${localId}` : ''
+  return `${ptype}://${ip}:${port}${suffix ? ` (${suffix})` : ''}`
+}
+
 const formatTime = (value) => {
   if (!value) return '-'
   try {
@@ -613,6 +625,14 @@ onBeforeUnmount(() => {
 .window-meta {
   font-size: 12px;
   color: var(--muted);
+}
+
+.window-proxy {
+  font-size: 11px;
+  color: rgba(15, 23, 42, 0.7);
+  font-weight: 700;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace;
+  font-variant-numeric: tabular-nums;
 }
 
 .account-cell {

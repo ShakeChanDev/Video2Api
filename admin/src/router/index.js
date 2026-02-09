@@ -1,6 +1,7 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import Login from '../views/Login.vue'
 import IxBrowserGroups from '../views/IxBrowserGroups.vue'
+import ProxyManagement from '../views/ProxyManagement.vue'
 import TaskManagement from '../views/TaskManagement.vue'
 import NurtureManagement from '../views/NurtureManagement.vue'
 import WatermarkParse from '../views/WatermarkParse.vue'
@@ -15,6 +16,7 @@ const router = createRouter({
     { path: '/', redirect: '/sora-accounts' },
     { path: '/ixbrowser-groups', redirect: '/sora-accounts' },
     { path: '/sora-accounts', component: IxBrowserGroups, meta: { title: 'Sora 账号管理' } },
+    { path: '/proxies', component: ProxyManagement, meta: { title: '代理列表' } },
     { path: '/tasks', component: TaskManagement, meta: { title: '任务管理' } },
     { path: '/nurture', component: NurtureManagement, meta: { title: '养号任务' } },
     { path: '/watermark-parse', component: WatermarkParse, meta: { title: '去水印解析' } },

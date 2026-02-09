@@ -45,6 +45,37 @@ export const getIxBrowserGroupWindows = async () => {
   return response.data
 }
 
+export const listProxies = async (params) => {
+  const response = await api.get('/proxies', { params })
+  return response.data
+}
+
+export const batchImportProxies = async (data) => {
+  const response = await api.post('/proxies/batch-import', data, { timeout: 60000 })
+  return response.data
+}
+
+export const syncPullProxies = async () => {
+  const response = await api.post('/proxies/sync/pull', null, { timeout: 120000 })
+  return response.data
+}
+
+export const syncPushProxies = async (proxyIds = null) => {
+  const payload = Array.isArray(proxyIds) && proxyIds.length ? { proxy_ids: proxyIds } : { proxy_ids: null }
+  const response = await api.post('/proxies/sync/push', payload, { timeout: 180000 })
+  return response.data
+}
+
+export const batchUpdateProxies = async (data) => {
+  const response = await api.post('/proxies/batch-update', data, { timeout: 180000 })
+  return response.data
+}
+
+export const batchCheckProxies = async (data) => {
+  const response = await api.post('/proxies/batch-check', data, { timeout: 300000 })
+  return response.data
+}
+
 export const openIxBrowserProfileWindow = async (profileId, groupTitle = 'Sora') => {
   const response = await api.post(`/ixbrowser/profiles/${profileId}/open`, null, {
     params: { group_title: groupTitle }

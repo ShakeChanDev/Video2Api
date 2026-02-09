@@ -69,7 +69,10 @@ const router = useRouter()
 const navGroups = [
   {
     title: '账号',
-    items: [{ path: '/sora-accounts', label: 'Sora 账号管理' }]
+    items: [
+      { path: '/sora-accounts', label: 'Sora 账号管理' },
+      { path: '/proxies', label: '代理列表' }
+    ]
   },
   {
     title: '任务',

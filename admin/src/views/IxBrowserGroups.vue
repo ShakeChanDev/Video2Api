@@ -83,6 +83,11 @@
                 <span class="window-id">ID {{ row.profile_id }}</span>
               </div>
               <div class="window-account">{{ row.account || '未识别账号' }}</div>
+              <div class="window-proxy">
+                <span class="proxy-label">代理</span>
+                <span class="proxy-value">{{ formatProxy(row) }}</span>
+                <span v-if="row.real_ip" class="proxy-real">real_ip {{ row.real_ip }}</span>
+              </div>
             </div>
           </template>
         </el-table-column>
@@ -312,6 +317,16 @@ const formatScore = (value) => {
   const num = Number(value)
   if (!Number.isFinite(num)) return '-'
   return num.toFixed(1)
+}
+
+const formatProxy = (row) => {
+  const ip = String(row?.proxy_ip || '').trim()
+  const port = String(row?.proxy_port || '').trim()
+  if (!ip || !port) return '-'
+  const ptype = String(row?.proxy_type || 'http').trim().toLowerCase() || 'http'
+  const localId = Number(row?.proxy_local_id || 0)
+  const suffix = localId > 0 ? ` (本地#${localId})` : ''
+  return `${ptype}://${ip}:${port}${suffix}`
 }
 
 const shorten = (value, maxLen = 60) => {
@@ -714,6 +729,38 @@ onBeforeUnmount(() => {
 .window-account {
   font-size: 12px;
   color: var(--muted);
+}
+
+.window-proxy {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  font-size: 12px;
+  color: rgba(71, 85, 105, 0.92);
+}
+
+.proxy-label {
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: rgba(14, 165, 164, 0.12);
+  color: var(--accent-strong);
+  font-weight: 700;
+  font-size: 11px;
+  letter-spacing: 0.04em;
+}
+
+.proxy-value {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace;
+  font-variant-numeric: tabular-nums;
+  font-size: 12px;
+  color: rgba(15, 23, 42, 0.78);
+  font-weight: 700;
+}
+
+.proxy-real {
+  color: rgba(71, 85, 105, 0.82);
+  font-size: 11px;
 }
 
 .quota-card {

@@ -107,6 +107,10 @@
                   窗口 {{ row.profile_id }}
                   <span v-if="isPlusProfile(row.profile_id)" class="task-plus">Plus</span>
                 </span>
+                <template v-if="row.proxy_ip && row.proxy_port">
+                  <span class="task-dot" />
+                  <span class="task-proxy">{{ formatProxy(row) }}</span>
+                </template>
                 <span class="task-dot" />
                 <span class="task-meta">{{ row.duration }}</span>
                 <span class="task-dot" />
@@ -118,6 +122,18 @@
                 <span class="task-prompt">{{ row.prompt }}</span>
               </el-tooltip>
               <span v-else class="task-prompt task-prompt-empty">-</span>
+            </div>
+          </template>
+        </el-table-column>
+        <el-table-column label="代理" width="220">
+          <template #default="{ row }">
+            <div class="proxy-cell">
+              <span v-if="row.proxy_ip && row.proxy_port" class="proxy-main">
+                <span class="mono">{{ row.proxy_ip }}:{{ row.proxy_port }}</span>
+                <span v-if="row.proxy_type" class="proxy-type">{{ String(row.proxy_type).toUpperCase() }}</span>
+              </span>
+              <span v-else class="proxy-empty">-</span>
+              <span v-if="row.real_ip" class="proxy-real">出口 {{ row.real_ip }}</span>
             </div>
           </template>
         </el-table-column>
@@ -444,6 +460,16 @@ const shorten = (value, maxLen) => {
   if (!value) return ''
   if (value.length <= maxLen) return value
   return `${value.slice(0, maxLen)}...`
+}
+
+const formatProxy = (row) => {
+  const ip = String(row?.proxy_ip || '').trim()
+  const port = String(row?.proxy_port || '').trim()
+  if (!ip || !port) return '-'
+  const ptype = String(row?.proxy_type || 'http').trim().toLowerCase() || 'http'
+  const localId = Number(row?.proxy_local_id || 0)
+  const suffix = localId > 0 ? `#${localId}` : ''
+  return `代理 ${ptype} ${ip}:${port}${suffix ? ` (${suffix})` : ''}`
 }
 
 const statusType = (status) => {
@@ -1088,6 +1114,15 @@ onUnmounted(() => {
   white-space: nowrap;
 }
 
+.task-proxy {
+  font-size: 12px;
+  color: rgba(15, 23, 42, 0.7);
+  font-weight: 700;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
 .task-plus {
   display: inline-flex;
   align-items: center;
@@ -1300,6 +1335,39 @@ onUnmounted(() => {
   padding: 12px;
   font-size: 12px;
   color: #8a93a5;
+}
+
+.proxy-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  line-height: 1.35;
+}
+
+.proxy-main {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.proxy-type {
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: rgba(71, 85, 105, 0.9);
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid rgba(148, 163, 184, 0.28);
+  background: rgba(255, 255, 255, 0.7);
+}
+
+.proxy-real {
+  font-size: 12px;
+  color: #64748b;
+}
+
+.proxy-empty {
+  color: rgba(148, 163, 184, 1);
 }
 
 .w-140 {
