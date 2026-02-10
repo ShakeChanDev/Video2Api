@@ -127,3 +127,124 @@ async def test_proxy_sync_push_creates_and_binds_ix_id(monkeypatch):
     row = sqlite_db.get_proxies_by_ids([local_id])[0]
     assert int(row.get("ix_id") or 0) == 777
 
+
+def test_proxy_list_contains_cf_recent_stats_and_unknown_bucket():
+    svc = ProxyService()
+    import_resp = svc.batch_import(
+        ProxyBatchImportRequest(
+            text="\n".join(["10.0.0.1:8080", "10.0.0.2:8080"]),
+            default_type="http",
+            tag=None,
+            note=None,
+        )
+    )
+    assert int(import_resp.created) == 2
+    rows = sqlite_db.list_proxies(page=1, limit=50).get("items", [])
+    by_ip = {str(item.get("proxy_ip") or ""): int(item.get("id") or 0) for item in rows}
+    proxy_1_id = by_ip["10.0.0.1"]
+    proxy_2_id = by_ip["10.0.0.2"]
+
+    for _ in range(5):
+        sqlite_db.create_proxy_cf_event(
+            proxy_id=proxy_1_id,
+            profile_id=101,
+            source="test",
+            endpoint="/pending",
+            status_code=200,
+            error_text=None,
+            is_cf=False,
+        )
+    for idx in range(30):
+        sqlite_db.create_proxy_cf_event(
+            proxy_id=proxy_1_id,
+            profile_id=101,
+            source="test",
+            endpoint="/pending",
+            status_code=403 if idx < 9 else 200,
+            error_text="cf_challenge" if idx < 9 else None,
+            is_cf=idx < 9,
+        )
+
+    for idx in range(8):
+        sqlite_db.create_proxy_cf_event(
+            proxy_id=proxy_2_id,
+            profile_id=102,
+            source="test",
+            endpoint="/drafts",
+            status_code=403 if idx < 3 else 200,
+            error_text="cf_challenge" if idx < 3 else None,
+            is_cf=idx < 3,
+        )
+
+    for idx in range(8):
+        sqlite_db.create_proxy_cf_event(
+            proxy_id=None,
+            profile_id=999,
+            source="test",
+            endpoint="/unknown",
+            status_code=403 if idx < 3 else 200,
+            error_text="cf_challenge" if idx < 3 else None,
+            is_cf=idx < 3,
+        )
+
+    resp = svc.list_proxies(keyword=None, page=1, limit=50)
+    assert int(resp.cf_recent_window) == 30
+    assert int(resp.unknown_cf_recent_count) == 3
+    assert int(resp.unknown_cf_recent_total) == 8
+    assert float(resp.unknown_cf_recent_ratio) == 37.5
+
+    items = {int(item.id): item for item in resp.items}
+    item_1 = items[proxy_1_id]
+    item_2 = items[proxy_2_id]
+    assert int(item_1.cf_recent_count) == 9
+    assert int(item_1.cf_recent_total) == 30
+    assert float(item_1.cf_recent_ratio) == 30.0
+    assert int(item_2.cf_recent_count) == 3
+    assert int(item_2.cf_recent_total) == 8
+    assert float(item_2.cf_recent_ratio) == 37.5
+
+
+def test_proxy_cf_event_retention_limit_works():
+    svc = ProxyService()
+    import_resp = svc.batch_import(
+        ProxyBatchImportRequest(text="10.10.10.10:8080", default_type="http", tag=None, note=None)
+    )
+    assert int(import_resp.created) == 1
+    row = sqlite_db.list_proxies(page=1, limit=10).get("items", [])[0]
+    proxy_id = int(row.get("id") or 0)
+    assert proxy_id > 0
+
+    for idx in range(305):
+        sqlite_db.create_proxy_cf_event(
+            proxy_id=proxy_id,
+            profile_id=200,
+            source="test",
+            endpoint="/retention",
+            status_code=200,
+            error_text=None,
+            is_cf=bool(idx % 2 == 0),
+        )
+
+    for idx in range(304):
+        sqlite_db.create_proxy_cf_event(
+            proxy_id=None,
+            profile_id=201,
+            source="test",
+            endpoint="/retention-unknown",
+            status_code=200,
+            error_text=None,
+            is_cf=bool(idx % 3 == 0),
+        )
+
+    conn = sqlite_db._get_conn()
+    cursor = conn.cursor()
+    cursor.execute("SELECT COUNT(*) AS cnt FROM proxy_cf_events WHERE proxy_id = ?", (proxy_id,))
+    row = cursor.fetchone()
+    row_count = int(row["cnt"] or 0) if row else 0
+    cursor.execute("SELECT COUNT(*) AS cnt FROM proxy_cf_events WHERE proxy_id IS NULL")
+    unknown_row = cursor.fetchone()
+    unknown_count = int(unknown_row["cnt"] or 0) if unknown_row else 0
+    conn.close()
+
+    assert row_count == 300
+    assert unknown_count == 300

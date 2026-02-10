@@ -129,6 +129,10 @@ class SQLiteDB:
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_event_logs_trace_id ON event_logs(trace_id)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_event_logs_request_id ON event_logs(request_id)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_event_logs_resource_created ON event_logs(resource_type, resource_id, created_at DESC)')
+        cursor.execute(
+            'CREATE INDEX IF NOT EXISTS idx_event_logs_task_fail_lookup '
+            'ON event_logs(source, resource_type, event, created_at DESC, resource_id)'
+        )
 
         cursor.execute(
             '''
@@ -420,6 +424,10 @@ class SQLiteDB:
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_sora_jobs_status ON sora_jobs(status, id DESC)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_sora_jobs_phase ON sora_jobs(phase, id DESC)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_sora_jobs_profile_created ON sora_jobs(profile_id, created_at DESC)')
+        cursor.execute(
+            'CREATE INDEX IF NOT EXISTS idx_sora_jobs_group_status_profile '
+            'ON sora_jobs(group_title, status, profile_id)'
+        )
 
         cursor.execute("PRAGMA table_info(sora_jobs)")
         columns = {row["name"] for row in cursor.fetchall()}
@@ -653,6 +661,24 @@ class SQLiteDB:
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_proxies_ix_id ON proxies(ix_id)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_proxies_key ON proxies(proxy_type, proxy_ip, proxy_port, proxy_user)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_proxies_updated ON proxies(updated_at DESC)')
+        cursor.execute(
+            '''
+            CREATE TABLE IF NOT EXISTS proxy_cf_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                proxy_id INTEGER,
+                profile_id INTEGER,
+                source TEXT,
+                endpoint TEXT,
+                status_code INTEGER,
+                error_text TEXT,
+                is_cf INTEGER NOT NULL DEFAULT 0,
+                created_at TIMESTAMP NOT NULL,
+                FOREIGN KEY(proxy_id) REFERENCES proxies(id) ON DELETE SET NULL
+            )
+            '''
+        )
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_proxy_cf_events_proxy_id_id ON proxy_cf_events(proxy_id, id DESC)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_proxy_cf_events_created ON proxy_cf_events(created_at DESC)')
 
         cursor.execute("PRAGMA table_info(watermark_free_config)")
         wm_columns = {row["name"] for row in cursor.fetchall()}
@@ -3461,6 +3487,187 @@ class SQLiteDB:
         conn.commit()
         conn.close()
         return bool(ok)
+
+    def create_proxy_cf_event(
+        self,
+        *,
+        proxy_id: Optional[int],
+        profile_id: Optional[int],
+        source: Optional[str],
+        endpoint: Optional[str],
+        status_code: Optional[int],
+        error_text: Optional[str],
+        is_cf: bool,
+        keep_per_proxy: int = 300,
+        created_at: Optional[str] = None,
+    ) -> int:
+        safe_proxy_id: Optional[int]
+        try:
+            value = int(proxy_id) if proxy_id is not None else 0
+        except Exception:
+            value = 0
+        safe_proxy_id = value if value > 0 else None
+
+        safe_profile_id: Optional[int]
+        try:
+            profile_value = int(profile_id) if profile_id is not None else 0
+        except Exception:
+            profile_value = 0
+        safe_profile_id = profile_value if profile_value > 0 else None
+
+        safe_status: Optional[int]
+        try:
+            safe_status = int(status_code) if status_code is not None else None
+        except Exception:
+            safe_status = None
+
+        safe_keep = max(int(keep_per_proxy or 0), 1)
+        now = str(created_at or "").strip() or self._now_str()
+
+        conn = self._get_conn()
+        cursor = conn.cursor()
+        cursor.execute(
+            '''
+            INSERT INTO proxy_cf_events (
+                proxy_id, profile_id, source, endpoint, status_code, error_text, is_cf, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ''',
+            (
+                safe_proxy_id,
+                safe_profile_id,
+                str(source or "").strip() or None,
+                str(endpoint or "").strip() or None,
+                safe_status,
+                str(error_text or "").strip() or None,
+                1 if bool(is_cf) else 0,
+                now,
+            ),
+        )
+        event_id = int(cursor.lastrowid or 0)
+
+        if safe_proxy_id is None:
+            cursor.execute(
+                '''
+                DELETE FROM proxy_cf_events
+                WHERE proxy_id IS NULL
+                  AND id NOT IN (
+                    SELECT id
+                    FROM proxy_cf_events
+                    WHERE proxy_id IS NULL
+                    ORDER BY id DESC
+                    LIMIT ?
+                  )
+                ''',
+                (safe_keep,),
+            )
+        else:
+            cursor.execute(
+                '''
+                DELETE FROM proxy_cf_events
+                WHERE proxy_id = ?
+                  AND id NOT IN (
+                    SELECT id
+                    FROM proxy_cf_events
+                    WHERE proxy_id = ?
+                    ORDER BY id DESC
+                    LIMIT ?
+                  )
+                ''',
+                (safe_proxy_id, safe_proxy_id, safe_keep),
+            )
+
+        conn.commit()
+        conn.close()
+        return event_id
+
+    def get_proxy_cf_recent_stats(self, proxy_ids: List[int], window: int = 30) -> Dict[int, Dict[str, Any]]:
+        ids: List[int] = []
+        seen = set()
+        for raw in proxy_ids or []:
+            try:
+                pid = int(raw)
+            except Exception:
+                continue
+            if pid <= 0 or pid in seen:
+                continue
+            seen.add(pid)
+            ids.append(pid)
+        if not ids:
+            return {}
+
+        safe_window = min(max(int(window or 30), 1), 500)
+        placeholders = ",".join(["?"] * len(ids))
+        conn = self._get_conn()
+        cursor = conn.cursor()
+        cursor.execute(
+            f'''
+            SELECT
+              proxy_id,
+              SUM(CASE WHEN is_cf = 1 THEN 1 ELSE 0 END) AS cf_count,
+              COUNT(*) AS total_count
+            FROM (
+              SELECT
+                proxy_id,
+                is_cf,
+                ROW_NUMBER() OVER (PARTITION BY proxy_id ORDER BY id DESC) AS rn
+              FROM proxy_cf_events
+              WHERE proxy_id IN ({placeholders})
+            ) t
+            WHERE rn <= ?
+            GROUP BY proxy_id
+            ''',
+            [*ids, safe_window],
+        )
+        rows = cursor.fetchall()
+        conn.close()
+
+        result: Dict[int, Dict[str, Any]] = {}
+        for row in rows:
+            try:
+                proxy_id = int(row["proxy_id"] or 0)
+            except Exception:
+                continue
+            if proxy_id <= 0:
+                continue
+            total_count = int(row["total_count"] or 0)
+            cf_count = int(row["cf_count"] or 0)
+            ratio = round((cf_count / total_count) * 100, 1) if total_count > 0 else 0.0
+            result[proxy_id] = {
+                "cf_recent_count": cf_count,
+                "cf_recent_total": total_count,
+                "cf_recent_ratio": float(ratio),
+            }
+        return result
+
+    def get_unknown_proxy_cf_recent_stats(self, window: int = 30) -> Dict[str, Any]:
+        safe_window = min(max(int(window or 30), 1), 500)
+        conn = self._get_conn()
+        cursor = conn.cursor()
+        cursor.execute(
+            '''
+            SELECT
+              SUM(CASE WHEN is_cf = 1 THEN 1 ELSE 0 END) AS cf_count,
+              COUNT(*) AS total_count
+            FROM (
+              SELECT is_cf
+              FROM proxy_cf_events
+              WHERE proxy_id IS NULL
+              ORDER BY id DESC
+              LIMIT ?
+            ) t
+            ''',
+            (safe_window,),
+        )
+        row = cursor.fetchone()
+        conn.close()
+        total_count = int(row["total_count"] or 0) if row else 0
+        cf_count = int(row["cf_count"] or 0) if row else 0
+        ratio = round((cf_count / total_count) * 100, 1) if total_count > 0 else 0.0
+        return {
+            "cf_recent_count": cf_count,
+            "cf_recent_total": total_count,
+            "cf_recent_ratio": float(ratio),
+        }
 
     def upsert_proxies_from_batch_import(self, records: List[Dict[str, Any]]) -> Dict[str, Any]:
         created = 0

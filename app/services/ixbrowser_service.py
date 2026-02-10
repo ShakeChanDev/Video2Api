@@ -122,7 +122,8 @@ class IXBrowserService:
     heavy_load_retry_max_attempts = 4
 
     def __init__(self) -> None:
-        self._ixbrowser_semaphore: Optional[asyncio.Semaphore] = None
+        self._ixbrowser_read_semaphore: Optional[asyncio.Semaphore] = None
+        self._ixbrowser_write_semaphore: Optional[asyncio.Semaphore] = None
         self._sora_job_semaphore: Optional[asyncio.Semaphore] = None
         self._group_windows_cache: List[IXBrowserGroupWindows] = []
         self._group_windows_cache_at: float = 0.0
@@ -618,6 +619,20 @@ class IXBrowserService:
         self._profile_proxy_map = proxy_map
         return result
 
+    async def list_group_windows_cached(self, max_age_sec: float = 3.0) -> List[IXBrowserGroupWindows]:
+        """
+        在极短时间窗口内优先复用内存缓存，减少重复请求 ixBrowser。
+        """
+        max_age = max(float(max_age_sec or 0.0), 0.0)
+        now = time.time()
+        if (
+            max_age > 0
+            and self._group_windows_cache
+            and (now - float(self._group_windows_cache_at or 0.0)) < max_age
+        ):
+            return self._group_windows_cache
+        return await self.list_group_windows()
+
     async def open_profile_window(
         self,
         profile_id: int,
@@ -964,7 +979,65 @@ class IXBrowserService:
                 return True
         return False
 
-    async def _request_sora_api_via_page(self, page, url: str, access_token: str) -> Dict[str, Any]:
+    def _resolve_profile_proxy_local_id(self, profile_id: int) -> Optional[int]:
+        bind = self.get_cached_proxy_binding(profile_id)
+        if not isinstance(bind, dict):
+            return None
+        try:
+            local_id = int(bind.get("proxy_local_id") or 0)
+        except Exception:
+            local_id = 0
+        return local_id if local_id > 0 else None
+
+    def _record_proxy_cf_event(
+        self,
+        *,
+        profile_id: Optional[int],
+        source: Optional[str],
+        endpoint: Optional[str],
+        status: Any,
+        error: Optional[str],
+        is_cf: bool,
+        assume_proxy_chain: bool = True,
+    ) -> None:
+        try:
+            pid = int(profile_id or 0)
+        except Exception:
+            pid = 0
+        if pid <= 0:
+            return
+
+        proxy_local_id = self._resolve_profile_proxy_local_id(pid)
+        if not assume_proxy_chain and proxy_local_id is None:
+            return
+
+        try:
+            status_code = int(status) if status is not None else None
+        except Exception:
+            status_code = None
+
+        try:
+            sqlite_db.create_proxy_cf_event(
+                proxy_id=proxy_local_id,
+                profile_id=pid,
+                source=source,
+                endpoint=endpoint,
+                status_code=status_code,
+                error_text=str(error or "").strip() or None,
+                is_cf=bool(is_cf),
+                keep_per_proxy=300,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("记录代理 CF 事件失败 | profile_id=%s | error=%s", int(pid), str(exc))
+
+    async def _request_sora_api_via_page(
+        self,
+        page,
+        url: str,
+        access_token: str,
+        *,
+        profile_id: Optional[int] = None,
+    ) -> Dict[str, Any]:
         """
         在 ixBrowser 的真实浏览器上下文内发起 API 请求，确保走 profile 代理与浏览器网络栈。
         """
@@ -989,6 +1062,16 @@ class IXBrowserService:
         error = result.get("error")
         if result.get("is_cf") or self._is_sora_cf_challenge(status if isinstance(status, int) else None, raw_text):
             error = "cf_challenge"
+        is_cf = str(error or "").strip().lower() == "cf_challenge"
+        self._record_proxy_cf_event(
+            profile_id=profile_id,
+            source="page_api",
+            endpoint=endpoint,
+            status=status,
+            error=str(error or "").strip() or None,
+            is_cf=is_cf,
+            assume_proxy_chain=True,
+        )
         return {
             "status": int(status) if isinstance(status, int) else status,
             "raw": raw_text,
@@ -1333,6 +1416,16 @@ class IXBrowserService:
         error = result.get("error")
         if result.get("is_cf") or self._is_sora_cf_challenge(status if isinstance(status, int) else None, raw_text):
             error = "cf_challenge"
+        is_cf = str(error or "").strip().lower() == "cf_challenge"
+        self._record_proxy_cf_event(
+            profile_id=profile_id,
+            source="curl_cffi",
+            endpoint=endpoint,
+            status=status,
+            error=str(error or "").strip() or None,
+            is_cf=is_cf,
+            assume_proxy_chain=True,
+        )
         return {
             "status": int(status) if isinstance(status, int) else status,
             "raw": raw_text,
@@ -1644,6 +1737,8 @@ class IXBrowserService:
         self,
         page,
         access_token: str,
+        *,
+        profile_id: int,
     ) -> Tuple[Optional[int], Optional[dict], Optional[str]]:
         """
         使用 accessToken 在浏览器上下文内请求 session 数据（API 形式），失败再回退 /backend/me。
@@ -1652,7 +1747,12 @@ class IXBrowserService:
         if not token:
             return None, None, None
 
-        session_resp = await self._request_sora_api_via_page(page, "https://sora.chatgpt.com/api/auth/session", token)
+        session_resp = await self._request_sora_api_via_page(
+            page,
+            "https://sora.chatgpt.com/api/auth/session",
+            token,
+            profile_id=profile_id,
+        )
         session_status = session_resp.get("status")
         session_payload = session_resp.get("json")
         session_raw = session_resp.get("raw")
@@ -1668,7 +1768,12 @@ class IXBrowserService:
             )
             return int(session_status), session_obj, raw_text
 
-        me_resp = await self._request_sora_api_via_page(page, "https://sora.chatgpt.com/backend/me", token)
+        me_resp = await self._request_sora_api_via_page(
+            page,
+            "https://sora.chatgpt.com/backend/me",
+            token,
+            profile_id=profile_id,
+        )
         me_status = me_resp.get("status")
         me_payload = me_resp.get("json")
         if int(me_status or 0) == 200 and isinstance(me_payload, dict):
@@ -1688,11 +1793,18 @@ class IXBrowserService:
         raw_text = session_raw if isinstance(session_raw, str) else None
         return status, session_payload if isinstance(session_payload, dict) else None, raw_text
 
-    async def _fetch_sora_subscription_plan_via_browser(self, page, access_token: str) -> Dict[str, Any]:
+    async def _fetch_sora_subscription_plan_via_browser(
+        self,
+        page,
+        access_token: str,
+        *,
+        profile_id: int,
+    ) -> Dict[str, Any]:
         result = await self._request_sora_api_via_page(
             page,
             "https://sora.chatgpt.com/backend/billing/subscriptions",
             access_token,
+            profile_id=profile_id,
         )
         plan = None
         payload = result.get("json")
@@ -1715,11 +1827,18 @@ class IXBrowserService:
             "source": result.get("source"),
         }
 
-    async def _fetch_sora_quota_via_browser(self, page, access_token: str) -> Dict[str, Any]:
+    async def _fetch_sora_quota_via_browser(
+        self,
+        page,
+        access_token: str,
+        *,
+        profile_id: int,
+    ) -> Dict[str, Any]:
         result = await self._request_sora_api_via_page(
             page,
             "https://sora.chatgpt.com/backend/nf/check",
             access_token,
+            profile_id=profile_id,
         )
         payload = result.get("json")
         status = result.get("status")
@@ -2581,6 +2700,7 @@ class IXBrowserService:
         request: SoraJobRequest,
         operator_user: Optional[dict] = None,
     ) -> SoraJobCreateResponse:
+        create_started = time.perf_counter()
         prompt = request.prompt.strip()
         if not prompt:
             raise IXBrowserServiceError("提示词不能为空")
@@ -2609,24 +2729,37 @@ class IXBrowserService:
         dispatch_score = None
         dispatch_quantity_score = None
         dispatch_quality_score = None
+        selected_window_name: Optional[str] = None
+        dispatch_calc_ms = 0.0
+        window_lookup_ms = 0.0
 
         if dispatch_mode == "manual":
             if not request.profile_id:
                 raise IXBrowserServiceError("手动模式缺少窗口 ID")
             selected_profile_id = int(request.profile_id)
+            lookup_started = time.perf_counter()
             target_window = await self._get_window_from_group(selected_profile_id, group_title)
+            window_lookup_ms = (time.perf_counter() - lookup_started) * 1000.0
             if not target_window:
                 raise IXBrowserNotFoundError(f"窗口 {selected_profile_id} 不在 {group_title} 分组中")
+            selected_window_name = str(target_window.name or "").strip() or f"窗口-{selected_profile_id}"
             dispatch_reason = f"手动指定 profile={selected_profile_id}"
         else:
             try:
+                dispatch_started = time.perf_counter()
                 weight = await account_dispatch_service.pick_best_account(group_title=group_title)
+                dispatch_calc_ms = (time.perf_counter() - dispatch_started) * 1000.0
             except AccountDispatchNoAvailableError as exc:
                 raise IXBrowserServiceError(str(exc)) from exc
             selected_profile_id = int(weight.profile_id)
-            target_window = await self._get_window_from_group(selected_profile_id, group_title)
-            if not target_window:
-                raise IXBrowserNotFoundError(f"自动分配失败，窗口 {selected_profile_id} 不在 {group_title} 分组中")
+            selected_window_name = str(weight.window_name or "").strip() or None
+            if not selected_window_name:
+                lookup_started = time.perf_counter()
+                target_window = await self._get_window_from_group(selected_profile_id, group_title)
+                window_lookup_ms = (time.perf_counter() - lookup_started) * 1000.0
+                if not target_window:
+                    raise IXBrowserNotFoundError(f"自动分配失败，窗口 {selected_profile_id} 不在 {group_title} 分组中")
+                selected_window_name = str(target_window.name or "").strip() or f"窗口-{selected_profile_id}"
             dispatch_score = float(weight.score_total)
             dispatch_quantity_score = float(weight.score_quantity)
             dispatch_quality_score = float(weight.score_quality)
@@ -2635,7 +2768,7 @@ class IXBrowserService:
         job_id = sqlite_db.create_sora_job(
             {
                 "profile_id": selected_profile_id,
-                "window_name": target_window.name,
+                "window_name": selected_window_name,
                 "group_title": group_title,
                 "prompt": prompt,
                 "image_url": image_url,
@@ -2655,6 +2788,19 @@ class IXBrowserService:
         )
         sqlite_db.create_sora_job_event(job_id, "dispatch", "select", dispatch_reason)
         sqlite_db.create_sora_job_event(job_id, "queue", "queue", "进入队列")
+
+        total_ms = (time.perf_counter() - create_started) * 1000.0
+        logger.info(
+            "sora.job.create.done | job_id=%s | mode=%s | group=%s | profile=%s | dispatch_calc_ms=%.1f | "
+            "window_lookup_ms=%.1f | total_ms=%.1f",
+            int(job_id),
+            dispatch_mode,
+            group_title,
+            int(selected_profile_id),
+            float(dispatch_calc_ms),
+            float(window_lookup_ms),
+            float(total_ms),
+        )
 
         job = self.get_sora_job(job_id)
         return SoraJobCreateResponse(job=job)
@@ -2704,6 +2850,7 @@ class IXBrowserService:
         return [self._build_sora_job(row) for row in rows]
 
     async def _spawn_sora_job_on_overload(self, row: dict, trigger: str) -> SoraJob:
+        retry_started = time.perf_counter()
         if not isinstance(row, dict) or not row:
             raise IXBrowserServiceError("任务数据异常，无法换号重试")
 
@@ -2764,17 +2911,25 @@ class IXBrowserService:
 
         exclude_profile_ids = sorted(exclude) if exclude else None
         try:
+            dispatch_started = time.perf_counter()
             weight = await account_dispatch_service.pick_best_account(
                 group_title=group_title,
                 exclude_profile_ids=exclude_profile_ids,
             )
+            dispatch_calc_ms = (time.perf_counter() - dispatch_started) * 1000.0
         except AccountDispatchNoAvailableError as exc:
             raise IXBrowserServiceError(str(exc)) from exc
 
         selected_profile_id = int(weight.profile_id)
-        target_window = await self._get_window_from_group(selected_profile_id, group_title)
-        if not target_window:
-            raise IXBrowserNotFoundError(f"自动分配失败，窗口 {selected_profile_id} 不在 {group_title} 分组中")
+        selected_window_name = str(weight.window_name or "").strip() or None
+        window_lookup_ms = 0.0
+        if not selected_window_name:
+            lookup_started = time.perf_counter()
+            target_window = await self._get_window_from_group(selected_profile_id, group_title)
+            window_lookup_ms = (time.perf_counter() - lookup_started) * 1000.0
+            if not target_window:
+                raise IXBrowserNotFoundError(f"自动分配失败，窗口 {selected_profile_id} 不在 {group_title} 分组中")
+            selected_window_name = str(target_window.name or "").strip() or f"窗口-{selected_profile_id}"
 
         dispatch_reason_base = " | ".join(weight.reasons or []) or "自动分配"
         trigger_text = "自动" if str(trigger or "").strip().lower() == "auto" else "手动"
@@ -2785,7 +2940,7 @@ class IXBrowserService:
         new_job_id = sqlite_db.create_sora_job(
             {
                 "profile_id": selected_profile_id,
-                "window_name": target_window.name,
+                "window_name": selected_window_name,
                 "group_title": group_title,
                 "prompt": str(row.get("prompt") or ""),
                 "image_url": row.get("image_url"),
@@ -2816,6 +2971,19 @@ class IXBrowserService:
         )
         sqlite_db.create_sora_job_event(new_job_id, "dispatch", "select", dispatch_reason)
         sqlite_db.create_sora_job_event(new_job_id, "queue", "queue", "进入队列")
+        total_ms = (time.perf_counter() - retry_started) * 1000.0
+        logger.info(
+            "sora.job.overload.retry.spawned | old_job_id=%s | new_job_id=%s | group=%s | from_profile=%s | "
+            "to_profile=%s | dispatch_calc_ms=%.1f | window_lookup_ms=%.1f | total_ms=%.1f",
+            int(job_id),
+            int(new_job_id),
+            group_title,
+            int(old_profile_id),
+            int(selected_profile_id),
+            float(dispatch_calc_ms),
+            float(window_lookup_ms),
+            float(total_ms),
+        )
         return self.get_sora_job(new_job_id)
 
     async def retry_sora_job(self, job_id: int) -> SoraJob:
@@ -3625,7 +3793,7 @@ class IXBrowserService:
         return await self._get_window_from_group(profile_id, "Sora")
 
     async def _get_window_from_group(self, profile_id: int, group_title: str) -> Optional[IXBrowserWindow]:
-        groups = await self.list_group_windows()
+        groups = await self.list_group_windows_cached(max_age_sec=3.0)
         target_group = self._find_group_by_title(groups, group_title)
         if not target_group:
             return None
@@ -4247,15 +4415,35 @@ class IXBrowserService:
             return None
         return data if isinstance(data, dict) else None
 
+    @staticmethod
+    def _is_ixbrowser_read_path(path: str) -> bool:
+        normalized = str(path or "").strip().lower()
+        if not normalized:
+            return False
+        read_suffixes = (
+            "/group-list",
+            "/profile-list",
+            "/proxy-list",
+            "/native-client-profile-opened-list",
+            "/profile-opened-list",
+        )
+        return normalized.endswith(read_suffixes)
+
     async def _post(self, path: str, payload: dict) -> dict:
         base = settings.ixbrowser_api_base.rstrip("/")
         url = f"{base}{path}"
         timeout = httpx.Timeout(max(1.0, float(self.request_timeout_ms) / 1000.0))
 
-        if self._ixbrowser_semaphore is None:
-            self._ixbrowser_semaphore = asyncio.Semaphore(1)
+        if self._is_ixbrowser_read_path(path):
+            if self._ixbrowser_read_semaphore is None:
+                self._ixbrowser_read_semaphore = asyncio.Semaphore(3)
+            semaphore = self._ixbrowser_read_semaphore
+        else:
+            if self._ixbrowser_write_semaphore is None:
+                self._ixbrowser_write_semaphore = asyncio.Semaphore(1)
+            semaphore = self._ixbrowser_write_semaphore
 
-        async with self._ixbrowser_semaphore:
+        async with semaphore:
             for attempt in range(self.ixbrowser_busy_retry_max + 1):
                 try:
                     async with httpx.AsyncClient(timeout=timeout) as client:

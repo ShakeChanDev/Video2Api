@@ -50,27 +50,30 @@
         row-key="id"
         @selection-change="handleSelectionChange"
       >
-        <el-table-column type="selection" width="46" align="center" reserve-selection />
+        <el-table-column type="selection" width="46" align="center" reserve-selection :selectable="isSelectableRow" />
         <el-table-column label="ID" width="86" align="center">
           <template #default="{ row }">
-            <span class="mono">#{{ row.id }}</span>
+            <span class="mono">{{ isUnknownRow(row) ? '-' : `#${row.id}` }}</span>
           </template>
         </el-table-column>
         <el-table-column label="ix_id" width="96" align="center">
           <template #default="{ row }">
-            <span class="mono">{{ row.ix_id ?? '-' }}</span>
+            <span class="mono">{{ isUnknownRow(row) ? '-' : (row.ix_id ?? '-') }}</span>
           </template>
         </el-table-column>
         <el-table-column label="类型" width="90" align="center">
           <template #default="{ row }">
-            <el-tag size="small" effect="light" type="info">{{ (row.proxy_type || 'http').toUpperCase() }}</el-tag>
+            <el-tag size="small" effect="light" :type="isUnknownRow(row) ? 'warning' : 'info'">
+              {{ isUnknownRow(row) ? 'UNKNOWN' : (row.proxy_type || 'http').toUpperCase() }}
+            </el-tag>
           </template>
         </el-table-column>
         <el-table-column label="地址" min-width="220">
           <template #default="{ row }">
             <div class="addr-cell">
-              <span class="mono">{{ row.proxy_ip }}:{{ row.proxy_port }}</span>
-              <span v-if="row.ix_country || row.ix_city" class="addr-meta">
+              <span v-if="isUnknownRow(row)" class="mono">未知代理（无法关联本地代理）</span>
+              <span v-else class="mono">{{ row.proxy_ip }}:{{ row.proxy_port }}</span>
+              <span v-if="!isUnknownRow(row) && (row.ix_country || row.ix_city)" class="addr-meta">
                 {{ [row.ix_country, row.ix_city].filter(Boolean).join(' / ') }}
               </span>
             </div>
@@ -78,30 +81,37 @@
         </el-table-column>
         <el-table-column label="账号" width="170">
           <template #default="{ row }">
-            <span class="mono">{{ row.proxy_user || '-' }}</span>
+            <span class="mono">{{ isUnknownRow(row) ? '-' : (row.proxy_user || '-') }}</span>
           </template>
         </el-table-column>
         <el-table-column label="密码" width="190">
           <template #default="{ row }">
-            <span class="mono">{{ row.proxy_password || '-' }}</span>
+            <span class="mono">{{ isUnknownRow(row) ? '-' : (row.proxy_password || '-') }}</span>
           </template>
         </el-table-column>
         <el-table-column label="Tag" width="160">
           <template #default="{ row }">
-            <span>{{ row.tag || '-' }}</span>
+            <span>{{ isUnknownRow(row) ? '-' : (row.tag || '-') }}</span>
           </template>
         </el-table-column>
         <el-table-column label="备注" min-width="220">
           <template #default="{ row }">
-            <el-tooltip v-if="row.note" :content="row.note" placement="top" effect="dark">
+            <el-tooltip v-if="!isUnknownRow(row) && row.note" :content="row.note" placement="top" effect="dark">
               <span class="note-text">{{ shorten(row.note, 44) }}</span>
             </el-tooltip>
             <span v-else class="note-text note-empty">-</span>
           </template>
         </el-table-column>
+        <el-table-column :label="`CF 风控(近${cfRecentWindow}次)`" width="170" align="center">
+          <template #default="{ row }">
+            <span v-if="Number(row.cf_recent_total || 0) > 0" class="mono">{{ formatCfStat(row) }}</span>
+            <span v-else class="note-empty">-</span>
+          </template>
+        </el-table-column>
         <el-table-column label="检测" min-width="280">
           <template #default="{ row }">
-            <div class="check-cell">
+            <span v-if="isUnknownRow(row)" class="check-error check-empty">-</span>
+            <div v-else class="check-cell">
               <el-tag
                 size="small"
                 effect="light"
@@ -126,7 +136,7 @@
         </el-table-column>
         <el-table-column label="更新时间" width="170" align="center">
           <template #default="{ row }">
-            <span class="mono">{{ row.updated_at }}</span>
+            <span class="mono">{{ isUnknownRow(row) ? '-' : row.updated_at }}</span>
           </template>
         </el-table-column>
       </el-table>
@@ -296,6 +306,7 @@ const page = ref(1)
 const pageSize = ref(50)
 const total = ref(0)
 const rows = ref([])
+const cfRecentWindow = ref(30)
 const selectedIds = ref([])
 
 const importDialogVisible = ref(false)
@@ -338,6 +349,24 @@ const shorten = (text, maxLen = 60) => {
   return raw.slice(0, maxLen - 1) + '…'
 }
 
+const isUnknownRow = (row) => Boolean(row?.__unknown_proxy)
+
+const isSelectableRow = (row) => !isUnknownRow(row)
+
+const formatPercent = (value) => {
+  const num = Number(value || 0)
+  if (!Number.isFinite(num)) return '0'
+  const fixed = num.toFixed(1)
+  return fixed.endsWith('.0') ? fixed.slice(0, -2) : fixed
+}
+
+const formatCfStat = (row) => {
+  const count = Number(row?.cf_recent_count || 0)
+  const totalCount = Number(row?.cf_recent_total || 0)
+  if (!Number.isFinite(totalCount) || totalCount <= 0) return '-'
+  return `${count}/${totalCount}(${formatPercent(row?.cf_recent_ratio)}%)`
+}
+
 const loadList = async () => {
   loading.value = true
   try {
@@ -346,7 +375,40 @@ const loadList = async () => {
       page: page.value,
       limit: pageSize.value
     })
-    rows.value = Array.isArray(data?.items) ? data.items : []
+    cfRecentWindow.value = Math.max(1, Number(data?.cf_recent_window || 30))
+    const items = Array.isArray(data?.items) ? data.items : []
+    const unknownCount = Number(data?.unknown_cf_recent_count || 0)
+    const unknownTotal = Number(data?.unknown_cf_recent_total || 0)
+    const unknownRatio = Number(data?.unknown_cf_recent_ratio || 0)
+    if (unknownTotal > 0) {
+      const unknownRow = {
+        id: 'unknown-proxy',
+        __unknown_proxy: true,
+        ix_id: null,
+        proxy_type: 'unknown',
+        proxy_ip: '',
+        proxy_port: '',
+        proxy_user: '',
+        proxy_password: '',
+        tag: null,
+        note: null,
+        check_status: null,
+        check_error: null,
+        check_ip: null,
+        check_country: null,
+        check_city: null,
+        check_timezone: null,
+        check_at: null,
+        created_at: '-',
+        updated_at: '-',
+        cf_recent_count: unknownCount,
+        cf_recent_total: unknownTotal,
+        cf_recent_ratio: unknownRatio
+      }
+      rows.value = [unknownRow, ...items]
+    } else {
+      rows.value = items
+    }
     total.value = Number(data?.total || 0)
   } catch (err) {
     ElMessage.error(err?.response?.data?.detail || err?.message || '加载失败')
@@ -650,4 +712,3 @@ onMounted(() => {
   width: 260px;
 }
 </style>
-

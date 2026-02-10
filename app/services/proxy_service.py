@@ -29,6 +29,7 @@ from app.services.ixbrowser_service import IXBrowserServiceError, ixbrowser_serv
 logger = logging.getLogger(__name__)
 
 DEFAULT_CHECK_URL = "https://ipinfo.io/json"
+CF_RECENT_WINDOW = 30
 
 
 def _now_str() -> str:
@@ -142,6 +143,34 @@ def _build_httpx_proxy_url(record: Dict[str, Any]) -> Optional[str]:
 class ProxyService:
     def list_proxies(self, *, keyword: Optional[str], page: int, limit: int) -> ProxyListResponse:
         raw = sqlite_db.list_proxies(keyword=keyword, page=page, limit=limit)
+        items = raw.get("items") if isinstance(raw, dict) else []
+        rows = [item for item in (items or []) if isinstance(item, dict)]
+        proxy_ids: List[int] = []
+        for item in rows:
+            try:
+                pid = int(item.get("id") or 0)
+            except Exception:
+                pid = 0
+            if pid > 0:
+                proxy_ids.append(pid)
+
+        stats_by_proxy = sqlite_db.get_proxy_cf_recent_stats(proxy_ids, window=CF_RECENT_WINDOW)
+        unknown_stats = sqlite_db.get_unknown_proxy_cf_recent_stats(window=CF_RECENT_WINDOW)
+
+        for item in rows:
+            try:
+                pid = int(item.get("id") or 0)
+            except Exception:
+                pid = 0
+            stat = stats_by_proxy.get(pid, {})
+            item["cf_recent_count"] = int(stat.get("cf_recent_count") or 0)
+            item["cf_recent_total"] = int(stat.get("cf_recent_total") or 0)
+            item["cf_recent_ratio"] = float(stat.get("cf_recent_ratio") or 0.0)
+
+        raw["cf_recent_window"] = CF_RECENT_WINDOW
+        raw["unknown_cf_recent_count"] = int(unknown_stats.get("cf_recent_count") or 0)
+        raw["unknown_cf_recent_total"] = int(unknown_stats.get("cf_recent_total") or 0)
+        raw["unknown_cf_recent_ratio"] = float(unknown_stats.get("cf_recent_ratio") or 0.0)
         return ProxyListResponse.model_validate(raw)
 
     def batch_import(self, request: ProxyBatchImportRequest) -> ProxyBatchImportResponse:
@@ -377,4 +406,3 @@ class ProxyService:
 
 
 proxy_service = ProxyService()
-

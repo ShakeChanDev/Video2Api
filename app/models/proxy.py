@@ -34,6 +34,9 @@ class ProxyItem(BaseModel):
     check_city: Optional[str] = None
     check_timezone: Optional[str] = None
     check_at: Optional[str] = None
+    cf_recent_count: int = 0
+    cf_recent_total: int = 0
+    cf_recent_ratio: float = 0.0
 
     created_at: str
     updated_at: str
@@ -43,6 +46,10 @@ class ProxyListResponse(BaseModel):
     total: int
     page: int
     limit: int
+    cf_recent_window: int = 30
+    unknown_cf_recent_count: int = 0
+    unknown_cf_recent_total: int = 0
+    unknown_cf_recent_ratio: float = 0.0
     items: List[ProxyItem] = Field(default_factory=list)
 
 
@@ -165,4 +172,3 @@ class ProxySyncPushRequest(BaseModel):
 
 class ProxySyncPushResponse(BaseModel):
     results: List[ProxyActionResult] = Field(default_factory=list)
-

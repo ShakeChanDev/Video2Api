@@ -52,6 +52,55 @@ def test_proxy_list_and_batch_import(client):
     assert payload.get("items") and payload["items"][0]["proxy_ip"] == "1.2.3.4"
 
 
+def test_proxy_list_returns_cf_recent_fields(client):
+    resp = client.post(
+        "/api/v1/proxies/batch-import",
+        json={"text": "11.22.33.44:8080", "default_type": "http"},
+    )
+    assert resp.status_code == 200
+    pid = client.get("/api/v1/proxies", params={"page": 1, "limit": 50}).json()["items"][0]["id"]
+
+    sqlite_db.create_proxy_cf_event(
+        proxy_id=int(pid),
+        profile_id=1,
+        source="test",
+        endpoint="/pending",
+        status_code=403,
+        error_text="cf_challenge",
+        is_cf=True,
+    )
+    sqlite_db.create_proxy_cf_event(
+        proxy_id=int(pid),
+        profile_id=1,
+        source="test",
+        endpoint="/pending",
+        status_code=200,
+        error_text=None,
+        is_cf=False,
+    )
+    sqlite_db.create_proxy_cf_event(
+        proxy_id=None,
+        profile_id=2,
+        source="test",
+        endpoint="/pending",
+        status_code=403,
+        error_text="cf_challenge",
+        is_cf=True,
+    )
+
+    listed = client.get("/api/v1/proxies", params={"page": 1, "limit": 50})
+    assert listed.status_code == 200
+    payload = listed.json()
+    assert int(payload.get("cf_recent_window") or 0) == 30
+    assert int(payload.get("unknown_cf_recent_count") or 0) == 1
+    assert int(payload.get("unknown_cf_recent_total") or 0) == 1
+    assert float(payload.get("unknown_cf_recent_ratio") or 0.0) == 100.0
+    item = payload["items"][0]
+    assert int(item.get("cf_recent_count") or 0) == 1
+    assert int(item.get("cf_recent_total") or 0) == 2
+    assert float(item.get("cf_recent_ratio") or 0.0) == 50.0
+
+
 def test_proxy_batch_update(client):
     resp = client.post(
         "/api/v1/proxies/batch-import",
@@ -127,4 +176,3 @@ def test_proxy_sync_push_creates_and_binds(client, monkeypatch):
 
     listed = client.get("/api/v1/proxies", params={"page": 1, "limit": 50}).json()
     assert int(listed["items"][0]["ix_id"] or 0) == 888
-
