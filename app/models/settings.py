@@ -115,8 +115,8 @@ class AccountDispatchSettings(BaseModel):
     auto_scan_group_title: str = "Sora"
     lookback_hours: int = Field(72, ge=1, le=720)
     decay_half_life_hours: int = Field(24, ge=1, le=720)
-    quantity_weight: float = Field(0.45, ge=0, le=1)
-    quality_weight: float = Field(0.55, ge=0, le=1)
+    quantity_weight: float = Field(0.75, ge=0, le=1)
+    quality_weight: float = Field(0.3, ge=0, le=1)
     quota_cap: int = Field(30, ge=1, le=1000)
     min_quota_remaining: int = Field(2, ge=0, le=1000)
     quota_reset_grace_minutes: int = Field(120, ge=0, le=1440)
