@@ -96,7 +96,7 @@ class AccountDispatchService:
             account_plan = str(scan_row.get("account_plan") or "").strip().lower()
 
             # 配额按滚动 24 小时重置：若已过 reset_at 但没有更新最新次数，
-            # 使用 quota_cap 作为“保底上限”以避免长期卡死在旧的低配额。
+            # 用 quota_cap 作为“保底次数”。若真实次数 > cap，则保留真实次数（只向上保底，不向下截断）。
             if isinstance(quota_reset_at, str) and quota_reset_at.strip():
                 reset_dt = None
                 reset_text = quota_reset_at.strip()
@@ -248,7 +248,7 @@ class AccountDispatchService:
         try:
             from app.services.ixbrowser_service import ixbrowser_service  # noqa: WPS433
 
-            groups = await ixbrowser_service.list_group_windows_cached(max_age_sec=3.0)
+            groups = await ixbrowser_service.list_group_windows()
             normalized = str(group_title or "").strip().lower()
             target = None
             for group in groups:
@@ -317,9 +317,9 @@ class AccountDispatchService:
         if not run_row:
             return {}
         base_run_id = int(run_row["id"])
-        base_rows = sqlite_db.get_ixbrowser_scan_results_by_run(base_run_id)
+        rows = sqlite_db.get_ixbrowser_scan_results_by_run(base_run_id)
         result: Dict[int, dict] = {}
-        for row in base_rows:
+        for row in rows:
             try:
                 profile_id = int(row.get("profile_id") or 0)
             except Exception:
