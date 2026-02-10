@@ -393,6 +393,10 @@
                     <el-tag v-if="isRequiresRestart('auth.algorithm')" type="warning" size="small">需重启</el-tag>
                   </div>
                 </el-form-item>
+                <el-form-item label="对外视频接口 Token">
+                  <el-input v-model="systemForm.video_api.bearer_token" placeholder="留空则 /v1/videos 返回 503（关闭状态）" />
+                  <div class="inline-tip">用于 /v1/videos Bearer 鉴权，保存后立即生效。</div>
+                </el-form-item>
                 <el-form-item label="Token 过期（分钟）">
                   <el-input-number v-model="systemForm.auth.access_token_expire_minutes" :min="5" :max="10080" />
                 </el-form-item>
@@ -558,6 +562,9 @@ const defaultSystemForm = {
     algorithm: 'HS256',
     access_token_expire_minutes: 10080
   },
+  video_api: {
+    bearer_token: ''
+  },
   server: {
     app_name: 'Video2Api',
     debug: true,
@@ -663,6 +670,9 @@ const normalizePayload = (payload) => {
         data.auth.secret_key = null
       }
     }
+  }
+  if (data?.video_api && typeof data.video_api.bearer_token === 'string') {
+    data.video_api.bearer_token = data.video_api.bearer_token.trim()
   }
   return data
 }

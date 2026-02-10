@@ -44,7 +44,8 @@ python -m uvicorn app.main:app --host 0.0.0.0 --port 8001 --reload
 ### 对外视频接口（`/v1/videos`）
 - 该接口用于第三方系统直接创建/查询视频任务，底层复用现有 Sora 任务内核。
 - 鉴权采用独立 Bearer Token：`Authorization: Bearer <TOKEN>`。
-- 需要在 `.env` 中配置 `VIDEO_API_BEARER_TOKEN`，未配置时接口返回 `503`（关闭状态）。
+- 默认可在 `.env` 中配置 `VIDEO_API_BEARER_TOKEN`，也可在管理后台系统设置里更新 Token（保存后立即生效）。
+- 未配置时接口返回 `503`（关闭状态）。
 - 已提供接口：
   - `POST /v1/videos`：创建任务
   - `GET /v1/videos/{video_id}`：查询任务（支持 `107` 或 `video_107`）

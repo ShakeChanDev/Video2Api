@@ -187,6 +187,18 @@ class AuthSettings(BaseModel):
     access_token_expire_minutes: int = Field(60 * 24 * 7, ge=5, le=10_080)
 
 
+class VideoApiSettings(BaseModel):
+    bearer_token: Optional[str] = None
+
+    @field_validator("bearer_token")
+    @classmethod
+    def normalize_bearer_token(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        text = str(value).strip()
+        return text or None
+
+
 class ServerSettings(BaseModel):
     app_name: str = "Video2Api"
     debug: bool = True
@@ -200,6 +212,7 @@ class SystemSettings(BaseModel):
     scan: ScanSettings = Field(default_factory=ScanSettings)
     logging: LoggingSettings = Field(default_factory=LoggingSettings)
     auth: AuthSettings = Field(default_factory=AuthSettings)
+    video_api: VideoApiSettings = Field(default_factory=VideoApiSettings)
     server: ServerSettings = Field(default_factory=ServerSettings)
 
 

@@ -47,11 +47,13 @@ def test_admin_system_settings_get_and_put(client):
 
     put_data = payload["data"]
     put_data["ixbrowser"]["request_timeout_ms"] = 15000
+    put_data.setdefault("video_api", {})["bearer_token"] = "video-api-token"
 
     put_resp = client.put("/api/v1/admin/settings/system", json=put_data)
     assert put_resp.status_code == 200
     updated = put_resp.json()
     assert int(updated["data"]["ixbrowser"]["request_timeout_ms"]) == 15000
+    assert updated["data"]["video_api"]["bearer_token"] == "video-api-token"
 
 
 def test_admin_scan_scheduler_put_validation_and_get(client):

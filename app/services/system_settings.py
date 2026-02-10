@@ -141,6 +141,9 @@ def default_system_settings(mask_sensitive: bool = False) -> SystemSettings:
             "algorithm": cfg.algorithm,
             "access_token_expire_minutes": cfg.access_token_expire_minutes,
         },
+        "video_api": {
+            "bearer_token": cfg.video_api_bearer_token,
+        },
         "server": {
             "app_name": cfg.app_name,
             "debug": cfg.debug,
@@ -231,6 +234,7 @@ def apply_runtime_settings(settings_data: Optional[SystemSettings] = None) -> No
 
     cfg.ixbrowser_api_base = data.ixbrowser.api_base
     cfg.access_token_expire_minutes = data.auth.access_token_expire_minutes
+    cfg.video_api_bearer_token = str(data.video_api.bearer_token or "")
     cfg.event_log_retention_days = data.logging.event_log_retention_days
     cfg.event_log_cleanup_interval_sec = data.logging.event_log_cleanup_interval_sec
     cfg.event_log_max_mb = data.logging.event_log_max_mb
