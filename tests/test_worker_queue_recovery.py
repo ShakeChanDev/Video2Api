@@ -69,6 +69,51 @@ def test_sora_job_claim_heartbeat_and_requeue(temp_db):
     assert row["lease_until"] is None
 
 
+def test_sora_job_claim_skips_ixbrowser_cooldown_profiles(temp_db):
+    del temp_db
+    job_id_1 = sqlite_db.create_sora_job(
+        {
+            "profile_id": 1,
+            "window_name": "win-1",
+            "group_title": "Sora",
+            "prompt": "cooldown-1",
+            "duration": "10s",
+            "aspect_ratio": "landscape",
+            "status": "queued",
+            "phase": "queue",
+        }
+    )
+    job_id_2 = sqlite_db.create_sora_job(
+        {
+            "profile_id": 2,
+            "window_name": "win-2",
+            "group_title": "Sora",
+            "prompt": "ok-2",
+            "duration": "10s",
+            "aspect_ratio": "landscape",
+            "status": "queued",
+            "phase": "queue",
+        }
+    )
+
+    sqlite_db.upsert_profile_cooldown(
+        group_title="Sora",
+        profile_id=1,
+        cooldown_type="ixbrowser",
+        cooldown_until="2099-01-01 00:00:00",
+        reason="ixbrowser error",
+    )
+
+    claimed = sqlite_db.claim_next_sora_job(owner="worker-a", lease_seconds=30)
+    assert claimed
+    assert int(claimed["id"]) == int(job_id_2)
+    assert int(claimed["profile_id"]) == 2
+
+    row1 = sqlite_db.get_sora_job(job_id_1)
+    assert row1
+    assert row1["status"] == "queued"
+
+
 def test_nurture_batch_claim_and_requeue(temp_db):
     del temp_db
     batch_id = sqlite_db.create_sora_nurture_batch(

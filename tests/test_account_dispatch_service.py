@@ -66,6 +66,10 @@ async def test_account_weights_ignore_rules_do_not_penalize(monkeypatch):
         "app.services.account_dispatch_service.sqlite_db.count_sora_active_jobs_by_profile",
         lambda group_title: {},
     )
+    monkeypatch.setattr(
+        "app.services.account_dispatch_service.sqlite_db.list_active_profile_cooldowns",
+        lambda group_title, cooldown_type, now=None: {},
+    )
 
     weights = await service.list_account_weights(group_title="Sora", limit=10)
     by_profile = {item.profile_id: item for item in weights}

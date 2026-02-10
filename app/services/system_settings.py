@@ -112,6 +112,7 @@ def default_system_settings(mask_sensitive: bool = False) -> SystemSettings:
             "draft_wait_timeout_minutes": int(service_cls.draft_wait_timeout_seconds // 60),
             "draft_manual_poll_interval_minutes": int(service_cls.draft_manual_poll_interval_seconds // 60),
             "heavy_load_retry_max_attempts": int(getattr(service_cls, "heavy_load_retry_max_attempts", 4)),
+            "ixbrowser_window_cooldown_minutes": int(getattr(service_cls, "ixbrowser_window_cooldown_minutes", 10)),
             "blocked_resource_types": sorted(service_cls.sora_blocked_resource_types),
             "default_group_title": "Sora",
             "default_duration": "10s",
@@ -252,6 +253,7 @@ def apply_runtime_settings(settings_data: Optional[SystemSettings] = None) -> No
     ixbrowser_service.draft_wait_timeout_seconds = data.sora.draft_wait_timeout_minutes * 60
     ixbrowser_service.draft_manual_poll_interval_seconds = data.sora.draft_manual_poll_interval_minutes * 60
     ixbrowser_service.heavy_load_retry_max_attempts = data.sora.heavy_load_retry_max_attempts
+    ixbrowser_service.ixbrowser_window_cooldown_minutes = data.sora.ixbrowser_window_cooldown_minutes
     ixbrowser_service.sora_blocked_resource_types = set(data.sora.blocked_resource_types or [])
     ixbrowser_service.scan_history_limit = data.scan.history_limit
 

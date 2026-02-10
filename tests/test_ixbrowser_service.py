@@ -1159,6 +1159,10 @@ async def test_create_sora_job_persists_image_url(monkeypatch):
 
     monkeypatch.setattr("app.services.ixbrowser_service.sqlite_db.create_sora_job", _fake_create_sora_job)
     monkeypatch.setattr("app.services.ixbrowser_service.sqlite_db.create_sora_job_event", lambda *_args, **_kwargs: 1)
+    monkeypatch.setattr(
+        "app.services.ixbrowser_service.sqlite_db.get_profile_cooldown",
+        lambda *_args, **_kwargs: None,
+    )
     service._get_window_from_group = _fake_get_window_from_group
     service.get_sora_job = lambda jid: {
         "job_id": jid,
@@ -1175,6 +1179,38 @@ async def test_create_sora_job_persists_image_url(monkeypatch):
     result = await service.create_sora_job(request=request, operator_user={"id": 1, "username": "admin"})
     assert result.job.job_id == 88
     assert captured["image_url"] == "https://example.com/ref.png"
+
+
+@pytest.mark.asyncio
+async def test_create_sora_job_manual_rejects_cooldown_window(monkeypatch):
+    service = IXBrowserService()
+
+    request = SoraJobRequest(
+        profile_id=1,
+        dispatch_mode="manual",
+        group_title="Sora",
+        prompt="hello",
+        duration="10s",
+        aspect_ratio="landscape",
+    )
+
+    monkeypatch.setattr(
+        "app.services.ixbrowser_service.sqlite_db.get_profile_cooldown",
+        lambda *_args, **_kwargs: {"cooldown_until": "2026-02-10 10:10:00"},
+    )
+
+    async def _boom_get_window_from_group(*_args, **_kwargs):
+        raise AssertionError("should not call ixbrowser when cooldown active")
+
+    service._get_window_from_group = _boom_get_window_from_group
+    monkeypatch.setattr(
+        "app.services.ixbrowser_service.sqlite_db.create_sora_job",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("should not create job when cooldown active")),
+    )
+
+    with pytest.raises(IXBrowserServiceError) as exc:
+        await service.create_sora_job(request=request, operator_user={"id": 1, "username": "admin"})
+    assert "冷却中至" in str(exc.value)
 
 
 @pytest.mark.asyncio
@@ -1712,6 +1748,134 @@ async def test_run_sora_job_submit_overload_auto_spawns_new_job(monkeypatch):
     assert created_payload["retry_index"] == 1
     assert any(item[0] == old_job_id and item[2] == "auto_retry_new_job" for item in job_events)
     assert any(item[0] == 11 and item[2] == "select" for item in job_events)
+
+
+@pytest.mark.asyncio
+async def test_run_sora_job_submit_ixbrowser_error_auto_spawns_new_job_and_cooldowns_window(monkeypatch):
+    service = IXBrowserService()
+    service.heavy_load_retry_max_attempts = 2
+    service.ixbrowser_window_cooldown_minutes = 10
+
+    old_job_id = 10
+    old_profile_id = 1
+    state_row = {
+        "id": old_job_id,
+        "profile_id": old_profile_id,
+        "window_name": "win-1",
+        "group_title": "Sora",
+        "prompt": "hello sora",
+        "image_url": "https://example.com/ixbrowser-auto-retry.png",
+        "duration": "10s",
+        "aspect_ratio": "landscape",
+        "status": "queued",
+        "phase": "queue",
+        "error": None,
+        "retry_root_job_id": None,
+        "retry_index": 0,
+    }
+
+    def _fake_get_sora_job(job_id):
+        return state_row if int(job_id) == old_job_id else None
+
+    def _fake_update_sora_job(job_id, patch):
+        assert int(job_id) == old_job_id
+        state_row.update(dict(patch))
+        return True
+
+    monkeypatch.setattr("app.services.ixbrowser_service.sqlite_db.get_sora_job", _fake_get_sora_job)
+    monkeypatch.setattr("app.services.ixbrowser_service.sqlite_db.update_sora_job", _fake_update_sora_job)
+    monkeypatch.setattr("app.services.ixbrowser_service.sqlite_db.get_sora_job_max_retry_index", lambda _root: 0)
+    monkeypatch.setattr("app.services.ixbrowser_service.sqlite_db.get_sora_job_latest_retry_child", lambda _pid: None)
+    monkeypatch.setattr(
+        "app.services.ixbrowser_service.sqlite_db.list_sora_retry_chain_profile_ids",
+        lambda _root: [old_profile_id],
+    )
+
+    created_payload = {}
+
+    def _fake_create_sora_job(data):
+        created_payload.update(dict(data))
+        return 11
+
+    monkeypatch.setattr("app.services.ixbrowser_service.sqlite_db.create_sora_job", _fake_create_sora_job)
+
+    job_events = []
+    monkeypatch.setattr(
+        "app.services.ixbrowser_service.sqlite_db.create_sora_job_event",
+        lambda job_id, phase, event, message=None: job_events.append((job_id, phase, event, message)) or 1,
+    )
+
+    cooldown_calls = []
+
+    def _fake_upsert_profile_cooldown(*, group_title, profile_id, cooldown_type, cooldown_until, reason=None):
+        cooldown_calls.append(
+            {
+                "group_title": group_title,
+                "profile_id": profile_id,
+                "cooldown_type": cooldown_type,
+                "cooldown_until": cooldown_until,
+                "reason": reason,
+            }
+        )
+
+    monkeypatch.setattr(
+        "app.services.ixbrowser_service.sqlite_db.upsert_profile_cooldown",
+        _fake_upsert_profile_cooldown,
+    )
+
+    called = {}
+
+    async def _fake_pick_best_account(group_title="Sora", exclude_profile_ids=None):
+        called["group_title"] = group_title
+        called["exclude_profile_ids"] = exclude_profile_ids
+        return SoraAccountWeight(
+            profile_id=2,
+            selectable=True,
+            score_total=88,
+            score_quantity=40,
+            score_quality=90,
+            reasons=["r1", "r2"],
+        )
+
+    monkeypatch.setattr(
+        "app.services.ixbrowser_service.account_dispatch_service.pick_best_account",
+        _fake_pick_best_account,
+    )
+
+    async def _fake_get_window_from_group(profile_id, group_title):
+        assert profile_id == 2
+        assert group_title == "Sora"
+        return IXBrowserWindow(profile_id=2, name="win-2")
+
+    service._get_window_from_group = _fake_get_window_from_group
+    service.get_sora_job = lambda jid: SimpleNamespace(job_id=jid)
+
+    async def _fake_submit_and_progress(**_kwargs):
+        raise service._connection_error_cls("提交失败：未返回调试地址 ws/debugging_address")  # noqa: SLF001
+
+    service._sora_generation_workflow.run_sora_submit_and_progress = _fake_submit_and_progress
+
+    await IXBrowserService._run_sora_job(service, old_job_id)
+
+    assert called["group_title"] == "Sora"
+    assert called["exclude_profile_ids"] == [old_profile_id]
+    assert created_payload["profile_id"] == 2
+    assert created_payload["retry_of_job_id"] == old_job_id
+    assert created_payload["retry_root_job_id"] == old_job_id
+    assert created_payload["retry_index"] == 1
+
+    assert any(item[0] == old_job_id and item[2] == "auto_retry_new_job" for item in job_events)
+    assert any(
+        item[0] == old_job_id
+        and item[2] == "auto_retry_new_job"
+        and "ixbrowser_submit_fail" in str(item[3] or "")
+        for item in job_events
+    )
+
+    assert cooldown_calls
+    assert cooldown_calls[0]["group_title"] == "Sora"
+    assert int(cooldown_calls[0]["profile_id"]) == 1
+    assert cooldown_calls[0]["cooldown_type"] == "ixbrowser"
 
 
 @pytest.mark.asyncio

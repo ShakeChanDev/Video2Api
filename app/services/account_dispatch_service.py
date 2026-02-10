@@ -59,6 +59,7 @@ class AccountDispatchService:
             return []
 
         now = datetime.now()
+        now_str = _fmt_dt(now) or now.strftime("%Y-%m-%d %H:%M:%S")
         lookback_since = now - timedelta(hours=int(settings.lookback_hours))
         lookback_since_str = _fmt_dt(lookback_since) or "1970-01-01 00:00:00"
 
@@ -66,6 +67,11 @@ class AccountDispatchService:
         recent_jobs = sqlite_db.list_sora_jobs_since(safe_group, lookback_since_str)
         fail_events = sqlite_db.list_sora_fail_events_since(safe_group, lookback_since_str)
         active_jobs = sqlite_db.count_sora_active_jobs_by_profile(safe_group)
+        ixbrowser_cooldowns = sqlite_db.list_active_profile_cooldowns(
+            safe_group,
+            "ixbrowser",
+            now_str,
+        )
 
         success_count_map: Dict[int, int] = defaultdict(int)
         for row in recent_jobs:
@@ -112,8 +118,18 @@ class AccountDispatchService:
                 isinstance(quota_remaining, int)
                 and quota_remaining < int(settings.min_quota_remaining)
             )
-            cooldown_until = quality_meta["cooldown_until"]
-            blocked_by_cooldown = bool(cooldown_until and cooldown_until > now)
+            quality_cooldown_until = quality_meta["cooldown_until"]
+            blocked_by_quality_cooldown = bool(quality_cooldown_until and quality_cooldown_until > now)
+
+            cooldown_row = ixbrowser_cooldowns.get(profile_id) or {}
+            ixbrowser_cooldown_until = _parse_dt(cooldown_row.get("cooldown_until"))
+            blocked_by_ixbrowser_cooldown = bool(ixbrowser_cooldown_until and ixbrowser_cooldown_until >= now)
+
+            cooldown_until = quality_cooldown_until
+            if ixbrowser_cooldown_until and (not cooldown_until or ixbrowser_cooldown_until > cooldown_until):
+                cooldown_until = ixbrowser_cooldown_until
+
+            blocked_by_cooldown = blocked_by_quality_cooldown or blocked_by_ixbrowser_cooldown
             selectable = bool(settings.enabled) and not blocked_by_quota and not blocked_by_cooldown
 
             reasons: List[str] = [
@@ -130,9 +146,13 @@ class AccountDispatchService:
                 reasons.append(
                     f"配额不足：{quota_remaining} < {int(settings.min_quota_remaining)}"
                 )
-            if blocked_by_cooldown:
+            if blocked_by_quality_cooldown:
                 reasons.append(
-                    f"冷却中至 {_fmt_dt(cooldown_until)}"
+                    f"冷却中至 {_fmt_dt(quality_cooldown_until)}"
+                )
+            if blocked_by_ixbrowser_cooldown:
+                reasons.append(
+                    f"ixBrowser 冷却中至 {_fmt_dt(ixbrowser_cooldown_until)}"
                 )
 
             weights.append(

@@ -51,7 +51,15 @@
                 <el-form-item label="heavy load 换号总尝试次数">
                   <div class="field-row">
                     <el-input-number v-model="systemForm.sora.heavy_load_retry_max_attempts" :min="1" :max="10" />
-                    <div class="inline-tip">heavy load 换号总尝试次数（含首次）。设为 1 表示不自动换号重试。</div>
+                    <div class="inline-tip">
+                      提交阶段换号总尝试次数（含 heavy load/未登录/429/ixBrowser，含首次）。设为 1 表示不换号重试。
+                    </div>
+                  </div>
+                </el-form-item>
+                <el-form-item label="ixBrowser 窗口冷却（分钟）">
+                  <div class="field-row">
+                    <el-input-number v-model="systemForm.sora.ixbrowser_window_cooldown_minutes" :min="0" :max="60" />
+                    <div class="inline-tip">窗口因 ixBrowser 问题失败后，短期不再使用该窗口；0 表示关闭。</div>
                   </div>
                 </el-form-item>
                 <el-form-item label="阻塞资源类型">
@@ -487,18 +495,19 @@ const defaultSystemForm = {
     group_windows_cache_ttl_sec: 120,
     realtime_quota_cache_ttl_sec: 30
   },
-  sora: {
-    job_max_concurrency: 2,
-    generate_poll_interval_sec: 6,
-    generate_max_minutes: 30,
-    draft_wait_timeout_minutes: 20,
-    draft_manual_poll_interval_minutes: 5,
-    heavy_load_retry_max_attempts: 4,
-    blocked_resource_types: ['image', 'media', 'font'],
-    default_group_title: 'Sora',
-    default_duration: '10s',
-    default_aspect_ratio: 'landscape',
-    account_dispatch: {
+	  sora: {
+	    job_max_concurrency: 2,
+	    generate_poll_interval_sec: 6,
+	    generate_max_minutes: 30,
+	    draft_wait_timeout_minutes: 20,
+	    draft_manual_poll_interval_minutes: 5,
+	    heavy_load_retry_max_attempts: 4,
+	    ixbrowser_window_cooldown_minutes: 10,
+	    blocked_resource_types: ['image', 'media', 'font'],
+	    default_group_title: 'Sora',
+	    default_duration: '10s',
+	    default_aspect_ratio: 'landscape',
+	    account_dispatch: {
       enabled: true,
       auto_scan_enabled: true,
       auto_scan_interval_minutes: 10,

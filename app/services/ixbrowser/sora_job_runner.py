@@ -163,10 +163,23 @@ class SoraJobRunner:
                     },
                 )
                 self._db.create_sora_job_event(job_id, failed_phase, "fail", str(exc))
-                if str(failed_phase or "").strip().lower() == "submit" and self._service._is_sora_overload_error(str(exc)):  # noqa: SLF001
+                try:
+                    updated_row = self._db.get_sora_job(job_id) or current_row
+                    self._service._maybe_cooldown_window_on_failure(updated_row, exc, failed_phase)  # noqa: SLF001
+                except Exception:  # noqa: BLE001
+                    pass
+
+                if str(failed_phase or "").strip().lower() == "submit":
                     try:
                         updated_row = self._db.get_sora_job(job_id) or current_row
-                        await self._service._spawn_sora_job_on_overload(updated_row, trigger="auto")  # noqa: SLF001
+                        if not str(updated_row.get("task_id") or "").strip():
+                            reason_tag = self._service._classify_submit_fail_switch_reason(str(exc), exc=exc)  # noqa: SLF001
+                            if reason_tag:
+                                await self._service._spawn_sora_job_on_submit_fail_switch(  # noqa: SLF001
+                                    updated_row,
+                                    trigger="auto",
+                                    reason_tag=reason_tag,
+                                )
                     except Exception as retry_exc:  # noqa: BLE001
                         self._db.create_sora_job_event(job_id, failed_phase, "auto_retry_giveup", str(retry_exc))
                 return

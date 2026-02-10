@@ -22,6 +22,8 @@ class SoraSettings(BaseModel):
     draft_wait_timeout_minutes: int = Field(20, ge=1, le=120)
     draft_manual_poll_interval_minutes: int = Field(5, ge=1, le=60)
     heavy_load_retry_max_attempts: int = Field(4, ge=1, le=10)
+    # ixBrowser 窗口异常冷却（分钟）。0 表示关闭冷却机制。
+    ixbrowser_window_cooldown_minutes: int = Field(10, ge=0, le=60)
     blocked_resource_types: List[str] = Field(default_factory=lambda: ["image", "media", "font"])
     default_group_title: str = "Sora"
     default_duration: str = "10s"

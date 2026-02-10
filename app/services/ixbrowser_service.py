@@ -10,7 +10,7 @@ import inspect
 import logging
 import re
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Callable, Dict, List, Optional, Tuple
 from urllib.parse import quote, unquote
 from uuid import uuid4
@@ -120,6 +120,7 @@ class IXBrowserService:
     sora_blocked_resource_types = {"image", "media", "font"}
     sora_job_max_concurrency = 2
     heavy_load_retry_max_attempts = 4
+    ixbrowser_window_cooldown_minutes = 10
 
     def __init__(self) -> None:
         self._ixbrowser_semaphore: Optional[asyncio.Semaphore] = None
@@ -2614,6 +2615,15 @@ class IXBrowserService:
             if not request.profile_id:
                 raise IXBrowserServiceError("手动模式缺少窗口 ID")
             selected_profile_id = int(request.profile_id)
+            cooldown = sqlite_db.get_profile_cooldown(
+                group_title=group_title,
+                profile_id=selected_profile_id,
+                cooldown_type="ixbrowser",
+                now=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            )
+            if cooldown:
+                cooldown_until = str(cooldown.get("cooldown_until") or "").strip()
+                raise IXBrowserServiceError(f"窗口 {selected_profile_id} 冷却中至 {cooldown_until}，请稍后再试")
             target_window = await self._get_window_from_group(selected_profile_id, group_title)
             if not target_window:
                 raise IXBrowserNotFoundError(f"窗口 {selected_profile_id} 不在 {group_title} 分组中")
@@ -2684,7 +2694,103 @@ class IXBrowserService:
         )
         return [self._build_sora_job(row) for row in rows]
 
-    async def _spawn_sora_job_on_overload(self, row: dict, trigger: str) -> SoraJob:
+    def _is_ixbrowser_window_error(self, exc: object) -> bool:
+        if exc is None:
+            return False
+        if isinstance(exc, IXBrowserConnectionError):
+            return True
+        if isinstance(exc, IXBrowserAPIError):
+            try:
+                code = int(getattr(exc, "code", 0))
+            except Exception:
+                code = 0
+            # 1008=Server busy 更偏全局问题，不按单窗口冷却
+            return code != 1008
+
+        message = str(exc).lower()
+        keywords = [
+            "ws/debugging_address",
+            "未返回调试地址",
+            "打开窗口最终失败",
+            "重连窗口失败",
+            "connect_over_cdp",
+            "profile-open-state-reset",
+            "111003",
+            "already open",
+            "target page, context or browser has been closed",
+            "connection closed",
+        ]
+        return any(token.lower() in message for token in keywords)
+
+    def _maybe_cooldown_window_on_failure(self, row: dict, exc: Exception, failed_phase: str) -> None:
+        del failed_phase
+        minutes = int(getattr(self, "ixbrowser_window_cooldown_minutes", 0) or 0)
+        minutes = max(0, min(minutes, 60))
+        if minutes <= 0:
+            return
+        if not isinstance(row, dict) or not row:
+            return
+        if not self._is_ixbrowser_window_error(exc):
+            return
+
+        try:
+            profile_id = int(row.get("profile_id") or 0)
+        except Exception:
+            profile_id = 0
+        if profile_id <= 0:
+            return
+        group_title = str(row.get("group_title") or "Sora").strip() or "Sora"
+
+        cooldown_until = (datetime.now() + timedelta(minutes=minutes)).strftime("%Y-%m-%d %H:%M:%S")
+        reason_text = str(exc).strip() or "ixbrowser window error"
+        sqlite_db.upsert_profile_cooldown(
+            group_title=group_title,
+            profile_id=profile_id,
+            cooldown_type="ixbrowser",
+            cooldown_until=cooldown_until,
+            reason=reason_text[:200],
+        )
+
+    def _classify_submit_fail_switch_reason(
+        self,
+        error: str,
+        exc: Optional[BaseException] = None,
+    ) -> Optional[str]:
+        message = str(error or "").strip()
+        lower = message.lower()
+
+        if self._is_sora_overload_error(message):
+            return "heavy load"
+
+        auth_keywords = [
+            "sora 未登录",
+            "session 中未找到 accesstoken",
+            "未获取到 accesstoken",
+        ]
+        if any(token.lower() in lower for token in auth_keywords):
+            return "auth_missing_token"
+
+        rate_keywords = [
+            "429",
+            "too many requests",
+            "rate limit",
+            "rate_limit",
+        ]
+        if any(token in lower for token in rate_keywords):
+            return "rate_limit"
+
+        if exc is not None and self._is_ixbrowser_window_error(exc):
+            return "ixbrowser_submit_fail"
+        if self._is_ixbrowser_window_error(message):
+            return "ixbrowser_submit_fail"
+        return None
+
+    async def _spawn_sora_job_on_submit_fail_switch(
+        self,
+        row: dict,
+        trigger: str,
+        reason_tag: str,
+    ) -> SoraJob:
         if not isinstance(row, dict) or not row:
             raise IXBrowserServiceError("任务数据异常，无法换号重试")
 
@@ -2700,9 +2806,16 @@ class IXBrowserService:
             raise IXBrowserServiceError("仅失败任务允许换号重试")
 
         phase = str(row.get("phase") or "submit").strip().lower()
-        error = str(row.get("error") or "").strip()
-        if phase != "submit" or not self._is_sora_overload_error(error):
-            raise IXBrowserServiceError("仅 submit 阶段 heavy load 允许换号重试")
+        if phase != "submit":
+            raise IXBrowserServiceError("仅 submit 阶段允许换号重试")
+
+        task_id = str(row.get("task_id") or "").strip()
+        if task_id:
+            raise IXBrowserServiceError("任务已获取 task_id，无法换号重试")
+
+        safe_reason_tag = str(reason_tag or "").strip()
+        if not safe_reason_tag:
+            raise IXBrowserServiceError("换号重试原因缺失")
 
         root_job_id = int(row.get("retry_root_job_id") or job_id)
         max_idx = int(sqlite_db.get_sora_job_max_retry_index(root_job_id) or 0)
@@ -2758,9 +2871,10 @@ class IXBrowserService:
             raise IXBrowserNotFoundError(f"自动分配失败，窗口 {selected_profile_id} 不在 {group_title} 分组中")
 
         dispatch_reason_base = " | ".join(weight.reasons or []) or "自动分配"
-        trigger_text = "自动" if str(trigger or "").strip().lower() == "auto" else "手动"
+        trigger_norm = str(trigger or "").strip().lower()
+        trigger_text = "自动" if trigger_norm == "auto" else "手动"
         dispatch_reason = (
-            f"{dispatch_reason_base} | heavy load {trigger_text}换号重试（from job #{job_id} profile={old_profile_id}）"
+            f"{dispatch_reason_base} | submit 失败 {safe_reason_tag} {trigger_text}换号重试（from job #{job_id} profile={old_profile_id}）"
         )
 
         new_job_id = sqlite_db.create_sora_job(
@@ -2793,11 +2907,37 @@ class IXBrowserService:
             job_id,
             phase,
             old_event,
-            f"heavy load {trigger_text}换号重试 -> Job #{new_job_id} profile={selected_profile_id}",
+            f"{safe_reason_tag} {trigger_text}换号重试 -> Job #{new_job_id} profile={selected_profile_id}",
         )
         sqlite_db.create_sora_job_event(new_job_id, "dispatch", "select", dispatch_reason)
         sqlite_db.create_sora_job_event(new_job_id, "queue", "queue", "进入队列")
         return self.get_sora_job(new_job_id)
+
+    async def _spawn_sora_job_on_overload(self, row: dict, trigger: str) -> SoraJob:
+        if not isinstance(row, dict) or not row:
+            raise IXBrowserServiceError("任务数据异常，无法换号重试")
+
+        try:
+            job_id = int(row.get("id") or 0)
+        except Exception:
+            job_id = 0
+        if job_id <= 0:
+            raise IXBrowserServiceError("任务 ID 异常，无法换号重试")
+
+        status = str(row.get("status") or "").strip().lower()
+        if status != "failed":
+            raise IXBrowserServiceError("仅失败任务允许换号重试")
+
+        phase = str(row.get("phase") or "submit").strip().lower()
+        error = str(row.get("error") or "").strip()
+        if phase != "submit" or not self._is_sora_overload_error(error):
+            raise IXBrowserServiceError("仅 submit 阶段 heavy load 允许换号重试")
+
+        return await self._spawn_sora_job_on_submit_fail_switch(
+            row=row,
+            trigger=trigger,
+            reason_tag="heavy load",
+        )
 
     async def retry_sora_job(self, job_id: int) -> SoraJob:
         row = sqlite_db.get_sora_job(job_id)
@@ -2815,10 +2955,12 @@ class IXBrowserService:
 
         phase = str(row.get("phase") or "submit").strip().lower()
         error = str(row.get("error") or "").strip()
+        task_id = str(row.get("task_id") or "").strip()
 
-        # Heavy load 时不要在同一账号上重试，而是换号重新创建同内容任务。
-        if phase == "submit" and self._is_sora_overload_error(error):
-            return await self._spawn_sora_job_on_overload(row, trigger="manual")
+        # submit 阶段且未拿到 task_id：可按错误类型换号重试（含 heavy load / 账号类 / ixBrowser 类）
+        reason_tag = self._classify_submit_fail_switch_reason(error)
+        if phase == "submit" and not task_id and reason_tag:
+            return await self._spawn_sora_job_on_submit_fail_switch(row, trigger="manual", reason_tag=reason_tag)
 
         patch: Dict[str, Any] = {
             "status": "queued",

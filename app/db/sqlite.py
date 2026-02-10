@@ -515,6 +515,30 @@ class SQLiteDB:
 
         cursor.execute(
             '''
+            CREATE TABLE IF NOT EXISTS profile_cooldowns (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                group_title TEXT NOT NULL,
+                profile_id INTEGER NOT NULL,
+                cooldown_type TEXT NOT NULL,
+                cooldown_until TIMESTAMP NOT NULL,
+                reason TEXT,
+                created_at TIMESTAMP NOT NULL,
+                updated_at TIMESTAMP NOT NULL,
+                UNIQUE(group_title, profile_id, cooldown_type)
+            )
+            '''
+        )
+        cursor.execute(
+            "CREATE INDEX IF NOT EXISTS idx_profile_cooldowns_group_type_until "
+            "ON profile_cooldowns(group_title, cooldown_type, cooldown_until)"
+        )
+        cursor.execute(
+            "CREATE INDEX IF NOT EXISTS idx_profile_cooldowns_group_profile_type "
+            "ON profile_cooldowns(group_title, profile_id, cooldown_type)"
+        )
+
+        cursor.execute(
+            '''
             CREATE TABLE IF NOT EXISTS sora_job_events (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 job_id INTEGER NOT NULL,
@@ -1690,6 +1714,147 @@ class SQLiteDB:
             result[profile_id] = int(row["cnt"] or 0)
         return result
 
+    def upsert_profile_cooldown(
+        self,
+        group_title: str,
+        profile_id: int,
+        cooldown_type: str,
+        cooldown_until: str,
+        reason: Optional[str] = None,
+    ) -> None:
+        safe_group = str(group_title or "Sora").strip() or "Sora"
+        safe_type = str(cooldown_type or "").strip() or "ixbrowser"
+        safe_until = str(cooldown_until or "").strip()
+        if not safe_until:
+            return
+        try:
+            safe_profile_id = int(profile_id)
+        except Exception:
+            return
+        if safe_profile_id <= 0:
+            return
+
+        safe_reason = str(reason or "").strip() or None
+        if safe_reason and len(safe_reason) > 200:
+            safe_reason = safe_reason[:200]
+
+        now = self._now_str()
+        conn = self._get_conn()
+        cursor = conn.cursor()
+        cursor.execute(
+            '''
+            INSERT INTO profile_cooldowns (
+              group_title, profile_id, cooldown_type, cooldown_until,
+              reason, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(group_title, profile_id, cooldown_type) DO UPDATE SET
+              cooldown_until = CASE
+                WHEN excluded.cooldown_until > cooldown_until THEN excluded.cooldown_until
+                ELSE cooldown_until
+              END,
+              reason = excluded.reason,
+              updated_at = excluded.updated_at
+            ''',
+            (
+                safe_group,
+                safe_profile_id,
+                safe_type,
+                safe_until,
+                safe_reason,
+                now,
+                now,
+            ),
+        )
+        conn.commit()
+        conn.close()
+
+    def get_profile_cooldown(
+        self,
+        group_title: str,
+        profile_id: int,
+        cooldown_type: str,
+        now: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        safe_group = str(group_title or "Sora").strip() or "Sora"
+        safe_type = str(cooldown_type or "").strip() or "ixbrowser"
+        safe_now = str(now or self._now_str()).strip()
+        try:
+            safe_profile_id = int(profile_id)
+        except Exception:
+            return None
+        if safe_profile_id <= 0:
+            return None
+
+        conn = self._get_conn()
+        cursor = conn.cursor()
+        cursor.execute(
+            '''
+            SELECT *
+            FROM profile_cooldowns
+            WHERE group_title = ?
+              AND profile_id = ?
+              AND cooldown_type = ?
+              AND cooldown_until >= ?
+            LIMIT 1
+            ''',
+            (safe_group, safe_profile_id, safe_type, safe_now),
+        )
+        row = cursor.fetchone()
+        conn.close()
+        return dict(row) if row else None
+
+    def list_active_profile_cooldowns(
+        self,
+        group_title: str,
+        cooldown_type: str,
+        now: Optional[str] = None,
+    ) -> Dict[int, Dict[str, Any]]:
+        safe_group = str(group_title or "Sora").strip() or "Sora"
+        safe_type = str(cooldown_type or "").strip() or "ixbrowser"
+        safe_now = str(now or self._now_str()).strip()
+
+        conn = self._get_conn()
+        cursor = conn.cursor()
+        cursor.execute(
+            '''
+            SELECT profile_id, cooldown_until, reason
+            FROM profile_cooldowns
+            WHERE group_title = ?
+              AND cooldown_type = ?
+              AND cooldown_until >= ?
+            ''',
+            (safe_group, safe_type, safe_now),
+        )
+        rows = cursor.fetchall()
+        conn.close()
+
+        result: Dict[int, Dict[str, Any]] = {}
+        for row in rows:
+            try:
+                pid = int(row["profile_id"])
+            except Exception:
+                continue
+            if pid <= 0:
+                continue
+            result[pid] = {
+                "cooldown_until": row["cooldown_until"],
+                "reason": row["reason"],
+            }
+        return result
+
+    def cleanup_expired_profile_cooldowns(self, now: Optional[str] = None) -> int:
+        safe_now = str(now or self._now_str()).strip()
+        conn = self._get_conn()
+        cursor = conn.cursor()
+        cursor.execute(
+            "DELETE FROM profile_cooldowns WHERE cooldown_until < ?",
+            (safe_now,),
+        )
+        deleted = int(cursor.rowcount or 0)
+        conn.commit()
+        conn.close()
+        return deleted
+
     def try_acquire_scheduler_lock(self, lock_key: str, owner: str, ttl_seconds: int = 120) -> bool:
         safe_key = str(lock_key or "").strip()
         safe_owner = str(owner or "unknown").strip() or "unknown"
@@ -1747,10 +1912,18 @@ class SQLiteDB:
                 FROM sora_jobs
                 WHERE status = 'queued'
                   AND (lease_until IS NULL OR lease_until < ?)
+                  AND NOT EXISTS (
+                    SELECT 1
+                    FROM profile_cooldowns pc
+                    WHERE pc.group_title = COALESCE(NULLIF(sora_jobs.group_title, ''), 'Sora')
+                      AND pc.profile_id = sora_jobs.profile_id
+                      AND pc.cooldown_type = 'ixbrowser'
+                      AND pc.cooldown_until >= ?
+                  )
                 ORDER BY id ASC
                 LIMIT 1
                 ''',
-                (now,),
+                (now, now),
             )
             row = cursor.fetchone()
             if not row:
@@ -1768,8 +1941,16 @@ class SQLiteDB:
                 WHERE id = ?
                   AND status = 'queued'
                   AND (lease_until IS NULL OR lease_until < ?)
+                  AND NOT EXISTS (
+                    SELECT 1
+                    FROM profile_cooldowns pc
+                    WHERE pc.group_title = COALESCE(NULLIF(sora_jobs.group_title, ''), 'Sora')
+                      AND pc.profile_id = sora_jobs.profile_id
+                      AND pc.cooldown_type = 'ixbrowser'
+                      AND pc.cooldown_until >= ?
+                  )
                 ''',
-                (safe_owner, lease_until, now, job_id, now),
+                (safe_owner, lease_until, now, job_id, now, now),
             )
             if cursor.rowcount <= 0:
                 conn.rollback()
