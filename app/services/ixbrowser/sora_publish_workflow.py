@@ -63,12 +63,16 @@ class SoraPublishWorkflow:
         task_id: str,
         access_token: str,
         fetch_drafts: bool,
+        profile_id: Optional[int] = None,
+        draft_retry_step: int = 0,
     ) -> Dict[str, Any]:
         return await self._poll_sora_task_from_page(
             page=page,
             task_id=task_id,
             access_token=access_token,
             fetch_drafts=fetch_drafts,
+            profile_id=profile_id,
+            draft_retry_step=draft_retry_step,
         )
 
     async def poll_sora_task_via_proxy_api(
@@ -77,12 +81,14 @@ class SoraPublishWorkflow:
         task_id: str,
         access_token: str,
         fetch_drafts: bool,
+        draft_retry_step: int = 0,
     ) -> Dict[str, Any]:
         return await self._poll_sora_task_via_proxy_api(
             profile_id=profile_id,
             task_id=task_id,
             access_token=access_token,
             fetch_drafts=fetch_drafts,
+            draft_retry_step=draft_retry_step,
         )
 
     def is_valid_publish_url(self, url: Optional[str]) -> bool:
@@ -145,6 +151,7 @@ class SoraPublishWorkflow:
                     if isinstance(draft_data, dict):
                         existing_link = self._extract_publish_url(str(draft_data))
                         if existing_link:
+                            await self._refresh_nf_check_after_publish(page, profile_id=profile_id)
                             return existing_link
                         draft_generation = self._extract_generation_id(draft_data)
                         logger.info(
@@ -167,6 +174,7 @@ class SoraPublishWorkflow:
                     if isinstance(manual_item, dict):
                         existing_link = self._extract_publish_url(str(manual_item))
                         if existing_link:
+                            await self._refresh_nf_check_after_publish(page, profile_id=profile_id)
                             return existing_link
 
                 if not draft_generation:
@@ -201,6 +209,7 @@ class SoraPublishWorkflow:
                         draft_generation,
                         existing_publish.get("publish_url"),
                     )
+                    await self._refresh_nf_check_after_publish(page, profile_id=profile_id)
                     return existing_publish.get("publish_url")
                 api_publish = await self._publish_sora_post_with_backoff(
                     page,
@@ -212,6 +221,7 @@ class SoraPublishWorkflow:
                 )
                 if api_publish and api_publish.get("publish_url"):
                     await self._maybe_auto_delete_published_post(page, api_publish, generation_id=draft_generation)
+                    await self._refresh_nf_check_after_publish(page, profile_id=profile_id)
                     return api_publish.get("publish_url")
                 error_text = self._publish_result_error_text(api_publish)
                 if api_publish and error_text:
@@ -227,6 +237,7 @@ class SoraPublishWorkflow:
                         except Exception:  # noqa: BLE001
                             existing = None
                         if existing:
+                            await self._refresh_nf_check_after_publish(page, profile_id=profile_id)
                             return existing
                         draft_item = await self._fetch_draft_item_by_generation_id(page, draft_generation)
                         if draft_item is None:
@@ -251,21 +262,27 @@ class SoraPublishWorkflow:
                             logger.info("发布重试 草稿信息: %s", payload)
                         existing_link = self._extract_publish_url(str(draft_item)) if draft_item else None
                         if existing_link:
+                            await self._refresh_nf_check_after_publish(page, profile_id=profile_id)
                             return existing_link
                         share_id = self._find_share_id(draft_item)
                         if share_id:
+                            await self._refresh_nf_check_after_publish(page, profile_id=profile_id)
                             return f"https://sora.chatgpt.com/p/{share_id}"
                         post_result = await self._fetch_publish_result_from_posts(page, draft_generation)
                         if post_result.get("publish_url"):
+                            await self._refresh_nf_check_after_publish(page, profile_id=profile_id)
                             return post_result.get("publish_url")
                         gen_result = await self._fetch_publish_result_from_generation(page, draft_generation)
                         if gen_result.get("publish_url"):
+                            await self._refresh_nf_check_after_publish(page, profile_id=profile_id)
                             return gen_result.get("publish_url")
                 existing_dom_link = await self._find_publish_url_from_dom(page)
                 if existing_dom_link:
+                    await self._refresh_nf_check_after_publish(page, profile_id=profile_id)
                     return existing_dom_link
                 ui_link = await self._capture_share_link_from_ui(page)
                 if ui_link:
+                    await self._refresh_nf_check_after_publish(page, profile_id=profile_id)
                     return ui_link
                 clicked = await self._wait_and_click_publish_button(page, timeout_seconds=60)
                 if clicked:
@@ -275,6 +292,8 @@ class SoraPublishWorkflow:
                     raise self._service_error("未找到发布按钮")
 
                 publish_url = await self._wait_for_publish_url(publish_future, page, timeout_seconds=45)
+                if publish_url:
+                    await self._refresh_nf_check_after_publish(page, profile_id=profile_id)
             finally:
                 try:
                     await browser.close()
@@ -293,6 +312,7 @@ class SoraPublishWorkflow:
         prompt: str,
         created_after: Optional[str] = None,
         generation_id: Optional[str] = None,
+        profile_id: Optional[int] = None,
     ) -> Optional[str]:
         logger.info(
             "发布流程开始: task_id=%s generation_id=%s url=%s",
@@ -325,6 +345,7 @@ class SoraPublishWorkflow:
             if isinstance(draft_data, dict):
                 existing_link = self._extract_publish_url(str(draft_data))
                 if existing_link:
+                    await self._refresh_nf_check_after_publish(page, profile_id=profile_id)
                     return existing_link
                 draft_generation = self._extract_generation_id(draft_data)
                 logger.info(
@@ -346,6 +367,7 @@ class SoraPublishWorkflow:
             if isinstance(manual_item, dict):
                 existing_link = self._extract_publish_url(str(manual_item))
                 if existing_link:
+                    await self._refresh_nf_check_after_publish(page, profile_id=profile_id)
                     return existing_link
 
         if not draft_generation:
@@ -377,6 +399,7 @@ class SoraPublishWorkflow:
                 draft_generation,
                 existing_publish.get("publish_url"),
             )
+            await self._refresh_nf_check_after_publish(page, profile_id=profile_id)
             return existing_publish.get("publish_url")
         api_publish = await self._publish_sora_post_with_backoff(
             page,
@@ -388,6 +411,7 @@ class SoraPublishWorkflow:
         )
         if api_publish.get("publish_url"):
             await self._maybe_auto_delete_published_post(page, api_publish, generation_id=draft_generation)
+            await self._refresh_nf_check_after_publish(page, profile_id=profile_id)
             return api_publish.get("publish_url")
         error_text = self._publish_result_error_text(api_publish)
         if error_text:
@@ -398,6 +422,7 @@ class SoraPublishWorkflow:
                 except Exception:  # noqa: BLE001
                     existing = None
                 if existing:
+                    await self._refresh_nf_check_after_publish(page, profile_id=profile_id)
                     return existing
                 draft_item = await self._fetch_draft_item_by_generation_id(page, draft_generation)
                 if draft_item is None:
@@ -417,21 +442,27 @@ class SoraPublishWorkflow:
                     logger.info("发布流程 草稿信息: %s", payload)
                 existing_link = self._extract_publish_url(str(draft_item)) if draft_item else None
                 if existing_link:
+                    await self._refresh_nf_check_after_publish(page, profile_id=profile_id)
                     return existing_link
                 share_id = self._find_share_id(draft_item)
                 if share_id:
+                    await self._refresh_nf_check_after_publish(page, profile_id=profile_id)
                     return f"https://sora.chatgpt.com/p/{share_id}"
                 post_result = await self._fetch_publish_result_from_posts(page, draft_generation)
                 if post_result.get("publish_url"):
+                    await self._refresh_nf_check_after_publish(page, profile_id=profile_id)
                     return post_result.get("publish_url")
                 gen_result = await self._fetch_publish_result_from_generation(page, draft_generation)
                 if gen_result.get("publish_url"):
+                    await self._refresh_nf_check_after_publish(page, profile_id=profile_id)
                     return gen_result.get("publish_url")
         existing_dom_link = await self._find_publish_url_from_dom(page)
         if existing_dom_link:
+            await self._refresh_nf_check_after_publish(page, profile_id=profile_id)
             return existing_dom_link
         ui_link = await self._capture_share_link_from_ui(page)
         if ui_link:
+            await self._refresh_nf_check_after_publish(page, profile_id=profile_id)
             return ui_link
         clicked = await self._wait_and_click_publish_button(page, timeout_seconds=60)
         if clicked:
@@ -440,7 +471,52 @@ class SoraPublishWorkflow:
         else:
             raise self._service_error("未找到发布按钮")
 
-        return await self._wait_for_publish_url(publish_future, page, timeout_seconds=45)
+        publish_url = await self._wait_for_publish_url(publish_future, page, timeout_seconds=45)
+        if publish_url:
+            await self._refresh_nf_check_after_publish(page, profile_id=profile_id)
+        return publish_url
+
+    async def _refresh_nf_check_after_publish(self, page, *, profile_id: Optional[int]) -> None:
+        """
+        发布流程完成后，补一次真实 nf/check 请求刷新次数（走浏览器网络栈，避免本地推算/缓存）。
+
+        约束：
+        - 尽量少动作：只请求一次 nf/check（不做重试）。
+        - 不影响发布主流程：失败/超时直接吞掉并记录日志。
+        """
+        try:
+            access_token = None
+            try:
+                access_token = await asyncio.wait_for(self._get_access_token_from_page(page), timeout=6.0)
+            except Exception:  # noqa: BLE001
+                access_token = None
+
+            headers: Dict[str, str] = {"Accept": "application/json"}
+            if access_token:
+                headers["Authorization"] = f"Bearer {access_token}"
+
+            result = await self._sora_fetch_json_via_page(
+                page=page,
+                url="https://sora.chatgpt.com/backend/nf/check",
+                headers=headers,
+                timeout_ms=12_000,
+                retries=0,
+            )
+            status = result.get("status")
+            error = result.get("error")
+            try:
+                code = int(status or 0)
+            except Exception:  # noqa: BLE001
+                code = 0
+            if code != 200:
+                logger.info(
+                    "发布后 nf/check 刷新失败: profile=%s status=%s error=%s",
+                    profile_id,
+                    status,
+                    error,
+                )
+        except Exception as exc:  # noqa: BLE001
+            logger.info("发布后 nf/check 刷新异常: profile=%s err=%s", profile_id, exc)
 
     def _watch_publish_url(self, page, task_id: Optional[str] = None):
         loop = asyncio.get_running_loop()
@@ -3127,6 +3203,9 @@ class SoraPublishWorkflow:
         generation_id: Optional[str] = None,
         cf_challenge: bool = False,
         source: Optional[str] = None,
+        draft_probe_attempted: bool = False,
+        next_draft_retry_step: int = 0,
+        next_draft_probe_delay_sec: float = 0.0,
     ) -> Dict[str, Any]:
         return {
             "state": "processing",
@@ -3137,6 +3216,9 @@ class SoraPublishWorkflow:
             "pending_missing": bool(pending_missing),
             "cf_challenge": bool(cf_challenge),
             "source": source,
+            "draft_probe_attempted": bool(draft_probe_attempted),
+            "next_draft_retry_step": int(max(int(next_draft_retry_step or 0), 0)),
+            "next_draft_probe_delay_sec": float(max(float(next_draft_probe_delay_sec or 0.0), 0.0)),
         }
 
     def _state_failed(self, message: Any, *, progress: Any = None, source: Optional[str] = None) -> Dict[str, Any]:
@@ -3149,6 +3231,9 @@ class SoraPublishWorkflow:
             "pending_missing": False,
             "cf_challenge": False,
             "source": source,
+            "draft_probe_attempted": False,
+            "next_draft_retry_step": 0,
+            "next_draft_probe_delay_sec": 0.0,
         }
 
     def _state_completed(
@@ -3167,6 +3252,9 @@ class SoraPublishWorkflow:
             "pending_missing": True,
             "cf_challenge": False,
             "source": source,
+            "draft_probe_attempted": False,
+            "next_draft_retry_step": 0,
+            "next_draft_probe_delay_sec": 0.0,
         }
 
     async def _wait_poll_backoff(self, seconds: float, *, page=None) -> None:
@@ -3256,6 +3344,8 @@ class SoraPublishWorkflow:
         task_id: str,
         access_token: str,
         fetch_drafts: bool = False,
+        profile_id: Optional[int] = None,
+        draft_retry_step: int = 0,
     ) -> Dict[str, Any]:
         context = getattr(page, "context", None)
         if context is None:
@@ -3268,6 +3358,14 @@ class SoraPublishWorkflow:
 
         pending_progress = None
         pending_missing = True
+        delays = self.DRAFT_RETRY_BACKOFF_SECONDS
+        retry_step = max(int(draft_retry_step or 0), 0)
+        if delays:
+            retry_step = min(retry_step, len(delays) - 1)
+            next_delay = float(delays[retry_step])
+        else:
+            retry_step = 0
+            next_delay = 0.0
         pending_endpoints = (
             "https://sora.chatgpt.com/backend/nf/pending/v2",
             "https://sora.chatgpt.com/backend/nf/pending",
@@ -3286,12 +3384,25 @@ class SoraPublishWorkflow:
                     raise
                 continue
 
+            self._record_proxy_cf_event(
+                profile_id=profile_id,
+                source="page_poll",
+                endpoint=endpoint,
+                status=pending_result.get("status"),
+                error=pending_result.get("error"),
+                is_cf=self._is_cf_result(pending_result),
+                assume_proxy_chain=True,
+            )
+
             if self._is_cf_result(pending_result):
                 return self._state_processing(
                     progress=pending_progress,
                     pending_missing=pending_missing,
                     cf_challenge=True,
                     source="page",
+                    draft_probe_attempted=False,
+                    next_draft_retry_step=retry_step,
+                    next_draft_probe_delay_sec=next_delay,
                 )
 
             pending_json = pending_result.get("json")
@@ -3322,47 +3433,86 @@ class SoraPublishWorkflow:
             else:
                 return self._state_processing(progress=pending_progress, pending_missing=False, source="page")
 
-        should_fetch_drafts = bool(fetch_drafts) or pending_missing
+        should_fetch_drafts = bool(fetch_drafts) or (pending_missing and retry_step == 0)
         if not should_fetch_drafts:
-            return self._state_processing(progress=pending_progress, pending_missing=False, source="page")
+            return self._state_processing(
+                progress=pending_progress,
+                pending_missing=bool(pending_missing),
+                source="page",
+                draft_probe_attempted=False,
+                next_draft_retry_step=retry_step,
+                next_draft_probe_delay_sec=next_delay,
+            )
 
         pending_from_draft = pending_progress
-        delays = self.DRAFT_RETRY_BACKOFF_SECONDS
-        for idx in range(len(delays) + 1):
-            if idx > 0:
-                await self._wait_poll_backoff(delays[idx - 1], page=page)
-            try:
-                target = await self._fetch_draft_item_by_task_id(
-                    page=page,
-                    task_id=task_id,
-                    limit=15,
-                    max_pages=3,
-                    retries=1,
-                    delay_ms=0,
-                )
-            except Exception as exc:  # noqa: BLE001
-                if self._is_page_closed_error(exc):
-                    raise
-                target = None
+        draft_probe_error: Optional[str] = None
+        try:
+            target = await self._fetch_draft_item_by_task_id(
+                page=page,
+                task_id=task_id,
+                limit=15,
+                max_pages=3,
+                retries=1,
+                delay_ms=0,
+            )
+        except Exception as exc:  # noqa: BLE001
+            if self._is_page_closed_error(exc):
+                raise
+            target = None
+            draft_probe_error = str(exc)
 
-            if not isinstance(target, dict):
-                continue
+        draft_endpoint = "https://sora.chatgpt.com/backend/project_y/profile/drafts"
+        draft_error_text = str(draft_probe_error or "").strip().lower()
+        self._record_proxy_cf_event(
+            profile_id=profile_id,
+            source="page_poll",
+            endpoint=draft_endpoint,
+            status=200 if isinstance(target, dict) else None,
+            error=draft_probe_error,
+            is_cf=(
+                draft_error_text == "cf_challenge"
+                or "cloudflare" in draft_error_text
+                or "challenge" in draft_error_text
+            ),
+            assume_proxy_chain=True,
+        )
 
-            reason = target.get("reason_str") or target.get("markdown_reason_str")
-            kind = str(target.get("kind") or "")
-            task_url = target.get("url") or target.get("downloadable_url")
-            progress = self._pick_progress(target)
-            pending_from_draft = progress if progress is not None else pending_from_draft
-            generation_id = self._extract_generation_id(target)
+        if not isinstance(target, dict):
+            next_retry_step = min(retry_step + 1, len(delays) - 1) if delays else 0
+            next_probe_delay = float(delays[retry_step]) if delays else 0.0
+            return self._state_processing(
+                progress=pending_from_draft,
+                pending_missing=True,
+                source="page",
+                draft_probe_attempted=True,
+                next_draft_retry_step=next_retry_step,
+                next_draft_probe_delay_sec=next_probe_delay,
+            )
 
-            if self._normalize_error_text(reason):
-                return self._state_failed(reason, progress=pending_from_draft, source="page")
-            if kind == "sora_content_violation":
-                return self._state_failed("内容审核未通过", progress=pending_from_draft, source="page")
-            if generation_id:
-                return self._state_completed(task_url=task_url, generation_id=generation_id, source="page")
+        reason = target.get("reason_str") or target.get("markdown_reason_str")
+        kind = str(target.get("kind") or "")
+        task_url = target.get("url") or target.get("downloadable_url")
+        progress = self._pick_progress(target)
+        pending_from_draft = progress if progress is not None else pending_from_draft
+        generation_id = self._extract_generation_id(target)
 
-        return self._state_processing(progress=pending_from_draft, pending_missing=True, source="page")
+        if self._normalize_error_text(reason):
+            return self._state_failed(reason, progress=pending_from_draft, source="page")
+        if kind == "sora_content_violation":
+            return self._state_failed("内容审核未通过", progress=pending_from_draft, source="page")
+        if generation_id:
+            return self._state_completed(task_url=task_url, generation_id=generation_id, source="page")
+
+        next_retry_step = min(retry_step + 1, len(delays) - 1) if delays else 0
+        next_probe_delay = float(delays[retry_step]) if delays else 0.0
+        return self._state_processing(
+            progress=pending_from_draft,
+            pending_missing=True,
+            source="page",
+            draft_probe_attempted=True,
+            next_draft_retry_step=next_retry_step,
+            next_draft_probe_delay_sec=next_probe_delay,
+        )
 
     async def _poll_sora_task_via_proxy_api(
         self,
@@ -3370,11 +3520,20 @@ class SoraPublishWorkflow:
         task_id: str,
         access_token: str,
         fetch_drafts: bool = False,
+        draft_retry_step: int = 0,
     ) -> Dict[str, Any]:
         request_context = self._build_proxy_request_context(profile_id)
 
         pending_progress = None
         pending_missing = True
+        delays = self.DRAFT_RETRY_BACKOFF_SECONDS
+        retry_step = max(int(draft_retry_step or 0), 0)
+        if delays:
+            retry_step = min(retry_step, len(delays) - 1)
+            next_delay = float(delays[retry_step])
+        else:
+            retry_step = 0
+            next_delay = 0.0
         pending_endpoints = (
             "https://sora.chatgpt.com/backend/nf/pending/v2",
             "https://sora.chatgpt.com/backend/nf/pending",
@@ -3392,6 +3551,9 @@ class SoraPublishWorkflow:
                     pending_missing=pending_missing,
                     cf_challenge=True,
                     source="proxy_api",
+                    draft_probe_attempted=False,
+                    next_draft_retry_step=retry_step,
+                    next_draft_probe_delay_sec=next_delay,
                 )
 
             pending_json = pending_result.get("json")
@@ -3421,57 +3583,80 @@ class SoraPublishWorkflow:
             else:
                 return self._state_processing(progress=pending_progress, pending_missing=False, source="proxy_api")
 
-        should_fetch_drafts = bool(fetch_drafts) or pending_missing
+        should_fetch_drafts = bool(fetch_drafts) or (pending_missing and retry_step == 0)
         if not should_fetch_drafts:
-            return self._state_processing(progress=pending_progress, pending_missing=False, source="proxy_api")
+            return self._state_processing(
+                progress=pending_progress,
+                pending_missing=bool(pending_missing),
+                source="proxy_api",
+                draft_probe_attempted=False,
+                next_draft_retry_step=retry_step,
+                next_draft_probe_delay_sec=next_delay,
+            )
 
         task_id_norm = self._normalize_task_id(task_id)
         pending_from_draft = pending_progress
-        delays = self.DRAFT_RETRY_BACKOFF_SECONDS
-        for idx in range(len(delays) + 1):
-            if idx > 0:
-                await self._wait_poll_backoff(delays[idx - 1])
-
-            drafts_result = await self._fetch_json_via_proxy_api(
-                profile_id=profile_id,
-                access_token=access_token,
-                url="https://sora.chatgpt.com/backend/project_y/profile/drafts?limit=15",
-                request_context=request_context,
+        drafts_result = await self._fetch_json_via_proxy_api(
+            profile_id=profile_id,
+            access_token=access_token,
+            url="https://sora.chatgpt.com/backend/project_y/profile/drafts?limit=15",
+            request_context=request_context,
+        )
+        if self._is_cf_result(drafts_result):
+            return self._state_processing(
+                progress=pending_from_draft,
+                pending_missing=True,
+                cf_challenge=True,
+                source="proxy_api",
+                draft_probe_attempted=True,
+                next_draft_retry_step=retry_step,
+                next_draft_probe_delay_sec=next_delay,
             )
-            if self._is_cf_result(drafts_result):
-                return self._state_processing(
-                    progress=pending_from_draft,
-                    pending_missing=True,
-                    cf_challenge=True,
-                    source="proxy_api",
-                )
-            drafts_json = drafts_result.get("json")
-            items = drafts_json.get("items") if isinstance(drafts_json, dict) else None
-            if not isinstance(items, list) and isinstance(drafts_json, dict):
-                items = drafts_json.get("data")
-            if not isinstance(items, list):
-                continue
+        drafts_json = drafts_result.get("json")
+        items = drafts_json.get("items") if isinstance(drafts_json, dict) else None
+        if not isinstance(items, list) and isinstance(drafts_json, dict):
+            items = drafts_json.get("data")
 
-            target = None
+        target = None
+        if isinstance(items, list):
             for item in items:
                 if isinstance(item, dict) and task_id_norm and self._match_task_id_in_item(item, task_id_norm):
                     target = item
                     break
-            if not isinstance(target, dict):
-                continue
 
-            reason = target.get("reason_str") or target.get("markdown_reason_str")
-            kind = str(target.get("kind") or "")
-            task_url = target.get("url") or target.get("downloadable_url")
-            progress = self._pick_progress(target)
-            pending_from_draft = progress if progress is not None else pending_from_draft
-            generation_id = self._extract_generation_id(target)
+        if not isinstance(target, dict):
+            next_retry_step = min(retry_step + 1, len(delays) - 1) if delays else 0
+            next_probe_delay = float(delays[retry_step]) if delays else 0.0
+            return self._state_processing(
+                progress=pending_from_draft,
+                pending_missing=True,
+                source="proxy_api",
+                draft_probe_attempted=True,
+                next_draft_retry_step=next_retry_step,
+                next_draft_probe_delay_sec=next_probe_delay,
+            )
 
-            if self._normalize_error_text(reason):
-                return self._state_failed(reason, progress=pending_from_draft, source="proxy_api")
-            if kind == "sora_content_violation":
-                return self._state_failed("内容审核未通过", progress=pending_from_draft, source="proxy_api")
-            if generation_id:
-                return self._state_completed(task_url=task_url, generation_id=generation_id, source="proxy_api")
+        reason = target.get("reason_str") or target.get("markdown_reason_str")
+        kind = str(target.get("kind") or "")
+        task_url = target.get("url") or target.get("downloadable_url")
+        progress = self._pick_progress(target)
+        pending_from_draft = progress if progress is not None else pending_from_draft
+        generation_id = self._extract_generation_id(target)
 
-        return self._state_processing(progress=pending_from_draft, pending_missing=True, source="proxy_api")
+        if self._normalize_error_text(reason):
+            return self._state_failed(reason, progress=pending_from_draft, source="proxy_api")
+        if kind == "sora_content_violation":
+            return self._state_failed("内容审核未通过", progress=pending_from_draft, source="proxy_api")
+        if generation_id:
+            return self._state_completed(task_url=task_url, generation_id=generation_id, source="proxy_api")
+
+        next_retry_step = min(retry_step + 1, len(delays) - 1) if delays else 0
+        next_probe_delay = float(delays[retry_step]) if delays else 0.0
+        return self._state_processing(
+            progress=pending_from_draft,
+            pending_missing=True,
+            source="proxy_api",
+            draft_probe_attempted=True,
+            next_draft_retry_step=next_retry_step,
+            next_draft_probe_delay_sec=next_probe_delay,
+        )

@@ -97,7 +97,7 @@ async def test_pick_best_account_excludes_profile_ids(monkeypatch):
     assert weight.profile_id == 2
 
 
-def test_load_latest_scan_map_ignores_realtime_run(monkeypatch):
+def test_load_latest_scan_map_overlays_realtime_quota_without_overwriting_account_fields(monkeypatch):
     service = AccountDispatchService()
 
     monkeypatch.setattr(
@@ -108,6 +108,10 @@ def test_load_latest_scan_map_ignores_realtime_run(monkeypatch):
         "app.services.account_dispatch_service.sqlite_db.get_ixbrowser_latest_scan_run",
         lambda _group_title: {"id": 27},
     )
+    monkeypatch.setattr(
+        "app.services.account_dispatch_service.sqlite_db.get_ixbrowser_latest_scan_run_by_operator",
+        lambda _group_title, _operator_username: {"id": 27},
+    )
 
     def _fake_get_results_by_run(run_id: int):
         if int(run_id) == 36:
@@ -116,6 +120,8 @@ def test_load_latest_scan_map_ignores_realtime_run(monkeypatch):
                     "profile_id": 1,
                     "account_plan": "plus",
                     "quota_remaining_count": 10,
+                    "quota_source": "https://sora.chatgpt.com/backend/nf/check",
+                    "scanned_at": "2026-02-09 00:00:00",
                     "account": "a@example.com",
                 }
             ]
@@ -125,6 +131,9 @@ def test_load_latest_scan_map_ignores_realtime_run(monkeypatch):
                     "profile_id": 1,
                     "account_plan": None,
                     "quota_remaining_count": 9,
+                    "quota_source": "realtime",
+                    "quota_reset_at": "2026-02-10T00:00:00+00:00",
+                    "scanned_at": "2026-02-10 00:00:00",
                     "account": None,
                 }
             ]
@@ -137,3 +146,40 @@ def test_load_latest_scan_map_ignores_realtime_run(monkeypatch):
 
     scan_map = service._load_latest_scan_map("Sora")
     assert scan_map[1]["account_plan"] == "plus"
+    assert scan_map[1]["account"] == "a@example.com"
+    assert scan_map[1]["quota_remaining_count"] == 9
+    assert scan_map[1]["quota_source"] == "realtime"
+
+
+@pytest.mark.asyncio
+async def test_account_weights_use_quota_cap_when_reset_passed(monkeypatch):
+    service = AccountDispatchService()
+    settings = AccountDispatchSettings(quota_cap=30, min_quota_remaining=2)
+    monkeypatch.setattr(service, "_load_settings", lambda: settings)
+
+    now = datetime.now()
+    reset_at = (now - timedelta(seconds=1)).isoformat()
+
+    async def _fake_list_windows(_group_title):
+        return [IXBrowserWindow(profile_id=1, name="win-1")]
+
+    monkeypatch.setattr(service, "_list_group_windows", _fake_list_windows)
+    monkeypatch.setattr(
+        service,
+        "_load_latest_scan_map",
+        lambda _group_title: {
+            1: {
+                "quota_remaining_count": 1,
+                "quota_total_count": 30,
+                "quota_reset_at": reset_at,
+            }
+        },
+    )
+    monkeypatch.setattr("app.services.account_dispatch_service.sqlite_db.list_sora_jobs_since", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr("app.services.account_dispatch_service.sqlite_db.list_sora_fail_events_since", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr("app.services.account_dispatch_service.sqlite_db.count_sora_active_jobs_by_profile", lambda *_args, **_kwargs: {})
+
+    weights = await service.list_account_weights(group_title="Sora", limit=10)
+    assert weights
+    assert weights[0].quota_remaining_count == 30
+    assert weights[0].selectable is True

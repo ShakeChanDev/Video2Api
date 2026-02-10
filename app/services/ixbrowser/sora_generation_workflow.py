@@ -37,6 +37,73 @@ class SoraGenerationWorkflow:
             sqlite_db.update_sora_job(job_id, {"generation_id": generation_id})
             return
         sqlite_db.update_ixbrowser_generate_job(job_id, {"generation_id": generation_id})
+
+    def _resolve_fetch_drafts(
+        self,
+        *,
+        now: float,
+        generation_id: Optional[str],
+        last_draft_fetch_at: float,
+        pending_missing_for_backoff: bool,
+        next_draft_probe_at: float,
+    ) -> Tuple[bool, float]:
+        fetch_drafts = False
+        next_manual_at = float(last_draft_fetch_at)
+        if not generation_id and (now - float(last_draft_fetch_at)) >= self.draft_manual_poll_interval_seconds:
+            fetch_drafts = True
+            next_manual_at = now
+        if pending_missing_for_backoff and now >= float(next_draft_probe_at):
+            fetch_drafts = True
+        return fetch_drafts, next_manual_at
+
+    @staticmethod
+    def _resolve_draft_backoff_state(
+        *,
+        now: float,
+        state: Dict[str, Any],
+        draft_retry_step: int,
+        next_draft_probe_at: float,
+    ) -> Tuple[int, float, bool]:
+        pending_missing = bool(state.get("pending_missing"))
+        if not pending_missing:
+            return 0, now, False
+        if bool(state.get("draft_probe_attempted")):
+            try:
+                next_retry_step = int(state.get("next_draft_retry_step") or draft_retry_step)
+            except Exception:
+                next_retry_step = int(draft_retry_step or 0)
+            next_retry_step = max(next_retry_step, 0)
+            try:
+                next_delay = float(state.get("next_draft_probe_delay_sec") or 0.0)
+            except Exception:
+                next_delay = 0.0
+            next_delay = max(next_delay, 0.0)
+            return next_retry_step, now + next_delay, True
+        return max(int(draft_retry_step or 0), 0), float(next_draft_probe_at), True
+
+    @staticmethod
+    def _log_poll_debug(
+        *,
+        job_id: int,
+        poll_attempts: int,
+        use_proxy_poll: bool,
+        state: Dict[str, Any],
+        draft_retry_step: int,
+    ) -> None:
+        if poll_attempts % 10 != 0:
+            return
+        logger.debug(
+            "sora.progress.poll | job_id=%s | poll=%s | channel=%s | source=%s | pending_missing=%s | "
+            "draft_retry_step=%s | cf_challenge=%s",
+            int(job_id),
+            int(poll_attempts),
+            "proxy_api" if use_proxy_poll else "page",
+            state.get("source"),
+            bool(state.get("pending_missing")),
+            int(max(int(draft_retry_step or 0), 0)),
+            bool(state.get("cf_challenge")),
+        )
+
     async def run_sora_submit_and_progress(
         self,
         job_id: int,
@@ -131,6 +198,9 @@ class SoraGenerationWorkflow:
 
                 started = time.perf_counter()
                 last_draft_fetch_at = started
+                draft_retry_step = 0
+                next_draft_probe_at = started
+                pending_missing_for_backoff = False
                 use_proxy_poll = True
                 reconnect_attempts = 0
                 max_reconnect_attempts = 3
@@ -153,10 +223,13 @@ class SoraGenerationWorkflow:
 
                     poll_attempts += 1
                     now = time.perf_counter()
-                    fetch_drafts = False
-                    if not generation_id and (now - last_draft_fetch_at) >= self.draft_manual_poll_interval_seconds:
-                        fetch_drafts = True
-                        last_draft_fetch_at = now
+                    fetch_drafts, last_draft_fetch_at = self._resolve_fetch_drafts(
+                        now=now,
+                        generation_id=generation_id,
+                        last_draft_fetch_at=last_draft_fetch_at,
+                        pending_missing_for_backoff=pending_missing_for_backoff,
+                        next_draft_probe_at=next_draft_probe_at,
+                    )
 
                     if use_proxy_poll:
                         state = await self._service._sora_publish_workflow.poll_sora_task_via_proxy_api(
@@ -164,6 +237,20 @@ class SoraGenerationWorkflow:
                             task_id=task_id,
                             access_token=access_token,
                             fetch_drafts=fetch_drafts,
+                            draft_retry_step=draft_retry_step,
+                        )
+                        draft_retry_step, next_draft_probe_at, pending_missing_for_backoff = self._resolve_draft_backoff_state(
+                            now=now,
+                            state=state,
+                            draft_retry_step=draft_retry_step,
+                            next_draft_probe_at=next_draft_probe_at,
+                        )
+                        self._log_poll_debug(
+                            job_id=job_id,
+                            poll_attempts=poll_attempts,
+                            use_proxy_poll=use_proxy_poll,
+                            state=state,
+                            draft_retry_step=draft_retry_step,
                         )
                         if bool(state.get("cf_challenge")):
                             use_proxy_poll = False
@@ -177,6 +264,23 @@ class SoraGenerationWorkflow:
                                 task_id=task_id,
                                 access_token=access_token,
                                 fetch_drafts=fetch_drafts,
+                                profile_id=profile_id,
+                                draft_retry_step=draft_retry_step,
+                            )
+                            draft_retry_step, next_draft_probe_at, pending_missing_for_backoff = (
+                                self._resolve_draft_backoff_state(
+                                    now=now,
+                                    state=state,
+                                    draft_retry_step=draft_retry_step,
+                                    next_draft_probe_at=next_draft_probe_at,
+                                )
+                            )
+                            self._log_poll_debug(
+                                job_id=job_id,
+                                poll_attempts=poll_attempts,
+                                use_proxy_poll=use_proxy_poll,
+                                state=state,
+                                draft_retry_step=draft_retry_step,
                             )
                         except Exception as poll_exc:  # noqa: BLE001
                             if self._is_page_closed_error(poll_exc) and reconnect_attempts < max_reconnect_attempts:
@@ -263,6 +367,7 @@ class SoraGenerationWorkflow:
         generation_id: Optional[str] = None
         last_progress = 0
         last_draft_fetch_at = 0.0
+        poll_attempts = 0
 
         async with async_playwright() as playwright:
             browser = await playwright.chromium.connect_over_cdp(ws_endpoint, timeout=20_000)
@@ -278,6 +383,9 @@ class SoraGenerationWorkflow:
 
                 started = time.perf_counter()
                 last_draft_fetch_at = started
+                draft_retry_step = 0
+                next_draft_probe_at = started
+                pending_missing_for_backoff = False
                 use_proxy_poll = True
                 reconnect_attempts = 0
                 max_reconnect_attempts = 3
@@ -297,11 +405,15 @@ class SoraGenerationWorkflow:
                     if (time.perf_counter() - started) >= self.generate_timeout_seconds:
                         raise self._service_error(f"任务监听超时（>{self.generate_timeout_seconds}s）")
 
+                    poll_attempts += 1
                     now = time.perf_counter()
-                    fetch_drafts = False
-                    if not generation_id and (now - last_draft_fetch_at) >= self.draft_manual_poll_interval_seconds:
-                        fetch_drafts = True
-                        last_draft_fetch_at = now
+                    fetch_drafts, last_draft_fetch_at = self._resolve_fetch_drafts(
+                        now=now,
+                        generation_id=generation_id,
+                        last_draft_fetch_at=last_draft_fetch_at,
+                        pending_missing_for_backoff=pending_missing_for_backoff,
+                        next_draft_probe_at=next_draft_probe_at,
+                    )
 
                     if use_proxy_poll:
                         state = await self._service._sora_publish_workflow.poll_sora_task_via_proxy_api(
@@ -309,6 +421,20 @@ class SoraGenerationWorkflow:
                             task_id=task_id,
                             access_token=access_token,
                             fetch_drafts=fetch_drafts,
+                            draft_retry_step=draft_retry_step,
+                        )
+                        draft_retry_step, next_draft_probe_at, pending_missing_for_backoff = self._resolve_draft_backoff_state(
+                            now=now,
+                            state=state,
+                            draft_retry_step=draft_retry_step,
+                            next_draft_probe_at=next_draft_probe_at,
+                        )
+                        self._log_poll_debug(
+                            job_id=job_id,
+                            poll_attempts=poll_attempts,
+                            use_proxy_poll=use_proxy_poll,
+                            state=state,
+                            draft_retry_step=draft_retry_step,
                         )
                         if bool(state.get("cf_challenge")):
                             use_proxy_poll = False
@@ -322,6 +448,23 @@ class SoraGenerationWorkflow:
                                 task_id=task_id,
                                 access_token=access_token,
                                 fetch_drafts=fetch_drafts,
+                                profile_id=profile_id,
+                                draft_retry_step=draft_retry_step,
+                            )
+                            draft_retry_step, next_draft_probe_at, pending_missing_for_backoff = (
+                                self._resolve_draft_backoff_state(
+                                    now=now,
+                                    state=state,
+                                    draft_retry_step=draft_retry_step,
+                                    next_draft_probe_at=next_draft_probe_at,
+                                )
+                            )
+                            self._log_poll_debug(
+                                job_id=job_id,
+                                poll_attempts=poll_attempts,
+                                use_proxy_poll=use_proxy_poll,
+                                state=state,
+                                draft_retry_step=draft_retry_step,
                             )
                         except Exception as poll_exc:  # noqa: BLE001
                             if self._is_page_closed_error(poll_exc) and reconnect_attempts < max_reconnect_attempts:
@@ -570,6 +713,9 @@ class SoraGenerationWorkflow:
 
                 started = time.perf_counter()
                 last_draft_fetch_at = started
+                draft_retry_step = 0
+                next_draft_probe_at = started
+                pending_missing_for_backoff = False
                 use_proxy_poll = True
                 # legacy 链路同样先走代理 API 轮询，命中 CF 再切页面轮询。
                 try:
@@ -596,17 +742,34 @@ class SoraGenerationWorkflow:
                         }
 
                     poll_attempts += 1
-                    fetch_drafts = False
                     now = time.perf_counter()
-                    if not generation_id and (now - last_draft_fetch_at) >= self.draft_manual_poll_interval_seconds:
-                        fetch_drafts = True
-                        last_draft_fetch_at = now
+                    fetch_drafts, last_draft_fetch_at = self._resolve_fetch_drafts(
+                        now=now,
+                        generation_id=generation_id,
+                        last_draft_fetch_at=last_draft_fetch_at,
+                        pending_missing_for_backoff=pending_missing_for_backoff,
+                        next_draft_probe_at=next_draft_probe_at,
+                    )
                     if use_proxy_poll:
                         state = await self._service._sora_publish_workflow.poll_sora_task_via_proxy_api(
                             profile_id=profile_id,
                             task_id=task_id,
                             access_token=access_token,
                             fetch_drafts=fetch_drafts,
+                            draft_retry_step=draft_retry_step,
+                        )
+                        draft_retry_step, next_draft_probe_at, pending_missing_for_backoff = self._resolve_draft_backoff_state(
+                            now=now,
+                            state=state,
+                            draft_retry_step=draft_retry_step,
+                            next_draft_probe_at=next_draft_probe_at,
+                        )
+                        self._log_poll_debug(
+                            job_id=job_id,
+                            poll_attempts=poll_attempts,
+                            use_proxy_poll=use_proxy_poll,
+                            state=state,
+                            draft_retry_step=draft_retry_step,
                         )
                         if bool(state.get("cf_challenge")):
                             use_proxy_poll = False
@@ -620,6 +783,23 @@ class SoraGenerationWorkflow:
                                 task_id=task_id,
                                 access_token=access_token,
                                 fetch_drafts=fetch_drafts,
+                                profile_id=profile_id,
+                                draft_retry_step=draft_retry_step,
+                            )
+                            draft_retry_step, next_draft_probe_at, pending_missing_for_backoff = (
+                                self._resolve_draft_backoff_state(
+                                    now=now,
+                                    state=state,
+                                    draft_retry_step=draft_retry_step,
+                                    next_draft_probe_at=next_draft_probe_at,
+                                )
+                            )
+                            self._log_poll_debug(
+                                job_id=job_id,
+                                poll_attempts=poll_attempts,
+                                use_proxy_poll=use_proxy_poll,
+                                state=state,
+                                draft_retry_step=draft_retry_step,
                             )
                         except Exception as poll_exc:  # noqa: BLE001
                             if self._is_page_closed_error(poll_exc) and reconnect_attempts < max_reconnect_attempts:
@@ -687,6 +867,7 @@ class SoraGenerationWorkflow:
                                     prompt=prompt,
                                     created_after=created_after,
                                     generation_id=generation_id,
+                                    profile_id=profile_id,
                                 )
                             if publish_url and self._service._sora_publish_workflow.is_valid_publish_url(publish_url):
                                 publish_post_id = self._service._sora_job_runner.extract_share_id_from_url(str(publish_url))  # noqa: SLF001
