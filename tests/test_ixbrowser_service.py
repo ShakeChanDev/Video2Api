@@ -1886,6 +1886,11 @@ async def test_publish_from_page_prefers_existing_post_before_create(monkeypatch
         called["publish"] = True
         return {}
 
+    refreshed = []
+
+    async def _fake_refresh_nf_check(_page, *, profile_id):
+        refreshed.append(profile_id)
+
     monkeypatch.setattr(publish_workflow, "_watch_publish_url", lambda *_args, **_kwargs: asyncio.Future(), raising=True)
     monkeypatch.setattr(publish_workflow, "_clear_caption_input", _fake_clear_caption, raising=True)
     monkeypatch.setattr(
@@ -1900,16 +1905,24 @@ async def test_publish_from_page_prefers_existing_post_before_create(monkeypatch
         _fake_publish_with_backoff,
         raising=True,
     )
+    monkeypatch.setattr(
+        publish_workflow,
+        "_refresh_nf_check_after_publish",
+        _fake_refresh_nf_check,
+        raising=True,
+    )
 
     result = await publish_workflow._publish_sora_from_page(  # noqa: SLF001
         page=page,
         task_id="task_x",
         prompt="prompt_x",
         generation_id="gen_x",
+        profile_id=77,
     )
 
     assert result == "https://sora.chatgpt.com/p/s_12345678"
     assert called["publish"] is False
+    assert refreshed == [77]
 
 
 @pytest.mark.asyncio

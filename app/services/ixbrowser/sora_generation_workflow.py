@@ -687,6 +687,7 @@ class SoraGenerationWorkflow:
                                     prompt=prompt,
                                     created_after=created_after,
                                     generation_id=generation_id,
+                                    profile_id=profile_id,
                                 )
                             if publish_url and self._service._sora_publish_workflow.is_valid_publish_url(publish_url):
                                 publish_post_id = self._service._sora_job_runner.extract_share_id_from_url(str(publish_url))  # noqa: SLF001

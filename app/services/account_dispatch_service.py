@@ -59,8 +59,10 @@ class AccountDispatchService:
             return []
 
         now = datetime.now()
+        now_ts = now.timestamp()
         lookback_since = now - timedelta(hours=int(settings.lookback_hours))
         lookback_since_str = _fmt_dt(lookback_since) or "1970-01-01 00:00:00"
+        cap = max(int(settings.quota_cap), 1)
 
         scan_map = self._load_latest_scan_map(safe_group)
         recent_jobs = sqlite_db.list_sora_jobs_since(safe_group, lookback_since_str)
@@ -89,8 +91,33 @@ class AccountDispatchService:
             scan_row = scan_map.get(profile_id) or {}
             quota_remaining = scan_row.get("quota_remaining_count")
             quota_total = scan_row.get("quota_total_count")
+            quota_reset_at = scan_row.get("quota_reset_at")
             account = scan_row.get("account")
             account_plan = str(scan_row.get("account_plan") or "").strip().lower()
+
+            # 配额按滚动 24 小时重置：若已过 reset_at 但没有更新最新次数，
+            # 用 quota_cap 作为“保底次数”。若真实次数 > cap，则保留真实次数（只向上保底，不向下截断）。
+            if isinstance(quota_reset_at, str) and quota_reset_at.strip():
+                reset_dt = None
+                reset_text = quota_reset_at.strip()
+                try:
+                    reset_dt = datetime.fromisoformat(reset_text.replace("Z", "+00:00"))
+                except Exception:
+                    reset_dt = _parse_dt(reset_text)
+                if reset_dt is not None:
+                    try:
+                        reset_ts = reset_dt.timestamp()
+                    except Exception:
+                        reset_ts = None
+                    if reset_ts is not None and reset_ts <= now_ts:
+                        if isinstance(quota_remaining, int):
+                            quota_remaining = max(int(quota_remaining), cap)
+                        else:
+                            quota_remaining = cap
+                        if isinstance(quota_total, int):
+                            quota_total = max(int(quota_total), cap, int(quota_remaining))
+                        else:
+                            quota_total = max(cap, int(quota_remaining))
 
             quantity_score = self._calc_quantity_score(quota_remaining=quota_remaining, settings=settings)
             quality_score, quality_meta = self._calc_quality_score(
@@ -289,7 +316,8 @@ class AccountDispatchService:
         )
         if not run_row:
             return {}
-        rows = sqlite_db.get_ixbrowser_scan_results_by_run(int(run_row["id"]))
+        base_run_id = int(run_row["id"])
+        rows = sqlite_db.get_ixbrowser_scan_results_by_run(base_run_id)
         result: Dict[int, dict] = {}
         for row in rows:
             try:
@@ -299,6 +327,31 @@ class AccountDispatchService:
             if profile_id <= 0:
                 continue
             result[profile_id] = row
+
+        # 叠加“实时使用”的配额更新（只覆盖 quota 字段，不覆盖账号/套餐字段）
+        realtime_run = sqlite_db.get_ixbrowser_latest_scan_run_by_operator(group_title, "实时使用")
+        if realtime_run and int(realtime_run.get("id") or 0) and int(realtime_run.get("id") or 0) != base_run_id:
+            realtime_rows = sqlite_db.get_ixbrowser_scan_results_by_run(int(realtime_run["id"]))
+            for row in realtime_rows:
+                try:
+                    profile_id = int(row.get("profile_id") or 0)
+                except Exception:
+                    continue
+                if profile_id <= 0:
+                    continue
+                base_row = result.get(profile_id)
+                if not isinstance(base_row, dict):
+                    result[profile_id] = row
+                    continue
+
+                base_scanned_at = _parse_dt(base_row.get("scanned_at"))
+                realtime_scanned_at = _parse_dt(row.get("scanned_at"))
+                if base_scanned_at and realtime_scanned_at and realtime_scanned_at < base_scanned_at:
+                    continue
+
+                for key in ("quota_remaining_count", "quota_total_count", "quota_reset_at", "quota_source"):
+                    if row.get(key) is not None:
+                        base_row[key] = row.get(key)
         return result
 
     def _calc_quantity_score(self, *, quota_remaining: Optional[int], settings: AccountDispatchSettings) -> float:
