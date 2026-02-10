@@ -1734,6 +1734,39 @@ class SQLiteDB:
             result[profile_id] = int(row["cnt"] or 0)
         return result
 
+    def count_sora_pending_submits_by_profile(self, group_title: str) -> Dict[int, int]:
+        """
+        统计每个账号（profile_id）当前“已入队但尚未提交到 Sora”的任务数，用于 rolling 24h 配额的预约扣减。
+
+        判定口径：
+        - group_title 匹配
+        - status in ('queued','running')
+        - task_id 为空（NULL 或空字符串）
+        """
+        conn = self._get_conn()
+        cursor = conn.cursor()
+        cursor.execute(
+            '''
+            SELECT profile_id, COUNT(*) AS cnt
+            FROM sora_jobs
+            WHERE group_title = ?
+              AND status IN ('queued', 'running')
+              AND (task_id IS NULL OR TRIM(task_id) = '')
+            GROUP BY profile_id
+            ''',
+            (str(group_title or ""),),
+        )
+        rows = cursor.fetchall()
+        conn.close()
+        result: Dict[int, int] = {}
+        for row in rows:
+            try:
+                profile_id = int(row["profile_id"])
+            except Exception:
+                continue
+            result[profile_id] = int(row["cnt"] or 0)
+        return result
+
     def try_acquire_scheduler_lock(self, lock_key: str, owner: str, ttl_seconds: int = 120) -> bool:
         safe_key = str(lock_key or "").strip()
         safe_owner = str(owner or "unknown").strip() or "unknown"

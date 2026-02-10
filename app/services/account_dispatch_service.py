@@ -68,6 +68,7 @@ class AccountDispatchService:
         recent_jobs = sqlite_db.list_sora_jobs_since(safe_group, lookback_since_str)
         fail_events = sqlite_db.list_sora_fail_events_since(safe_group, lookback_since_str)
         active_jobs = sqlite_db.count_sora_active_jobs_by_profile(safe_group)
+        pending_submits = sqlite_db.count_sora_pending_submits_by_profile(safe_group)
 
         success_count_map: Dict[int, int] = defaultdict(int)
         for row in recent_jobs:
@@ -95,11 +96,14 @@ class AccountDispatchService:
             account = scan_row.get("account")
             account_plan = str(scan_row.get("account_plan") or "").strip().lower()
 
-            # 配额按滚动 24 小时重置：若已过 reset_at 但没有更新最新次数，
-            # 用 quota_cap 作为“保底次数”。若真实次数 > cap，则保留真实次数（只向上保底，不向下截断）。
-            if isinstance(quota_reset_at, str) and quota_reset_at.strip():
+            # 配额按滚动 24 小时重置：
+            # - quota_reset_at 表示“下一次释放的最早时间”，不是“每日清零”
+            # - 若 reset_at 已过，但本地仍显示 remaining<=0（扫描/缓存滞后），仅保底到 1 次，避免误判“已回满”。
+            reset_text = quota_reset_at.strip() if isinstance(quota_reset_at, str) and quota_reset_at.strip() else None
+            reset_ts: Optional[float] = None
+            time_to_reset_minutes: Optional[int] = None
+            if reset_text:
                 reset_dt = None
-                reset_text = quota_reset_at.strip()
                 try:
                     reset_dt = datetime.fromisoformat(reset_text.replace("Z", "+00:00"))
                 except Exception:
@@ -109,17 +113,20 @@ class AccountDispatchService:
                         reset_ts = reset_dt.timestamp()
                     except Exception:
                         reset_ts = None
-                    if reset_ts is not None and reset_ts <= now_ts:
-                        if isinstance(quota_remaining, int):
-                            quota_remaining = max(int(quota_remaining), cap)
-                        else:
-                            quota_remaining = cap
-                        if isinstance(quota_total, int):
-                            quota_total = max(int(quota_total), cap, int(quota_remaining))
-                        else:
-                            quota_total = max(cap, int(quota_remaining))
+            if reset_ts is not None:
+                seconds = max(reset_ts - now_ts, 0.0)
+                time_to_reset_minutes = int((seconds + 59) // 60)
+                if reset_ts <= now_ts and isinstance(quota_remaining, int) and int(quota_remaining) <= 0:
+                    quota_remaining = 1
 
-            quantity_score = self._calc_quantity_score(quota_remaining=quota_remaining, settings=settings)
+            reserved_pending_submit = int(pending_submits.get(profile_id, 0) or 0)
+            effective_remaining: Optional[int] = None
+            raw_remaining: Optional[int] = None
+            if isinstance(quota_remaining, int):
+                raw_remaining = int(quota_remaining)
+                effective_remaining = max(raw_remaining - max(reserved_pending_submit, 0), 0)
+
+            quantity_score = self._calc_quantity_score(quota_remaining=effective_remaining, settings=settings)
             quality_score, quality_meta = self._calc_quality_score(
                 events=fail_events_map.get(profile_id, []),
                 success_count=success_count_map.get(profile_id, 0),
@@ -135,18 +142,35 @@ class AccountDispatchService:
                 - (active_count * float(settings.active_job_penalty))
             )
 
-            blocked_by_quota = (
-                isinstance(quota_remaining, int)
-                and quota_remaining < int(settings.min_quota_remaining)
-            )
+            min_remaining = int(settings.min_quota_remaining)
+            grace_minutes = max(int(getattr(settings, "quota_reset_grace_minutes", 120) or 0), 0)
+            low_quota_allowed = False
+            blocked_by_quota = False
+            if effective_remaining is not None:
+                if effective_remaining <= 0:
+                    blocked_by_quota = True
+                elif effective_remaining < min_remaining:
+                    if time_to_reset_minutes is not None and time_to_reset_minutes <= grace_minutes:
+                        low_quota_allowed = True
+                    else:
+                        blocked_by_quota = True
             cooldown_until = quality_meta["cooldown_until"]
             blocked_by_cooldown = bool(cooldown_until and cooldown_until > now)
             selectable = bool(settings.enabled) and not blocked_by_quota and not blocked_by_cooldown
 
             reasons: List[str] = [
-                f"数量分 {quantity_score:.1f}",
+                (
+                    f"数量分 {quantity_score:.1f}"
+                    if effective_remaining is None
+                    else (
+                        f"数量分 {quantity_score:.1f}"
+                        f"（待提交占用：{reserved_pending_submit} -> 可用：{effective_remaining}，原始：{raw_remaining}）"
+                    )
+                ),
                 f"质量分 {quality_score:.1f}",
             ]
+            if reset_text and time_to_reset_minutes is not None:
+                reasons.append(f"下次释放：{reset_text}（约 {time_to_reset_minutes} 分钟）")
             if plus_bonus > 0:
                 reasons.append(f"Plus 加分 +{plus_bonus:.1f}")
             if active_count > 0:
@@ -154,12 +178,25 @@ class AccountDispatchService:
             if not settings.enabled:
                 reasons.append("自动分配已关闭")
             if blocked_by_quota:
-                reasons.append(
-                    f"配额不足：{quota_remaining} < {int(settings.min_quota_remaining)}"
-                )
+                if effective_remaining is not None:
+                    if effective_remaining <= 0:
+                        reasons.append("配额不足：可用次数为 0（已被队列占用或真实已用尽）")
+                    else:
+                        if time_to_reset_minutes is None:
+                            reasons.append(
+                                f"配额不足：可用 {effective_remaining} < {min_remaining}（且缺少下次释放时间）"
+                            )
+                        else:
+                            reasons.append(
+                                f"配额不足：可用 {effective_remaining} < {min_remaining}，距离释放 {time_to_reset_minutes}min > {grace_minutes}min"
+                            )
             if blocked_by_cooldown:
                 reasons.append(
                     f"冷却中至 {_fmt_dt(cooldown_until)}"
+                )
+            if low_quota_allowed and effective_remaining is not None and effective_remaining > 0:
+                reasons.append(
+                    f"低配额放行：可用 {effective_remaining} < {min_remaining}，但距离释放 {time_to_reset_minutes}min <= {grace_minutes}min"
                 )
 
             weights.append(
@@ -176,7 +213,7 @@ class AccountDispatchService:
                     proxy_local_id=getattr(window, "proxy_local_id", None),
                     selectable=selectable,
                     cooldown_until=_fmt_dt(cooldown_until),
-                    quota_remaining_count=quota_remaining if isinstance(quota_remaining, int) else None,
+                    quota_remaining_count=effective_remaining if effective_remaining is not None else None,
                     quota_total_count=quota_total if isinstance(quota_total, int) else None,
                     score_total=round(total_score, 2),
                     score_quantity=round(quantity_score, 2),
@@ -229,12 +266,51 @@ class AccountDispatchService:
         if selectable:
             return selectable[0]
 
+        earliest_reset_detail = ""
+        try:
+            scan_map = self._load_latest_scan_map(str(group_title or "Sora").strip() or "Sora")
+            considered_ids = {int(item.profile_id) for item in weights}
+            soonest_ts: Optional[float] = None
+            now_ts = datetime.now().timestamp()
+            for pid, row in (scan_map or {}).items():
+                try:
+                    pid_int = int(pid)
+                except Exception:
+                    continue
+                if pid_int not in considered_ids:
+                    continue
+                reset_at = row.get("quota_reset_at")
+                if not isinstance(reset_at, str) or not reset_at.strip():
+                    continue
+                reset_text = reset_at.strip()
+                reset_dt = None
+                try:
+                    reset_dt = datetime.fromisoformat(reset_text.replace("Z", "+00:00"))
+                except Exception:
+                    reset_dt = _parse_dt(reset_text)
+                if reset_dt is None:
+                    continue
+                try:
+                    reset_ts = float(reset_dt.timestamp())
+                except Exception:
+                    continue
+                if reset_ts <= now_ts:
+                    continue
+                if soonest_ts is None or reset_ts < soonest_ts:
+                    soonest_ts = reset_ts
+            if soonest_ts is not None:
+                minutes = int(((soonest_ts - now_ts) + 59) // 60)
+                soonest_dt = datetime.fromtimestamp(soonest_ts)
+                earliest_reset_detail = f"；最早预计在 {_fmt_dt(soonest_dt)} 释放（约 {minutes} 分钟后）"
+        except Exception:
+            earliest_reset_detail = ""
+
         fragments: List[str] = []
         for item in weights[:5]:
             reason_text = "；".join(item.reasons[:3]) if item.reasons else "不可选"
             fragments.append(f"profile={item.profile_id}({reason_text})")
         detail = " | ".join(fragments)
-        raise AccountDispatchNoAvailableError(f"自动分配失败：当前无可用账号。{detail}")
+        raise AccountDispatchNoAvailableError(f"自动分配失败：当前无可用账号{earliest_reset_detail}。{detail}")
 
     def _load_settings(self) -> AccountDispatchSettings:
         # Lazy import to avoid circular dependency at module import time.

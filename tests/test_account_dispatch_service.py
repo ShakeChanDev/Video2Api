@@ -66,6 +66,10 @@ async def test_account_weights_ignore_rules_do_not_penalize(monkeypatch):
         "app.services.account_dispatch_service.sqlite_db.count_sora_active_jobs_by_profile",
         lambda group_title: {},
     )
+    monkeypatch.setattr(
+        "app.services.account_dispatch_service.sqlite_db.count_sora_pending_submits_by_profile",
+        lambda group_title: {},
+    )
 
     weights = await service.list_account_weights(group_title="Sora", limit=10)
     by_profile = {item.profile_id: item for item in weights}
@@ -178,8 +182,85 @@ async def test_account_weights_use_quota_cap_when_reset_passed(monkeypatch):
     monkeypatch.setattr("app.services.account_dispatch_service.sqlite_db.list_sora_jobs_since", lambda *_args, **_kwargs: [])
     monkeypatch.setattr("app.services.account_dispatch_service.sqlite_db.list_sora_fail_events_since", lambda *_args, **_kwargs: [])
     monkeypatch.setattr("app.services.account_dispatch_service.sqlite_db.count_sora_active_jobs_by_profile", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr("app.services.account_dispatch_service.sqlite_db.count_sora_pending_submits_by_profile", lambda *_args, **_kwargs: {})
 
     weights = await service.list_account_weights(group_title="Sora", limit=10)
     assert weights
-    assert weights[0].quota_remaining_count == 30
+    assert weights[0].quota_remaining_count == 1
     assert weights[0].selectable is True
+
+
+@pytest.mark.asyncio
+async def test_account_weights_reservation_deducts_effective_remaining(monkeypatch):
+    service = AccountDispatchService()
+    settings = AccountDispatchSettings(quota_cap=30, min_quota_remaining=1)
+    monkeypatch.setattr(service, "_load_settings", lambda: settings)
+
+    async def _fake_list_windows(_group_title):
+        return [
+            IXBrowserWindow(profile_id=1, name="win-1"),
+            IXBrowserWindow(profile_id=2, name="win-2"),
+        ]
+
+    monkeypatch.setattr(service, "_list_group_windows", _fake_list_windows)
+    monkeypatch.setattr(
+        service,
+        "_load_latest_scan_map",
+        lambda _group_title: {
+            1: {"quota_remaining_count": 2, "quota_total_count": 30},
+            2: {"quota_remaining_count": 2, "quota_total_count": 30},
+        },
+    )
+    monkeypatch.setattr("app.services.account_dispatch_service.sqlite_db.list_sora_jobs_since", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr("app.services.account_dispatch_service.sqlite_db.list_sora_fail_events_since", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr("app.services.account_dispatch_service.sqlite_db.count_sora_active_jobs_by_profile", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(
+        "app.services.account_dispatch_service.sqlite_db.count_sora_pending_submits_by_profile",
+        lambda *_args, **_kwargs: {1: 2, 2: 0},
+    )
+
+    weights = await service.list_account_weights(group_title="Sora", limit=10)
+    by_profile = {item.profile_id: item for item in weights}
+    assert by_profile[1].quota_remaining_count == 0
+    assert by_profile[1].selectable is False
+    assert by_profile[2].quota_remaining_count == 2
+    assert by_profile[2].selectable is True
+
+
+@pytest.mark.asyncio
+async def test_account_weights_low_quota_blocked_when_reset_far(monkeypatch):
+    service = AccountDispatchService()
+    settings = AccountDispatchSettings(
+        quota_cap=30,
+        min_quota_remaining=2,
+        quota_reset_grace_minutes=120,
+    )
+    monkeypatch.setattr(service, "_load_settings", lambda: settings)
+
+    now = datetime.now()
+    reset_at_far = (now + timedelta(hours=10)).isoformat()
+
+    async def _fake_list_windows(_group_title):
+        return [IXBrowserWindow(profile_id=1, name="win-1")]
+
+    monkeypatch.setattr(service, "_list_group_windows", _fake_list_windows)
+    monkeypatch.setattr(
+        service,
+        "_load_latest_scan_map",
+        lambda _group_title: {
+            1: {
+                "quota_remaining_count": 1,
+                "quota_total_count": 30,
+                "quota_reset_at": reset_at_far,
+            }
+        },
+    )
+    monkeypatch.setattr("app.services.account_dispatch_service.sqlite_db.list_sora_jobs_since", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr("app.services.account_dispatch_service.sqlite_db.list_sora_fail_events_since", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr("app.services.account_dispatch_service.sqlite_db.count_sora_active_jobs_by_profile", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr("app.services.account_dispatch_service.sqlite_db.count_sora_pending_submits_by_profile", lambda *_args, **_kwargs: {})
+
+    weights = await service.list_account_weights(group_title="Sora", limit=10)
+    assert weights
+    assert weights[0].quota_remaining_count == 1
+    assert weights[0].selectable is False

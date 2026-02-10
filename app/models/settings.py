@@ -119,6 +119,7 @@ class AccountDispatchSettings(BaseModel):
     quality_weight: float = Field(0.55, ge=0, le=1)
     quota_cap: int = Field(30, ge=1, le=1000)
     min_quota_remaining: int = Field(2, ge=0, le=1000)
+    quota_reset_grace_minutes: int = Field(120, ge=0, le=1440)
     unknown_quota_score: float = Field(40, ge=0, le=100)
     default_quality_score: float = Field(70, ge=0, le=100)
     active_job_penalty: float = Field(8, ge=0, le=100)

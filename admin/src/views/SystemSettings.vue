@@ -133,6 +133,17 @@
                   <el-input-number v-model="systemForm.sora.account_dispatch.min_quota_remaining" :min="0" :max="1000" />
                 </el-form-item>
 
+                <el-form-item label="低配额放行（分钟）">
+                  <div class="field-row">
+                    <el-input-number
+                      v-model="systemForm.sora.account_dispatch.quota_reset_grace_minutes"
+                      :min="0"
+                      :max="1440"
+                    />
+                    <div class="inline-tip">滚动 24 小时配额：当可用次数低于最低剩余次数时，仅在距离下次释放不超过该窗口才允许使用。</div>
+                  </div>
+                </el-form-item>
+
                 <el-form-item label="未知配额分">
                   <el-input-number v-model="systemForm.sora.account_dispatch.unknown_quota_score" :min="0" :max="100" :step="1" />
                 </el-form-item>
@@ -513,6 +524,7 @@ const defaultSystemForm = {
       quality_weight: 0.55,
       quota_cap: 30,
       min_quota_remaining: 2,
+      quota_reset_grace_minutes: 120,
       unknown_quota_score: 40,
       default_quality_score: 70,
       active_job_penalty: 8,
