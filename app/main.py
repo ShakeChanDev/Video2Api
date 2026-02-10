@@ -1,6 +1,8 @@
 """Video2Api FastAPI 入口"""
+import asyncio
 import logging
 import os
+import sys
 from uuid import uuid4
 
 from fastapi import FastAPI, Request, Response
@@ -18,6 +20,10 @@ from app.services.account_recovery_scheduler import account_recovery_scheduler
 from app.services.scan_scheduler import scan_scheduler
 from app.services.system_settings import apply_runtime_settings, load_scan_scheduler_settings, load_system_settings
 from app.services.worker_runner import worker_runner
+
+# Windows 平台下，Playwright 需要使用 ProactorEventLoopPolicy 才能正常启动子进程
+if sys.platform == "win32":
+    asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
 
 setup_logging()
 logger = logging.getLogger(__name__)
@@ -42,6 +48,9 @@ app.add_middleware(
 @app.on_event("startup")
 async def startup_background_services() -> None:
     try:
+        if sys.platform == "win32":
+            loop_type = type(asyncio.get_running_loop()).__name__
+            logger.info("当前事件循环: %s", loop_type)
         recovered_jobs = sqlite_db.fail_running_ixbrowser_silent_refresh_jobs("服务重启中断")
         if recovered_jobs > 0:
             sqlite_db.create_event_log(
