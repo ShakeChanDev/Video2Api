@@ -1,31 +1,40 @@
 import axios from 'axios'
 
-const api = axios.create({
-  baseURL: '/api/v1',
-  timeout: 30000
-})
-
-api.interceptors.request.use((config) => {
-  const token = localStorage.getItem('token')
-  if (token) {
-    config.headers.Authorization = `Bearer ${token}`
-  }
-  return config
-})
-
-api.interceptors.response.use(
-  (response) => response,
-  (error) => {
-    if (error.response?.status === 401) {
-      localStorage.removeItem('token')
-      localStorage.removeItem('user')
-      if (window.location.pathname !== '/login') {
-        window.location.href = '/login'
-      }
+const bindAuthInterceptors = (client) => {
+  client.interceptors.request.use((config) => {
+    const token = localStorage.getItem('token')
+    if (token) {
+      config.headers.Authorization = `Bearer ${token}`
     }
-    return Promise.reject(error)
-  }
-)
+    return config
+  })
+
+  client.interceptors.response.use(
+    (response) => response,
+    (error) => {
+      if (error.response?.status === 401) {
+        localStorage.removeItem('token')
+        localStorage.removeItem('user')
+        if (window.location.pathname !== '/login') {
+          window.location.href = '/login'
+        }
+      }
+      return Promise.reject(error)
+    }
+  )
+}
+
+const createApiClient = (baseURL) => {
+  const client = axios.create({
+    baseURL,
+    timeout: 30000
+  })
+  bindAuthInterceptors(client)
+  return client
+}
+
+const api = createApiClient('/api/v1')
+const apiV2 = createApiClient('/api/v2')
 
 export const login = async (username, password) => {
   const formData = new FormData()
@@ -141,14 +150,14 @@ export const createIxBrowserSoraGenerateJob = async (data) => {
 }
 
 export const createSoraJob = async (data) => {
-  const response = await api.post('/api/v2/sora/jobs', data, {
+  const response = await apiV2.post('/sora/jobs', data, {
     timeout: 60000
   })
   return response.data
 }
 
 export const listSoraJobs = async (params) => {
-  const response = await api.get('/api/v2/sora/jobs', { params })
+  const response = await apiV2.get('/sora/jobs', { params })
   return response.data
 }
 
@@ -200,12 +209,12 @@ export const retrySoraJobWatermark = async (jobId) => {
 }
 
 export const parseSoraWatermarkLink = async (data) => {
-  const response = await api.post('/api/v2/sora/watermark/parse', data)
+  const response = await apiV2.post('/sora/watermark/parse', data)
   return response.data
 }
 
 export const getSoraAccountWeights = async (groupTitle = 'Sora', limit = 100) => {
-  const response = await api.get('/api/v2/sora/accounts/weights', {
+  const response = await apiV2.get('/sora/accounts/weights', {
     params: { group_title: groupTitle, limit }
   })
   return response.data
