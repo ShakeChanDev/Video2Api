@@ -24,7 +24,7 @@ const router = createRouter({
     { path: '/users', component: UserManagement, meta: { title: '用户管理' } },
     { path: '/settings', component: SystemSettings, meta: { title: '系统设置' } },
     { path: '/logs', component: SystemLogs, meta: { title: '日志中心' } },
-    { path: '/sora-requests', component: SoraRequestDashboard, meta: { title: 'Sora 请求看板' } }
+    { path: '/sora-requests', component: SoraRequestDashboard, meta: { title: 'ChatGPT 外呼请求看板' } }
   ]
 })
 

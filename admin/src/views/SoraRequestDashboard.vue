@@ -3,8 +3,8 @@
     <section class="command-bar" v-loading="loading">
       <div class="command-left">
         <div class="brand">
-          <div class="title">Sora 请求看板</div>
-          <div class="subtitle">趋势 · 归因 · 质量 · 明细</div>
+          <div class="title">ChatGPT 外呼请求看板</div>
+          <div class="subtitle">服务器直连 · 趋势 · 归因 · 质量</div>
         </div>
         <div class="filters">
           <el-select v-model="filters.window" class="w-120" @change="handleFilterChange">
@@ -22,6 +22,27 @@
           <el-select v-model="filters.endpoint_limit" class="w-120" @change="handleFilterChange">
             <el-option :label="`Top ${item}`" :value="item" v-for="item in [5, 10, 15, 20, 30]" :key="`top-${item}`" />
           </el-select>
+          <el-select v-model="filters.transport" class="w-120" @change="handleFilterChange">
+            <el-option label="全部通道" value="all" />
+            <el-option label="httpx" value="httpx" />
+            <el-option label="curl-cffi" value="curl_cffi" />
+          </el-select>
+          <el-input
+            v-model="filters.host"
+            class="w-220"
+            clearable
+            placeholder="目标域名（如 sora.chatgpt.com）"
+            @keyup.enter="handleFilterChange"
+            @clear="handleFilterChange"
+          />
+          <el-input
+            v-model="filters.profile_id"
+            class="w-180"
+            clearable
+            placeholder="profile_id"
+            @keyup.enter="handleFilterChange"
+            @clear="handleFilterChange"
+          />
           <el-date-picker
             v-model="timeRange"
             type="datetimerange"
@@ -33,14 +54,6 @@
         </div>
       </div>
       <div class="command-right">
-        <div class="switch-row">
-          <span class="switch-label">请求量含 stream</span>
-          <el-switch v-model="filters.include_stream_volume" @change="handleFilterChange" />
-        </div>
-        <div class="switch-row">
-          <span class="switch-label">延迟含 stream</span>
-          <el-switch v-model="filters.include_stream_latency" @change="handleFilterChange" />
-        </div>
         <div class="switch-row">
           <span class="switch-label">自动刷新(15s)</span>
           <el-switch v-model="autoRefreshEnabled" @change="handleAutoRefreshToggle" />
@@ -65,6 +78,10 @@
         <span class="metric-label">慢请求率</span>
         <strong class="metric-value">{{ formatPercent(kpi.slow_rate) }}</strong>
       </article>
+      <article class="metric-card">
+        <span class="metric-label">CF 命中率</span>
+        <strong class="metric-value">{{ formatPercent(kpi.cf_rate) }}</strong>
+      </article>
       <article class="metric-card metric-latency">
         <span class="metric-label">P95 延迟</span>
         <strong class="metric-value">{{ formatDuration(kpi.p95_ms) }}</strong>
@@ -77,7 +94,7 @@
 
     <section class="drill-row">
       <el-tag v-if="selectedEndpoint" type="warning" closable @close="clearEndpointDrill">
-        端点钻取：{{ selectedEndpoint }}
+        端点钻取：{{ selectedEndpointLabel }}
       </el-tag>
       <el-tag v-if="selectedBucket" type="info" closable @close="clearBucketDrill">
         时间桶：{{ selectedBucket }}
@@ -140,6 +157,16 @@
         </template>
         <div ref="statusChartEl" class="chart-canvas chart-sm" />
       </el-card>
+
+      <el-card class="chart-card">
+        <template #header>
+          <div class="table-head stack">
+            <span>Host 分布</span>
+            <span class="table-hint">chatgpt 主域外呼占比</span>
+          </div>
+        </template>
+        <div ref="hostChartEl" class="chart-canvas chart-sm" />
+      </el-card>
     </section>
 
     <el-card class="table-card" v-loading="loading">
@@ -151,7 +178,10 @@
       </template>
       <el-table :data="filteredSamples" class="card-table" empty-text="暂无样本">
         <el-table-column prop="created_at" label="时间" width="170" />
+        <el-table-column prop="host" label="Host" min-width="180" show-overflow-tooltip />
         <el-table-column prop="path" label="路径" min-width="280" show-overflow-tooltip />
+        <el-table-column prop="transport" label="通道" width="110" />
+        <el-table-column prop="profile_id" label="profile_id" width="110" />
         <el-table-column prop="status_code" label="状态码" width="90" />
         <el-table-column prop="duration_ms" label="耗时" width="120">
           <template #default="{ row }">
@@ -183,7 +213,7 @@ const router = useRouter()
 const loading = ref(false)
 const autoRefreshEnabled = ref(true)
 const timeRange = ref([])
-const selectedEndpoint = ref('')
+const selectedEndpoint = ref(null)
 const selectedBucket = ref('')
 const selectedHeatmapCells = ref([])
 
@@ -191,8 +221,9 @@ const filters = ref({
   window: '24h',
   bucket: 'auto',
   endpoint_limit: 10,
-  include_stream_volume: true,
-  include_stream_latency: false,
+  transport: 'all',
+  host: '',
+  profile_id: '',
   sample_limit: 30
 })
 
@@ -204,7 +235,11 @@ const createEmptyDashboard = () => ({
     bucket_seconds: 300,
     scope_rule: '',
     slow_threshold_ms_current: 2000,
-    refreshed_at: ''
+    refreshed_at: '',
+    path_filter: null,
+    host_filter: null,
+    transport_filter: 'all',
+    profile_id_filter: null
   },
   kpi: {
     total_count: 0,
@@ -212,12 +247,16 @@ const createEmptyDashboard = () => ({
     failure_rate: 0,
     slow_count: 0,
     slow_rate: 0,
+    cf_count: 0,
+    cf_rate: 0,
     p95_ms: 0,
     avg_rpm: 0
   },
   series: [],
   endpoint_top: [],
   status_code_dist: [],
+  host_dist: [],
+  transport_dist: [],
   latency_histogram: [],
   heatmap_hourly: [],
   recent_samples: []
@@ -225,6 +264,13 @@ const createEmptyDashboard = () => ({
 
 const dashboard = ref(createEmptyDashboard())
 const kpi = computed(() => dashboard.value.kpi || createEmptyDashboard().kpi)
+const selectedEndpointLabel = computed(() => {
+  if (!selectedEndpoint.value) return ''
+  const host = String(selectedEndpoint.value.host || '')
+  const path = String(selectedEndpoint.value.path || '')
+  if (!host) return path || '-'
+  return `${host}${path || ''}`
+})
 const filteredSeries = computed(() => {
   const rows = Array.isArray(dashboard.value.series) ? dashboard.value.series : []
   if (!selectedHeatmapCells.value.length) return rows
@@ -245,7 +291,12 @@ const filteredSamples = computed(() => {
   const selectedSet = new Set(selectedHeatmapCells.value)
   return rows.filter((item) => {
     if (selectedBucket.value && String(item.bucket_at || '') !== selectedBucket.value) return false
-    if (selectedEndpoint.value && String(item.path || '') !== selectedEndpoint.value) return false
+    if (selectedEndpoint.value) {
+      const endpointPath = String(selectedEndpoint.value.path || '')
+      const endpointHost = String(selectedEndpoint.value.host || '')
+      if (endpointPath && String(item.path || '') !== endpointPath) return false
+      if (endpointHost && String(item.host || '') !== endpointHost) return false
+    }
     if (selectedSet.size > 0) {
       const dt = new Date(String(item.created_at || '').replace(' ', 'T'))
       if (!Number.isFinite(dt.getTime())) return false
@@ -262,11 +313,13 @@ const endpointChartEl = ref(null)
 const heatmapChartEl = ref(null)
 const latencyChartEl = ref(null)
 const statusChartEl = ref(null)
+const hostChartEl = ref(null)
 let trendChart = null
 let endpointChart = null
 let heatmapChart = null
 let latencyChart = null
 let statusChart = null
+let hostChart = null
 let debounceTimer = null
 let autoRefreshTimer = null
 
@@ -286,6 +339,14 @@ const shortPath = (value, maxLen = 42) => {
   return `${text.slice(0, maxLen)}...`
 }
 
+const buildEndpointText = (item) => {
+  if (!item) return '-'
+  if (String(item.path || '') === '__others__') return '其他端点'
+  const host = String(item.host || '')
+  const path = String(item.path || '')
+  return host ? `${host}${path}` : path || '-'
+}
+
 const formatBucketAxisLabel = (value) => {
   const text = String(value || '')
   if (!text) return '-'
@@ -301,6 +362,8 @@ const normalizeDashboard = (payload) => ({
   series: Array.isArray(payload?.series) ? payload.series : [],
   endpoint_top: Array.isArray(payload?.endpoint_top) ? payload.endpoint_top : [],
   status_code_dist: Array.isArray(payload?.status_code_dist) ? payload.status_code_dist : [],
+  host_dist: Array.isArray(payload?.host_dist) ? payload.host_dist : [],
+  transport_dist: Array.isArray(payload?.transport_dist) ? payload.transport_dist : [],
   latency_histogram: Array.isArray(payload?.latency_histogram) ? payload.latency_histogram : [],
   heatmap_hourly: Array.isArray(payload?.heatmap_hourly) ? payload.heatmap_hourly : [],
   recent_samples: Array.isArray(payload?.recent_samples) ? payload.recent_samples : []
@@ -311,12 +374,22 @@ const buildParams = () => {
     window: filters.value.window,
     bucket: filters.value.bucket,
     endpoint_limit: filters.value.endpoint_limit,
-    include_stream_volume: !!filters.value.include_stream_volume,
-    include_stream_latency: !!filters.value.include_stream_latency,
+    transport: filters.value.transport,
     sample_limit: filters.value.sample_limit
   }
-  if (selectedEndpoint.value) {
-    params.path = selectedEndpoint.value
+  if (selectedEndpoint.value?.path) {
+    params.path = selectedEndpoint.value.path
+  }
+  if (selectedEndpoint.value?.host) {
+    params.host = selectedEndpoint.value.host
+  } else if (filters.value.host) {
+    params.host = String(filters.value.host).trim()
+  }
+  if (filters.value.profile_id) {
+    const profileId = Number(filters.value.profile_id)
+    if (Number.isInteger(profileId) && profileId > 0) {
+      params.profile_id = profileId
+    }
   }
   if (Array.isArray(timeRange.value) && timeRange.value.length === 2) {
     const [start, end] = timeRange.value
@@ -332,6 +405,7 @@ const ensureCharts = () => {
   if (heatmapChartEl.value && !heatmapChart) heatmapChart = echarts.init(heatmapChartEl.value)
   if (latencyChartEl.value && !latencyChart) latencyChart = echarts.init(latencyChartEl.value)
   if (statusChartEl.value && !statusChart) statusChart = echarts.init(statusChartEl.value)
+  if (hostChartEl.value && !hostChart) hostChart = echarts.init(hostChartEl.value)
 }
 
 const renderTrendChart = () => {
@@ -390,7 +464,7 @@ const renderTrendChart = () => {
 const renderEndpointChart = () => {
   if (!endpointChart) return
   const rows = Array.isArray(dashboard.value.endpoint_top) ? dashboard.value.endpoint_top : []
-  const labels = rows.map((item) => (item.path === '__others__' ? '其他端点' : shortPath(item.path)))
+  const labels = rows.map((item) => shortPath(buildEndpointText(item)))
   endpointChart.setOption(
     {
       color: ['#22c55e', '#ef4444', '#f59e0b'],
@@ -403,7 +477,7 @@ const renderEndpointChart = () => {
           const list = Array.isArray(params) ? params : []
           const idx = Number(list[0]?.dataIndex || 0)
           const row = rows[idx] || {}
-          return `${row.path === '__others__' ? '其他端点' : row.path || '-'}<br/>请求量：${row.total_count || 0}<br/>占比：${Number(row.share_pct || 0).toFixed(2)}%`
+          return `${buildEndpointText(row)}<br/>请求量：${row.total_count || 0}<br/>占比：${Number(row.share_pct || 0).toFixed(2)}%`
         }
       },
       xAxis: { type: 'value', minInterval: 1 },
@@ -421,7 +495,15 @@ const renderEndpointChart = () => {
     const row = rows[Number(event?.dataIndex || 0)]
     if (!row || !row.path || row.path === '__others__') return
     selectedBucket.value = ''
-    selectedEndpoint.value = selectedEndpoint.value === row.path ? '' : row.path
+    const nextValue = {
+      host: String(row.host || ''),
+      path: String(row.path || '')
+    }
+    const isSame =
+      selectedEndpoint.value &&
+      String(selectedEndpoint.value.host || '') === nextValue.host &&
+      String(selectedEndpoint.value.path || '') === nextValue.path
+    selectedEndpoint.value = isSame ? null : nextValue
     scheduleReload()
   })
 }
@@ -547,6 +629,31 @@ const renderStatusChart = () => {
   )
 }
 
+const renderHostChart = () => {
+  if (!hostChart) return
+  const rows = Array.isArray(dashboard.value.host_dist) ? dashboard.value.host_dist : []
+  hostChart.setOption(
+    {
+      animation: false,
+      color: ['#0ea5a4', '#0284c7', '#475569', '#f59e0b', '#ef4444', '#16a34a'],
+      tooltip: {
+        trigger: 'item',
+        formatter: (item) => `${item?.name || '-'}：${item?.value || 0}`
+      },
+      legend: { bottom: 0 },
+      series: [
+        {
+          type: 'pie',
+          radius: ['36%', '66%'],
+          center: ['50%', '45%'],
+          data: rows.map((item) => ({ name: item.key, value: Number(item.count || 0) }))
+        }
+      ]
+    },
+    true
+  )
+}
+
 const renderCharts = () => {
   ensureCharts()
   renderTrendChart()
@@ -554,6 +661,7 @@ const renderCharts = () => {
   renderHeatmapChart()
   renderLatencyChart()
   renderStatusChart()
+  renderHostChart()
 }
 
 const resizeCharts = () => {
@@ -562,6 +670,7 @@ const resizeCharts = () => {
   heatmapChart?.resize()
   latencyChart?.resize()
   statusChart?.resize()
+  hostChart?.resize()
 }
 
 const scheduleReload = () => {
@@ -606,6 +715,7 @@ const handleAutoRefreshToggle = () => {
 }
 
 const handleFilterChange = () => {
+  selectedEndpoint.value = null
   selectedBucket.value = ''
   selectedHeatmapCells.value = []
   if (heatmapChart) {
@@ -619,7 +729,7 @@ const handleFilterChange = () => {
 }
 
 const clearEndpointDrill = () => {
-  selectedEndpoint.value = ''
+  selectedEndpoint.value = null
   selectedBucket.value = ''
   scheduleReload()
 }
@@ -645,12 +755,13 @@ const resetAll = () => {
     window: '24h',
     bucket: 'auto',
     endpoint_limit: 10,
-    include_stream_volume: true,
-    include_stream_latency: false,
+    transport: 'all',
+    host: '',
+    profile_id: '',
     sample_limit: 30
   }
   timeRange.value = []
-  selectedEndpoint.value = ''
+  selectedEndpoint.value = null
   selectedBucket.value = ''
   selectedHeatmapCells.value = []
   void loadDashboard()
@@ -661,7 +772,7 @@ const jumpToRequest = (row) => {
   router.push({
     path: '/logs',
     query: {
-      source: 'api',
+      source: 'task',
       request_id: row.request_id
     }
   })
@@ -673,11 +784,13 @@ const disposeCharts = () => {
   heatmapChart?.dispose()
   latencyChart?.dispose()
   statusChart?.dispose()
+  hostChart?.dispose()
   trendChart = null
   endpointChart = null
   heatmapChart = null
   latencyChart = null
   statusChart = null
+  hostChart = null
 }
 
 onMounted(async () => {

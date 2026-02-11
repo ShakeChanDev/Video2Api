@@ -58,10 +58,41 @@ def _write_api_log(*, path: str, duration_ms: int, status: str = "success", crea
     )
 
 
+def _write_outbound_log(
+    *,
+    url: str,
+    transport: str = "httpx",
+    status_code: int | None = 200,
+    error: str | None = None,
+    duration_ms: int = 180,
+    profile_id: int | None = None,
+    created_at: datetime | None = None,
+) -> None:
+    sqlite_db.create_sora_outbound_event(
+        transport=transport,
+        url=url,
+        status_code=status_code,
+        error=error,
+        duration_ms=duration_ms,
+        profile_id=profile_id,
+        created_at=_ts(created_at or datetime.now()),
+    )
+
+
 def test_sora_dashboard_default_structure_and_series_continuous(client):
     now = datetime.now()
-    _write_api_log(path="/api/v1/sora/jobs", duration_ms=320, created_at=now - timedelta(hours=1))
-    _write_api_log(path="/api/v1/ixbrowser/sora-session-accounts/latest", duration_ms=460, created_at=now - timedelta(minutes=20))
+    _write_outbound_log(
+        url="https://sora.chatgpt.com/backend/nf/check",
+        transport="httpx",
+        duration_ms=320,
+        created_at=now - timedelta(hours=1),
+    )
+    _write_outbound_log(
+        url="https://chatgpt.com/api/auth/session",
+        transport="curl_cffi",
+        duration_ms=460,
+        created_at=now - timedelta(minutes=20),
+    )
 
     resp = client.get("/api/v1/admin/sora-requests/dashboard")
     assert resp.status_code == 200
@@ -71,9 +102,12 @@ def test_sora_dashboard_default_structure_and_series_continuous(client):
     assert isinstance(payload["series"], list) and payload["series"]
     assert isinstance(payload["endpoint_top"], list)
     assert isinstance(payload["status_code_dist"], list)
+    assert isinstance(payload["host_dist"], list)
+    assert isinstance(payload["transport_dist"], list)
     assert isinstance(payload["latency_histogram"], list)
     assert isinstance(payload["heatmap_hourly"], list)
     assert isinstance(payload["recent_samples"], list)
+    assert payload["kpi"]["total_count"] == 2
 
     points = payload["series"]
     for idx in range(1, len(points)):
@@ -82,53 +116,136 @@ def test_sora_dashboard_default_structure_and_series_continuous(client):
         assert int((curr - prev).total_seconds()) == 300
 
 
-def test_sora_dashboard_excludes_own_admin_endpoint(client):
+def test_sora_dashboard_excludes_local_api_inbound_logs(client):
     now = datetime.now()
-    _write_api_log(path="/api/v1/admin/sora-requests/dashboard", duration_ms=50, created_at=now - timedelta(minutes=5))
-    _write_api_log(path="/api/v1/sora/jobs", duration_ms=220, created_at=now - timedelta(minutes=4))
+    _write_api_log(path="/api/v1/sora/jobs", duration_ms=220, created_at=now - timedelta(minutes=10))
+    _write_outbound_log(
+        url="https://sora.chatgpt.com/backend/nf/check",
+        transport="httpx",
+        duration_ms=180,
+        created_at=now - timedelta(minutes=9),
+    )
 
     resp = client.get("/api/v1/admin/sora-requests/dashboard", params={"window": "1h"})
     assert resp.status_code == 200
     payload = resp.json()
     assert payload["kpi"]["total_count"] == 1
-    assert all(item["path"] != "/api/v1/admin/sora-requests/dashboard" for item in payload["recent_samples"])
+    assert all(item["path"] != "/api/v1/sora/jobs" for item in payload["recent_samples"])
 
 
-def test_sora_dashboard_latency_can_exclude_stream(client):
+def test_sora_dashboard_domain_scope_chatgpt_hosts_only(client):
     now = datetime.now()
-    _write_api_log(path="/api/v1/sora/jobs/stream", duration_ms=100_000, created_at=now - timedelta(minutes=8))
-    _write_api_log(path="/api/v1/sora/jobs", duration_ms=200, created_at=now - timedelta(minutes=7))
-
-    resp_no_stream = client.get(
-        "/api/v1/admin/sora-requests/dashboard",
-        params={"window": "1h", "include_stream_latency": "false"},
+    _write_outbound_log(
+        url="https://sora.chatgpt.com/backend/nf/check",
+        transport="httpx",
+        created_at=now - timedelta(minutes=8),
     )
-    assert resp_no_stream.status_code == 200
-    payload_no_stream = resp_no_stream.json()
-    assert payload_no_stream["kpi"]["total_count"] == 2
-    assert payload_no_stream["kpi"]["p95_ms"] == 200
-
-    resp_with_stream = client.get(
-        "/api/v1/admin/sora-requests/dashboard",
-        params={"window": "1h", "include_stream_latency": "true"},
+    _write_outbound_log(
+        url="https://chatgpt.com/api/auth/session",
+        transport="httpx",
+        created_at=now - timedelta(minutes=7),
     )
-    assert resp_with_stream.status_code == 200
-    payload_with_stream = resp_with_stream.json()
-    assert payload_with_stream["kpi"]["p95_ms"] == 100_000
+    _write_outbound_log(
+        url="https://foo.chatgpt.com/backend/me",
+        transport="curl_cffi",
+        created_at=now - timedelta(minutes=6),
+    )
+    _write_outbound_log(
+        url="https://api.openai.com/v1/models",
+        transport="httpx",
+        created_at=now - timedelta(minutes=5),
+    )
+
+    resp = client.get("/api/v1/admin/sora-requests/dashboard", params={"window": "1h"})
+    assert resp.status_code == 200
+    payload = resp.json()
+    assert payload["kpi"]["total_count"] == 3
+    host_keys = {item["key"] for item in payload["host_dist"]}
+    assert "sora.chatgpt.com" in host_keys
+    assert "chatgpt.com" in host_keys
+    assert "foo.chatgpt.com" in host_keys
+    assert "api.openai.com" not in host_keys
+
+
+def test_sora_dashboard_transport_host_profile_filters(client):
+    now = datetime.now()
+    _write_outbound_log(
+        url="https://sora.chatgpt.com/backend/nf/check",
+        transport="httpx",
+        created_at=now - timedelta(minutes=8),
+    )
+    _write_outbound_log(
+        url="https://chatgpt.com/api/auth/session",
+        transport="curl_cffi",
+        profile_id=11,
+        created_at=now - timedelta(minutes=7),
+    )
+
+    resp_httpx = client.get(
+        "/api/v1/admin/sora-requests/dashboard",
+        params={"window": "1h", "transport": "httpx"},
+    )
+    assert resp_httpx.status_code == 200
+    payload_httpx = resp_httpx.json()
+    assert payload_httpx["kpi"]["total_count"] == 1
+    assert all(item["transport"] == "httpx" for item in payload_httpx["recent_samples"])
+
+    resp_host = client.get(
+        "/api/v1/admin/sora-requests/dashboard",
+        params={"window": "1h", "host": "chatgpt.com"},
+    )
+    assert resp_host.status_code == 200
+    payload_host = resp_host.json()
+    assert payload_host["kpi"]["total_count"] == 1
+    assert all(item["host"] == "chatgpt.com" for item in payload_host["recent_samples"])
+
+    resp_profile = client.get(
+        "/api/v1/admin/sora-requests/dashboard",
+        params={"window": "1h", "profile_id": 11},
+    )
+    assert resp_profile.status_code == 200
+    payload_profile = resp_profile.json()
+    assert payload_profile["kpi"]["total_count"] == 1
+    assert all(item["profile_id"] == 11 for item in payload_profile["recent_samples"])
 
 
 def test_sora_dashboard_endpoint_top_contains_others(client):
     now = datetime.now()
     for _ in range(8):
-        _write_api_log(path="/api/v1/sora/jobs", duration_ms=120, created_at=now - timedelta(minutes=20))
+        _write_outbound_log(
+            url="https://sora.chatgpt.com/backend/nf/check",
+            transport="httpx",
+            created_at=now - timedelta(minutes=20),
+        )
     for _ in range(6):
-        _write_api_log(path="/api/v1/ixbrowser/sora-session-accounts/latest", duration_ms=180, created_at=now - timedelta(minutes=19))
+        _write_outbound_log(
+            url="https://chatgpt.com/api/auth/session",
+            transport="curl_cffi",
+            created_at=now - timedelta(minutes=19),
+        )
     for _ in range(4):
-        _write_api_log(path="/api/v1/sora/accounts/weights", duration_ms=90, created_at=now - timedelta(minutes=18))
+        _write_outbound_log(
+            url="https://foo.chatgpt.com/backend/me",
+            transport="httpx",
+            created_at=now - timedelta(minutes=18),
+        )
+    for _ in range(3):
+        _write_outbound_log(
+            url="https://bar.chatgpt.com/backend/nf/check",
+            transport="httpx",
+            created_at=now - timedelta(minutes=17),
+        )
     for _ in range(2):
-        _write_api_log(path="/api/v1/ixbrowser/sora-session-accounts/stream", duration_ms=70, created_at=now - timedelta(minutes=17))
-    _write_api_log(path="/api/v1/sora/jobs/stream", duration_ms=60, created_at=now - timedelta(minutes=16))
-    _write_api_log(path="/api/v1/ixbrowser/sora-session-accounts/silent-refresh", duration_ms=95, created_at=now - timedelta(minutes=15))
+        _write_outbound_log(
+            url="https://baz.chatgpt.com/backend/billing/subscriptions",
+            transport="curl_cffi",
+            created_at=now - timedelta(minutes=16),
+        )
+    _write_outbound_log(
+        url="https://abc.chatgpt.com/backend/nf/pending/v2",
+        transport="httpx",
+        created_at=now - timedelta(minutes=15),
+    )
 
     resp = client.get("/api/v1/admin/sora-requests/dashboard", params={"window": "1h", "endpoint_limit": 5})
     assert resp.status_code == 200
@@ -136,7 +253,41 @@ def test_sora_dashboard_endpoint_top_contains_others(client):
     top = payload["endpoint_top"]
     assert len(top) == 6
     assert any(item["path"] == "__others__" for item in top)
+    assert any(item["host"] == "sora.chatgpt.com" and item["path"] == "/backend/nf/check" for item in top)
     assert sum(int(item["total_count"]) for item in top) == int(payload["kpi"]["total_count"])
+
+
+def test_sora_dashboard_cf_kpi_and_include_stream_params_compatible(client):
+    now = datetime.now()
+    _write_outbound_log(
+        url="https://sora.chatgpt.com/backend/nf/check",
+        transport="httpx",
+        status_code=403,
+        error="cf_challenge",
+        created_at=now - timedelta(minutes=5),
+    )
+    _write_outbound_log(
+        url="https://chatgpt.com/api/auth/session",
+        transport="curl_cffi",
+        created_at=now - timedelta(minutes=4),
+    )
+
+    resp_no_stream = client.get(
+        "/api/v1/admin/sora-requests/dashboard",
+        params={"window": "1h", "include_stream_latency": "false"},
+    )
+    assert resp_no_stream.status_code == 200
+    payload_no_stream = resp_no_stream.json()
+    assert payload_no_stream["kpi"]["cf_count"] == 1
+    assert payload_no_stream["kpi"]["cf_rate"] == 50.0
+
+    resp_with_stream = client.get(
+        "/api/v1/admin/sora-requests/dashboard",
+        params={"window": "1h", "include_stream_latency": "true"},
+    )
+    assert resp_with_stream.status_code == 200
+    payload_with_stream = resp_with_stream.json()
+    assert payload_with_stream["kpi"]["total_count"] == payload_no_stream["kpi"]["total_count"]
 
 
 def test_sora_dashboard_requires_auth(temp_db):
