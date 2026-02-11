@@ -1,8 +1,13 @@
 import asyncio
 import json
 import os
+import socket
+import threading
+import time
 
+import httpx
 import pytest
+import uvicorn
 from fastapi.testclient import TestClient
 
 from app.api.sora_v2 import stream_sora_jobs_v2
@@ -113,16 +118,79 @@ def _seed_job(*, status="running", phase="progress", progress_pct=10.0, group_ti
     )
 
 
+def _pick_free_port() -> int:
+    sock = socket.socket()
+    try:
+        sock.bind(("127.0.0.1", 0))
+        return int(sock.getsockname()[1])
+    finally:
+        sock.close()
+
+
+def _wait_server_ready(port: int, timeout_sec: float = 10.0) -> bool:
+    deadline = time.time() + float(timeout_sec)
+    while time.time() < deadline:
+        try:
+            resp = httpx.get(f"http://127.0.0.1:{int(port)}/health", timeout=0.5)
+            if resp.status_code == 200:
+                return True
+        except Exception:  # noqa: BLE001
+            pass
+        time.sleep(0.1)
+    return False
+
+
 def test_sora_job_stream_v2_requires_valid_token(client):
     no_token_resp = client.get("/api/v2/sora/jobs/stream")
     assert no_token_resp.status_code == 401
+    assert "缺少访问令牌" in str((no_token_resp.json() or {}).get("detail") or "")
 
     bad_token_resp = client.get("/api/v2/sora/jobs/stream", params={"token": "bad-token"})
     assert bad_token_resp.status_code == 401
+    assert "无效的访问令牌" in str((bad_token_resp.json() or {}).get("detail") or "")
 
     missing_user_token = create_access_token({"sub": "no-such-user"})
     missing_user_resp = client.get("/api/v2/sora/jobs/stream", params={"token": missing_user_token})
     assert missing_user_resp.status_code == 401
+    assert "无效的访问令牌" in str((missing_user_resp.json() or {}).get("detail") or "")
+
+
+def test_sora_job_stream_v2_route_returns_sse_snapshot(client):
+    del client
+    token = _seed_user_token()
+    _seed_job()
+
+    port = _pick_free_port()
+    config = uvicorn.Config(
+        app,
+        host="127.0.0.1",
+        port=port,
+        log_level="warning",
+        access_log=False,
+    )
+    server = uvicorn.Server(config)
+    thread = threading.Thread(target=server.run, daemon=True)
+    thread.start()
+    try:
+        assert _wait_server_ready(port) is True
+        with httpx.Client(timeout=3.0) as http_client:
+            with http_client.stream(
+                "GET",
+                f"http://127.0.0.1:{int(port)}/api/v2/sora/jobs/stream",
+                params={"token": token, "limit": 100},
+            ) as resp:
+                assert resp.status_code == 200
+                assert "text/event-stream" in str(resp.headers.get("content-type") or "")
+                saw_snapshot = False
+                for _, line in zip(range(40), resp.iter_lines()):
+                    text = line.decode("utf-8") if isinstance(line, bytes) else str(line)
+                    if "event: snapshot" in text:
+                        saw_snapshot = True
+                        break
+                assert saw_snapshot is True
+    finally:
+        server.should_exit = True
+        thread.join(timeout=5.0)
 
 
 @pytest.mark.asyncio

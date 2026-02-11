@@ -99,46 +99,6 @@ async def list_sora_jobs_v2(
     )
 
 
-@router.get("/jobs/{job_id}", response_model=SoraJobV2DetailResponse)
-async def get_sora_job_v2(
-    job_id: int,
-    current_user: dict = Depends(get_current_active_user),
-):
-    del current_user
-    return ixbrowser_service.get_sora_job_v2_detail(job_id)
-
-
-@router.get("/jobs/{job_id}/timeline", response_model=List[SoraJobTimelineItem])
-async def get_sora_job_timeline_v2(
-    job_id: int,
-    limit: int = Query(500, ge=1, le=2000),
-    current_user: dict = Depends(get_current_active_user),
-):
-    del current_user
-    return ixbrowser_service.list_sora_job_timeline_v2(job_id, limit=limit)
-
-
-@router.post("/jobs/{job_id}/actions", response_model=SoraJobV2DetailResponse)
-async def apply_sora_job_action_v2(
-    job_id: int,
-    payload: SoraJobActionRequest,
-    http_request: Request,
-    current_user: dict = Depends(get_current_active_user),
-):
-    result = await ixbrowser_service.apply_sora_job_action_v2(job_id, payload.action)
-    log_audit(
-        request=http_request,
-        current_user=current_user,
-        action="sora.v2.job.action",
-        status="success",
-        message=f"执行动作 {payload.action}",
-        resource_type="job",
-        resource_id=str(job_id),
-        extra={"action": payload.action},
-    )
-    return result
-
-
 @router.get("/jobs/stream")
 async def stream_sora_jobs_v2(
     token: Optional[str] = Query(None, description="访问令牌"),
@@ -300,6 +260,46 @@ async def stream_sora_jobs_v2(
             "X-Accel-Buffering": "no",
         },
     )
+
+
+@router.get("/jobs/{job_id}", response_model=SoraJobV2DetailResponse)
+async def get_sora_job_v2(
+    job_id: int,
+    current_user: dict = Depends(get_current_active_user),
+):
+    del current_user
+    return ixbrowser_service.get_sora_job_v2_detail(job_id)
+
+
+@router.get("/jobs/{job_id}/timeline", response_model=List[SoraJobTimelineItem])
+async def get_sora_job_timeline_v2(
+    job_id: int,
+    limit: int = Query(500, ge=1, le=2000),
+    current_user: dict = Depends(get_current_active_user),
+):
+    del current_user
+    return ixbrowser_service.list_sora_job_timeline_v2(job_id, limit=limit)
+
+
+@router.post("/jobs/{job_id}/actions", response_model=SoraJobV2DetailResponse)
+async def apply_sora_job_action_v2(
+    job_id: int,
+    payload: SoraJobActionRequest,
+    http_request: Request,
+    current_user: dict = Depends(get_current_active_user),
+):
+    result = await ixbrowser_service.apply_sora_job_action_v2(job_id, payload.action)
+    log_audit(
+        request=http_request,
+        current_user=current_user,
+        action="sora.v2.job.action",
+        status="success",
+        message=f"执行动作 {payload.action}",
+        resource_type="job",
+        resource_id=str(job_id),
+        extra={"action": payload.action},
+    )
+    return result
 
 
 def datetime_now() -> str:
