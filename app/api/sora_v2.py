@@ -150,12 +150,15 @@ async def stream_sora_jobs_v2(
         jobs = _list_jobs()
         fps: Dict[int, tuple] = {int(item.get("job_id") or 0): _job_fp(item) for item in jobs}
         visible_ids = [int(item.get("job_id") or 0) for item in jobs if int(item.get("job_id") or 0) > 0]
-        timeline_after_id = 0
+        # 只推送连接建立后的增量，避免首次连接/重连时回放历史 timeline 导致前端卡顿。
+        try:
+            timeline_after_id = int(sqlite_db.get_latest_sora_job_timeline_id() or 0)
+        except Exception:
+            timeline_after_id = 0
         run_fps: Dict[int, tuple] = {}
         lock_fps: Dict[int, tuple] = {}
 
         yield format_sse_event("snapshot", {"jobs": jobs, "server_time": datetime_now()})
-
         while True:
             await asyncio.sleep(poll_interval)
             has_output = False

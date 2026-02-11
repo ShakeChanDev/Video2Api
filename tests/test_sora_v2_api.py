@@ -99,6 +99,11 @@ def test_sora_v2_list_and_detail(client):
     assert list_resp.status_code == 200
     jobs = list_resp.json()
     assert any(int(item.get("job_id") or 0) == int(job_id) for item in jobs)
+    target = next(item for item in jobs if int(item.get("job_id") or 0) == int(job_id))
+    run_context = target.get("run_context") or {}
+    assert run_context.get("actor_id") == "profile-3"
+    assert int(run_context.get("actor_queue_position") or 0) >= 1
+    assert run_context.get("profile_lock_state") in {"free", "locked"}
 
     detail_resp = client.get(f"/api/v2/sora/jobs/{job_id}")
     assert detail_resp.status_code == 200

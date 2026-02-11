@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from bisect import bisect_right
 import logging
 import json
 import re
@@ -648,7 +649,14 @@ class SoraJobsMixin:
             actor_id=actor_id,
             engine_version=engine_version,
         )
-        return [self._build_sora_job_v2_payload(row) for row in rows]
+        run_context_map = self._build_run_context_map(rows)
+        return [
+            self._build_sora_job_v2_payload(
+                row,
+                run_context=run_context_map.get(int(row.get("id") or 0)),
+            )
+            for row in rows
+        ]
 
     def get_sora_job_v2_detail(self, job_id: int) -> Dict[str, Any]:
         row = sqlite_db.get_sora_job(int(job_id))
@@ -778,6 +786,38 @@ class SoraJobsMixin:
             "profile_lock_state": "locked" if lock else "free",
         }
 
+    def _build_run_context_map(self, rows: List[dict]) -> Dict[int, Dict[str, Any]]:
+        profile_ids = sorted({int(item.get("profile_id") or 0) for item in rows if int(item.get("profile_id") or 0) > 0})
+        active_ids_by_profile = sqlite_db.list_active_sora_job_ids_by_profiles(profile_ids) if profile_ids else {}
+        locked_profile_ids = set()
+        if profile_ids:
+            profile_id_set = set(profile_ids)
+            for lock in sqlite_db.list_profile_runtime_locks():
+                try:
+                    pid = int(lock.get("profile_id") or 0)
+                except Exception:
+                    continue
+                if pid > 0 and pid in profile_id_set:
+                    locked_profile_ids.add(pid)
+
+        context_map: Dict[int, Dict[str, Any]] = {}
+        for row in rows:
+            job_id = int(row.get("id") or 0)
+            if job_id <= 0:
+                continue
+            profile_id = int(row.get("profile_id") or 0)
+            actor_id = str(row.get("actor_id") or f"profile-{profile_id}")
+            queue_position = 1
+            if profile_id > 0:
+                active_ids = active_ids_by_profile.get(profile_id) or []
+                queue_position = max(1, int(bisect_right(active_ids, job_id) or 1))
+            context_map[job_id] = {
+                "actor_id": actor_id,
+                "actor_queue_position": queue_position,
+                "profile_lock_state": "locked" if profile_id in locked_profile_ids else "free",
+            }
+        return context_map
+
     @staticmethod
     def _is_retryable_error_class(error_class: Optional[str]) -> bool:
         return str(error_class or "").strip() in {
@@ -800,12 +840,20 @@ class SoraJobsMixin:
             "message": message,
         }
 
-    def _build_sora_job_v2_payload(self, row: dict) -> Dict[str, Any]:
+    def _build_sora_job_v2_payload(
+        self,
+        row: dict,
+        *,
+        run_context: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
         data = self._build_sora_job(row).model_dump()
         error_message = data.pop("error", None)
         data["error_message"] = error_message
         data["error"] = self._build_v2_error_payload(row, fallback_message=error_message)
-        data["run_context"] = self._build_run_context(row)
+        if isinstance(run_context, dict):
+            data["run_context"] = dict(run_context)
+        else:
+            data["run_context"] = self._build_run_context(row)
         return data
 
     @staticmethod

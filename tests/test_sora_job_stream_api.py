@@ -211,6 +211,30 @@ async def test_sora_job_stream_v2_first_event_is_snapshot():
 
 
 @pytest.mark.asyncio
+async def test_sora_job_stream_v2_skips_historical_timeline_on_connect():
+    token = _seed_user_token()
+    job_id = _seed_job(status="running", phase="progress", progress_pct=30.0)
+    sqlite_db.create_sora_job_timeline(
+        {
+            "job_id": int(job_id),
+            "run_id": None,
+            "event_type": "phase_transition",
+            "phase": "progress",
+            "payload_json": json.dumps({"note": "history"}, ensure_ascii=False),
+            "created_at": "2026-01-01 00:00:00",
+        }
+    )
+
+    resp = await _open_stream(token=token, status="running")
+    try:
+        await _next_event(resp, expected={"snapshot"})
+        with pytest.raises(asyncio.TimeoutError):
+            await _next_event(resp, expected={"phase_update"}, max_steps=1)
+    finally:
+        await resp.body_iterator.aclose()
+
+
+@pytest.mark.asyncio
 async def test_sora_job_stream_v2_emits_job_patch_after_update():
     token = _seed_user_token()
     job_id = _seed_job(status="running", phase="progress", progress_pct=11.0)

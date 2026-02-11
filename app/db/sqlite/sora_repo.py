@@ -739,6 +739,19 @@ class SQLiteSoraRepo:
         conn.close()
         return [dict(row) for row in rows]
 
+    def get_latest_sora_job_timeline_id(self) -> int:
+        conn = self._get_conn()
+        cursor = conn.cursor()
+        cursor.execute("SELECT MAX(id) AS max_id FROM sora_job_timeline")
+        row = cursor.fetchone()
+        conn.close()
+        if not row:
+            return 0
+        try:
+            return int(row["max_id"] or 0)
+        except Exception:
+            return 0
+
     def list_sora_job_timeline_since(
         self,
         *,
@@ -783,6 +796,37 @@ class SQLiteSoraRepo:
         rows = cursor.fetchall()
         conn.close()
         return [dict(row) for row in rows]
+
+    def list_active_sora_job_ids_by_profiles(self, profile_ids: List[int]) -> Dict[int, List[int]]:
+        ids = sorted({int(item) for item in (profile_ids or []) if int(item or 0) > 0})
+        if not ids:
+            return {}
+        placeholders = ",".join(["?"] * len(ids))
+        conn = self._get_conn()
+        cursor = conn.cursor()
+        cursor.execute(
+            f"""
+            SELECT profile_id, id
+            FROM sora_jobs
+            WHERE profile_id IN ({placeholders})
+              AND status IN ('queued', 'running')
+            ORDER BY profile_id ASC, id ASC
+            """,
+            ids,
+        )
+        rows = cursor.fetchall()
+        conn.close()
+        result: Dict[int, List[int]] = {pid: [] for pid in ids}
+        for row in rows:
+            try:
+                pid = int(row["profile_id"] or 0)
+                jid = int(row["id"] or 0)
+            except Exception:
+                continue
+            if pid <= 0 or jid <= 0:
+                continue
+            result.setdefault(pid, []).append(jid)
+        return result
 
     def acquire_profile_runtime_lock(
         self,
