@@ -8,7 +8,6 @@ import WatermarkParse from '../views/WatermarkParse.vue'
 import UserManagement from '../views/UserManagement.vue'
 import SystemSettings from '../views/SystemSettings.vue'
 import SystemLogs from '../views/SystemLogs.vue'
-import SoraRequestDashboard from '../views/SoraRequestDashboard.vue'
 
 const router = createRouter({
   history: createWebHistory(),
@@ -23,8 +22,7 @@ const router = createRouter({
     { path: '/watermark-parse', component: WatermarkParse, meta: { title: '去水印解析' } },
     { path: '/users', component: UserManagement, meta: { title: '用户管理' } },
     { path: '/settings', component: SystemSettings, meta: { title: '系统设置' } },
-    { path: '/logs', component: SystemLogs, meta: { title: '日志中心' } },
-    { path: '/sora-requests', component: SoraRequestDashboard, meta: { title: 'Sora 请求看板' } }
+    { path: '/logs', component: SystemLogs, meta: { title: '日志中心' } }
   ]
 })
 

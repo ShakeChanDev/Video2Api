@@ -51,14 +51,24 @@
         @selection-change="handleSelectionChange"
       >
         <el-table-column type="selection" width="46" align="center" reserve-selection :selectable="isSelectableRow" />
-        <el-table-column label="类型" width="88" align="center">
+        <el-table-column label="ID" width="86" align="center">
+          <template #default="{ row }">
+            <span class="mono">{{ isUnknownRow(row) ? '-' : `#${row.id}` }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="ix_id" width="96" align="center">
+          <template #default="{ row }">
+            <span class="mono">{{ isUnknownRow(row) ? '-' : (row.ix_id ?? '-') }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="类型" width="90" align="center">
           <template #default="{ row }">
             <el-tag size="small" effect="light" :type="isUnknownRow(row) ? 'warning' : 'info'">
               {{ isUnknownRow(row) ? 'UNKNOWN' : (row.proxy_type || 'http').toUpperCase() }}
             </el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="地址" min-width="240">
+        <el-table-column label="地址" min-width="220">
           <template #default="{ row }">
             <div class="addr-cell">
               <span v-if="isUnknownRow(row)" class="mono">未知代理（无法关联本地代理）</span>
@@ -69,29 +79,22 @@
             </div>
           </template>
         </el-table-column>
-        <el-table-column label="账密" min-width="230">
+        <el-table-column label="账号" width="170">
           <template #default="{ row }">
-            <div class="cred-cell">
-              <el-tooltip :content="isUnknownRow(row) ? '-' : (row.proxy_user || '-')" placement="top" effect="dark">
-                <span class="mono cred-row">
-                  <span class="cred-key">账号</span>
-                  <span :class="{ 'cred-empty': isUnknownRow(row) || !row.proxy_user }">
-                    {{ shorten(isUnknownRow(row) ? '-' : (row.proxy_user || '-'), 28) }}
-                  </span>
-                </span>
-              </el-tooltip>
-              <el-tooltip :content="isUnknownRow(row) ? '-' : (row.proxy_password || '-')" placement="top" effect="dark">
-                <span class="mono cred-row">
-                  <span class="cred-key">密码</span>
-                  <span :class="{ 'cred-empty': isUnknownRow(row) || !row.proxy_password }">
-                    {{ shorten(isUnknownRow(row) ? '-' : (row.proxy_password || '-'), 28) }}
-                  </span>
-                </span>
-              </el-tooltip>
-            </div>
+            <span class="mono">{{ isUnknownRow(row) ? '-' : (row.proxy_user || '-') }}</span>
           </template>
         </el-table-column>
-        <el-table-column label="备注" min-width="210">
+        <el-table-column label="密码" width="190">
+          <template #default="{ row }">
+            <span class="mono">{{ isUnknownRow(row) ? '-' : (row.proxy_password || '-') }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="Tag" width="160">
+          <template #default="{ row }">
+            <span>{{ isUnknownRow(row) ? '-' : (row.tag || '-') }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="备注" min-width="220">
           <template #default="{ row }">
             <el-tooltip v-if="!isUnknownRow(row) && row.note" :content="row.note" placement="top" effect="dark">
               <span class="note-text">{{ shorten(row.note, 44) }}</span>
@@ -99,24 +102,13 @@
             <span v-else class="note-text note-empty">-</span>
           </template>
         </el-table-column>
-        <el-table-column :label="`CF 风控(近${cfRecentWindow}次)`" min-width="250">
+        <el-table-column :label="`CF 风控(近${cfRecentWindow}次)`" width="170" align="center">
           <template #default="{ row }">
-            <div class="cf-cell">
-              <div class="cf-trend">
-                <span
-                  v-for="(dot, index) in row.cf_recent_seq_display"
-                  :key="`cf-${row.id}-${index}`"
-                  class="cf-dot"
-                  :class="dot === 1 ? 'cf-dot-hit' : dot === 0 ? 'cf-dot-pass' : 'cf-dot-empty'"
-                />
-              </div>
-              <div class="mono cf-summary" :class="toCfRiskClass(row)">
-                {{ formatCfSummary(row) }}
-              </div>
-            </div>
+            <span v-if="Number(row.cf_recent_total || 0) > 0" class="mono">{{ formatCfStat(row) }}</span>
+            <span v-else class="note-empty">-</span>
           </template>
         </el-table-column>
-        <el-table-column label="检测" min-width="260">
+        <el-table-column label="检测" min-width="280">
           <template #default="{ row }">
             <span v-if="isUnknownRow(row)" class="check-error check-empty">-</span>
             <div v-else class="check-cell">
@@ -142,7 +134,7 @@
             </div>
           </template>
         </el-table-column>
-        <el-table-column label="更新时间" width="166" align="center">
+        <el-table-column label="更新时间" width="170" align="center">
           <template #default="{ row }">
             <span class="mono">{{ isUnknownRow(row) ? '-' : row.updated_at }}</span>
           </template>
@@ -311,11 +303,10 @@ const checking = ref(false)
 
 const keyword = ref('')
 const page = ref(1)
-const pageSize = ref(200)
+const pageSize = ref(50)
 const total = ref(0)
 const rows = ref([])
 const cfRecentWindow = ref(30)
-const cfTrendWindow = ref(10)
 const selectedIds = ref([])
 
 const importDialogVisible = ref(false)
@@ -369,41 +360,11 @@ const formatPercent = (value) => {
   return fixed.endsWith('.0') ? fixed.slice(0, -2) : fixed
 }
 
-const normalizeTrendSeq = (values, trendWindow = 10) => {
-  const safeWindow = Math.max(1, Number(trendWindow || 10))
-  const seq = []
-  const raw = Array.isArray(values) ? values : []
-  for (let index = 0; index < raw.length && seq.length < safeWindow; index += 1) {
-    seq.push(Number(raw[index]) === 1 ? 1 : 0)
-  }
-  return seq
-}
-
-const buildTrendDots = (values, trendWindow = 10) => {
-  const safeWindow = Math.max(1, Number(trendWindow || 10))
-  const seq = normalizeTrendSeq(values, safeWindow)
-  while (seq.length < safeWindow) seq.push(-1)
-  return seq
-}
-
-const toCfRiskClass = (row) => {
-  const totalCount = Number(row?.cf_recent_total || 0)
-  if (!Number.isFinite(totalCount) || totalCount <= 0) return 'cf-risk-none'
-  const ratio = Number(row?.cf_recent_ratio || 0)
-  if (!Number.isFinite(ratio)) return 'cf-risk-none'
-  if (ratio >= 20) return 'cf-risk-high'
-  if (ratio >= 2) return 'cf-risk-mid'
-  return 'cf-risk-low'
-}
-
-const formatCfSummary = (row) => {
+const formatCfStat = (row) => {
   const count = Number(row?.cf_recent_count || 0)
   const totalCount = Number(row?.cf_recent_total || 0)
-  if (!Number.isFinite(totalCount) || totalCount <= 0) {
-    return '0% · 0/0'
-  }
-  const ratio = formatPercent(row?.cf_recent_ratio)
-  return `${ratio}% · ${count}/${totalCount}`
+  if (!Number.isFinite(totalCount) || totalCount <= 0) return '-'
+  return `${count}/${totalCount}(${formatPercent(row?.cf_recent_ratio)}%)`
 }
 
 const loadList = async () => {
@@ -415,21 +376,10 @@ const loadList = async () => {
       limit: pageSize.value
     })
     cfRecentWindow.value = Math.max(1, Number(data?.cf_recent_window || 30))
-    cfTrendWindow.value = Math.max(1, Number(data?.cf_trend_window || 10))
-    const trendWindow = cfTrendWindow.value
-    const mapWithTrend = (item) => {
-      const seq = normalizeTrendSeq(item?.cf_recent_seq, trendWindow)
-      return {
-        ...item,
-        cf_recent_seq: seq,
-        cf_recent_seq_display: buildTrendDots(seq, trendWindow)
-      }
-    }
-    const items = Array.isArray(data?.items) ? data.items.map((item) => mapWithTrend(item)) : []
+    const items = Array.isArray(data?.items) ? data.items : []
     const unknownCount = Number(data?.unknown_cf_recent_count || 0)
     const unknownTotal = Number(data?.unknown_cf_recent_total || 0)
     const unknownRatio = Number(data?.unknown_cf_recent_ratio || 0)
-    const unknownSeq = normalizeTrendSeq(data?.unknown_cf_recent_seq, trendWindow)
     if (unknownTotal > 0) {
       const unknownRow = {
         id: 'unknown-proxy',
@@ -453,9 +403,7 @@ const loadList = async () => {
         updated_at: '-',
         cf_recent_count: unknownCount,
         cf_recent_total: unknownTotal,
-        cf_recent_ratio: unknownRatio,
-        cf_recent_seq: unknownSeq,
-        cf_recent_seq_display: buildTrendDots(unknownSeq, trendWindow)
+        cf_recent_ratio: unknownRatio
       }
       rows.value = [unknownRow, ...items]
     } else {
@@ -674,104 +622,11 @@ onMounted(() => {
   color: var(--muted);
 }
 
-.cred-cell {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  min-width: 0;
-}
-
-.cred-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  min-width: 0;
-  color: #334155;
-}
-
-.cred-key {
-  width: 28px;
-  flex-shrink: 0;
-  font-size: 12px;
-  color: #64748b;
-}
-
-.cred-row > span:last-child {
-  display: inline-block;
-  min-width: 0;
-  max-width: calc(100% - 36px);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.cred-empty {
-  color: #94a3b8;
-}
-
 .note-text {
-  display: inline-block;
-  max-width: 100%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
   color: #334155;
 }
 
 .note-empty {
-  color: #94a3b8;
-}
-
-.cf-cell {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.cf-trend {
-  display: flex;
-  align-items: center;
-  gap: 3px;
-  min-height: 8px;
-}
-
-.cf-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 999px;
-}
-
-.cf-dot-hit {
-  background: #dc2626;
-}
-
-.cf-dot-pass {
-  background: #94a3b8;
-}
-
-.cf-dot-empty {
-  background: #e2e8f0;
-}
-
-.cf-summary {
-  font-size: 12px;
-  line-height: 1.1;
-  white-space: nowrap;
-}
-
-.cf-risk-low {
-  color: #16a34a;
-}
-
-.cf-risk-mid {
-  color: #ca8a04;
-}
-
-.cf-risk-high {
-  color: #dc2626;
-}
-
-.cf-risk-none {
   color: #94a3b8;
 }
 
@@ -855,10 +710,5 @@ onMounted(() => {
 
 .w-260 {
   width: 260px;
-}
-
-:deep(.card-table .el-table__cell) {
-  padding-top: 8px;
-  padding-bottom: 8px;
 }
 </style>

@@ -44,19 +44,13 @@ class WorkerRunner:
             try:
                 sora_cnt = sqlite_db.requeue_stale_sora_jobs()
                 nurture_cnt = sqlite_db.requeue_stale_sora_nurture_batches()
-                lock_cnt = sqlite_db.release_expired_profile_runtime_locks()
                 self._log_event(
                     action="worker.start",
                     event="start",
                     status="success",
                     level="INFO",
-                    message=f"Worker 启动，恢复任务 sora={sora_cnt} nurture={nurture_cnt} locks={lock_cnt}",
-                    metadata={
-                        "owner": self.owner,
-                        "sora_requeued": sora_cnt,
-                        "nurture_requeued": nurture_cnt,
-                        "expired_profile_locks_released": lock_cnt,
-                    },
+                    message=f"Worker 启动，恢复任务 sora={sora_cnt} nurture={nurture_cnt}",
+                    metadata={"owner": self.owner, "sora_requeued": sora_cnt, "nurture_requeued": nurture_cnt},
                 )
             except Exception:  # noqa: BLE001
                 logger.exception("Worker 启动恢复失败")

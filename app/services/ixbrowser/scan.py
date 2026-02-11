@@ -120,7 +120,7 @@ class ScanMixin:
                     pass
 
             try:
-                close_success = await self.close_profile_with_owner(window.profile_id, owner_run_id=None)
+                close_success = await self._close_profile(window.profile_id)
             except Exception as close_exc:  # noqa: BLE001
                 close_success = False
                 if not error:
@@ -737,7 +737,7 @@ class ScanMixin:
                             pass
 
                     try:
-                        close_success = await self.close_profile_with_owner(window.profile_id, owner_run_id=None)
+                        close_success = await self._close_profile(window.profile_id)
                     except Exception as close_exc:  # noqa: BLE001
                         close_success = False
                         if not error:

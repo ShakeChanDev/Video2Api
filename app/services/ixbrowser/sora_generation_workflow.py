@@ -14,67 +14,15 @@ logger = logging.getLogger(__name__)
 
 
 class SoraGenerationWorkflow:
-    def __init__(self, service, db=sqlite_db, publish_workflow=None) -> None:
+    def __init__(self, service, db=sqlite_db) -> None:
         self._service = service
         self._db = db
-        self._publish_workflow = publish_workflow or getattr(service, "sora_publish_workflow", None) or getattr(
-            service, "_sora_publish_workflow", None
-        )
         self._service_error_cls = getattr(service, "_service_error_cls", RuntimeError)
         self._connection_error_cls = getattr(service, "_connection_error_cls", RuntimeError)
         self._api_error_cls = getattr(service, "_api_error_cls", Exception)
 
-    def _require_service_method(self, name: str):
-        method = getattr(self._service, name, None)
-        if method is None:
-            raise AttributeError(f"SoraGenerationWorkflow 缺少依赖方法: {name}")
-        return method
-
-    @property
-    def generate_timeout_seconds(self) -> int:
-        return int(getattr(self._service, "generate_timeout_seconds", 30 * 60))
-
-    @property
-    def generate_poll_interval_seconds(self) -> float:
-        return float(getattr(self._service, "generate_poll_interval_seconds", 6))
-
-    @property
-    def draft_manual_poll_interval_seconds(self) -> float:
-        return float(getattr(self._service, "draft_manual_poll_interval_seconds", 5 * 60))
-
-    @property
-    def draft_wait_timeout_seconds(self) -> float:
-        return float(getattr(self._service, "draft_wait_timeout_seconds", 20 * 60))
-
-    def playwright_factory(self):
-        return self._service.playwright_factory()
-
-    async def _open_profile_with_retry(self, profile_id: int, max_attempts: int = 2) -> dict:
-        return await self._require_service_method("_open_profile_with_retry")(profile_id, max_attempts=max_attempts)
-
-    async def _get_opened_profile(self, profile_id: int):
-        return await self._require_service_method("_get_opened_profile")(profile_id)
-
-    async def _close_profile(self, profile_id: int) -> bool:
-        return await self._require_service_method("_close_profile")(profile_id)
-
-    async def _prepare_sora_page(self, page, profile_id: int) -> None:
-        await self._require_service_method("_prepare_sora_page")(page, profile_id)
-
-    async def _reconnect_sora_page(self, playwright, profile_id: int):
-        return await self._require_service_method("_reconnect_sora_page")(playwright, profile_id)
-
-    def _is_page_closed_error(self, exc: Exception) -> bool:
-        return bool(self._require_service_method("_is_page_closed_error")(exc))
-
-    def _is_execution_context_destroyed(self, exc: Exception) -> bool:
-        return bool(self._require_service_method("_is_execution_context_destroyed")(exc))
-
-    def _is_sora_job_canceled(self, job_id: int) -> bool:
-        return bool(self._require_service_method("_is_sora_job_canceled")(job_id))
-
-    def _is_sora_overload_error(self, text: str) -> bool:
-        return bool(self._require_service_method("_is_sora_overload_error")(text))
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._service, name)
 
     def _service_error(self, message: str) -> Exception:
         return self._service_error_cls(message)
@@ -134,11 +82,11 @@ class SoraGenerationWorkflow:
                 await page.goto("https://sora.chatgpt.com/drafts", wait_until="domcontentloaded", timeout=40_000)
                 await page.wait_for_timeout(1200)
 
-                device_id = await self._publish_workflow.get_device_id_from_context(context)
+                device_id = await self._service._sora_publish_workflow._get_device_id_from_context(context)
                 last_submit_error: Optional[str] = None
                 for attempt in range(1, 3):
                     submit_attempts = attempt
-                    submit_data = await self._publish_workflow.submit_video_request_from_page(
+                    submit_data = await self._service._sora_publish_workflow._submit_video_request_from_page(
                         page=page,
                         prompt=prompt,
                         image_url=image_url,
@@ -172,7 +120,7 @@ class SoraGenerationWorkflow:
                 sqlite_db.create_sora_job_event(job_id, "submit", "finish", f"提交成功：{task_id}")
 
                 if not access_token:
-                    access_token = await self._publish_workflow.get_access_token_from_page(page)
+                    access_token = await self._service._sora_publish_workflow._get_access_token_from_page(page)
                 if not access_token:
                     raise self._service_error("提交成功但未获取到 accessToken，无法监听任务状态")
 
@@ -209,7 +157,7 @@ class SoraGenerationWorkflow:
                         last_draft_fetch_at = now
 
                     if use_proxy_poll:
-                        state = await self._publish_workflow.poll_sora_task_via_proxy_api(
+                        state = await self._service._sora_publish_workflow.poll_sora_task_via_proxy_api(
                             profile_id=profile_id,
                             task_id=task_id,
                             access_token=access_token,
@@ -222,7 +170,7 @@ class SoraGenerationWorkflow:
                             continue
                     else:
                         try:
-                            state = await self._publish_workflow.poll_sora_task_from_page(
+                            state = await self._service._sora_publish_workflow.poll_sora_task_from_page(
                                 page=page,
                                 task_id=task_id,
                                 access_token=access_token,
@@ -322,7 +270,7 @@ class SoraGenerationWorkflow:
                 await self._prepare_sora_page(page, profile_id)
                 await page.goto("https://sora.chatgpt.com/drafts", wait_until="domcontentloaded", timeout=40_000)
                 await page.wait_for_timeout(1200)
-                access_token = await self._publish_workflow.get_access_token_from_page(page)
+                access_token = await self._service._sora_publish_workflow._get_access_token_from_page(page)
                 if not access_token:
                     raise self._service_error("进度轮询未获取到 accessToken")
 
@@ -354,7 +302,7 @@ class SoraGenerationWorkflow:
                         last_draft_fetch_at = now
 
                     if use_proxy_poll:
-                        state = await self._publish_workflow.poll_sora_task_via_proxy_api(
+                        state = await self._service._sora_publish_workflow.poll_sora_task_via_proxy_api(
                             profile_id=profile_id,
                             task_id=task_id,
                             access_token=access_token,
@@ -367,7 +315,7 @@ class SoraGenerationWorkflow:
                             continue
                     else:
                         try:
-                            state = await self._publish_workflow.poll_sora_task_from_page(
+                            state = await self._service._sora_publish_workflow.poll_sora_task_from_page(
                                 page=page,
                                 task_id=task_id,
                                 access_token=access_token,
@@ -468,7 +416,7 @@ class SoraGenerationWorkflow:
             publish_post_id = final.get("publish_post_id")
             publish_permalink = final.get("publish_permalink")
             if not publish_post_id and publish_url:
-                publish_post_id = self._service.extract_share_id_from_url(str(publish_url))
+                publish_post_id = self._service._sora_job_runner.extract_share_id_from_url(str(publish_url))  # noqa: SLF001
             publish_patch: Dict[str, Any] = {}
             if publish_url:
                 publish_patch = {
@@ -580,7 +528,7 @@ class SoraGenerationWorkflow:
                 for attempt in range(1, max_submit_attempts + 1):
                     submit_attempts = attempt
                     sqlite_db.update_ixbrowser_generate_job(job_id, {"submit_attempts": submit_attempts})
-                    submit_data = await self._publish_workflow.submit_video_request_from_page(
+                    submit_data = await self._service._sora_publish_workflow._submit_video_request_from_page(
                         page=page,
                         prompt=prompt,
                         aspect_ratio=aspect_ratio,
@@ -614,7 +562,7 @@ class SoraGenerationWorkflow:
                 )
 
                 if not access_token:
-                    access_token = await self._publish_workflow.get_access_token_from_page(page)
+                    access_token = await self._service._sora_publish_workflow._get_access_token_from_page(page)
                 if not access_token:
                     raise self._service_error("提交成功但未获取到 accessToken，无法监听任务状态")
 
@@ -652,7 +600,7 @@ class SoraGenerationWorkflow:
                         fetch_drafts = True
                         last_draft_fetch_at = now
                     if use_proxy_poll:
-                        state = await self._publish_workflow.poll_sora_task_via_proxy_api(
+                        state = await self._service._sora_publish_workflow.poll_sora_task_via_proxy_api(
                             profile_id=profile_id,
                             task_id=task_id,
                             access_token=access_token,
@@ -665,7 +613,7 @@ class SoraGenerationWorkflow:
                             continue
                     else:
                         try:
-                            state = await self._publish_workflow.poll_sora_task_from_page(
+                            state = await self._service._sora_publish_workflow.poll_sora_task_from_page(
                                 page=page,
                                 task_id=task_id,
                                 access_token=access_token,
@@ -722,7 +670,7 @@ class SoraGenerationWorkflow:
                         publish_permalink = None
                         try:
                             if use_proxy_poll:
-                                publish_url = await self._publish_workflow.publish_sora_video(
+                                publish_url = await self._service._sora_publish_workflow._publish_sora_video(
                                     profile_id=profile_id,
                                     task_id=task_id,
                                     task_url=task_url,
@@ -731,7 +679,7 @@ class SoraGenerationWorkflow:
                                     generation_id=generation_id,
                                 )
                             else:
-                                publish_url = await self._publish_workflow.publish_sora_from_page(
+                                publish_url = await self._service._sora_publish_workflow._publish_sora_from_page(
                                     page=page,
                                     task_id=task_id,
                                     prompt=prompt,
@@ -739,8 +687,8 @@ class SoraGenerationWorkflow:
                                     generation_id=generation_id,
                                     profile_id=profile_id,
                                 )
-                            if publish_url and self._publish_workflow.is_valid_publish_url(publish_url):
-                                publish_post_id = self._service.extract_share_id_from_url(str(publish_url))
+                            if publish_url and self._service._sora_publish_workflow.is_valid_publish_url(publish_url):
+                                publish_post_id = self._service._sora_job_runner.extract_share_id_from_url(str(publish_url))  # noqa: SLF001
                                 publish_permalink = publish_url
                         except Exception as publish_exc:  # noqa: BLE001
                             publish_error = str(publish_exc)
@@ -817,7 +765,7 @@ class SoraGenerationWorkflow:
         row = sqlite_db.get_ixbrowser_generate_job(job_id)
         if not row:
             return
-        if row.get("publish_status") == "completed" and self._publish_workflow.is_valid_publish_url(row.get("publish_url")):
+        if row.get("publish_status") == "completed" and self._service._sora_publish_workflow.is_valid_publish_url(row.get("publish_url")):
             return
 
         if not task_id and not task_url:
@@ -845,7 +793,7 @@ class SoraGenerationWorkflow:
                 }
             )
             try:
-                publish_url = await self._publish_workflow.publish_sora_video(
+                publish_url = await self._service._sora_publish_workflow._publish_sora_video(
                     profile_id=profile_id,
                     task_id=task_id,
                     task_url=task_url,
@@ -854,7 +802,7 @@ class SoraGenerationWorkflow:
                     generation_id=row.get("generation_id"),
                 )
                 if publish_url:
-                    publish_post_id = self._service.extract_share_id_from_url(str(publish_url))
+                    publish_post_id = self._service._sora_job_runner.extract_share_id_from_url(str(publish_url))  # noqa: SLF001
                     sqlite_db.update_ixbrowser_generate_job(
                         job_id,
                         {
@@ -960,7 +908,7 @@ class SoraGenerationWorkflow:
                 page = await context.new_page()
             page_is_work = False
             await self._prepare_sora_page(page, profile_id)
-            draft_future = self._publish_workflow.watch_draft_item_by_task_id_any_context(context, task_id)
+            draft_future = self._service._sora_publish_workflow._watch_draft_item_by_task_id_any_context(context, task_id)
             last_manual_fetch = 0.0
 
             if not (page.url or "").startswith("https://sora.chatgpt.com"):
@@ -1060,7 +1008,7 @@ class SoraGenerationWorkflow:
                                 continue
                             draft_data = None
                     if isinstance(draft_data, dict):
-                        generation_id = self._publish_workflow.extract_generation_id(draft_data)
+                        generation_id = self._service._sora_publish_workflow._extract_generation_id(draft_data)
                         if generation_id:
                             self._persist_generation_id(job_id, generation_id)
                             logger.info(
@@ -1075,7 +1023,7 @@ class SoraGenerationWorkflow:
                         last_manual_fetch = now
                         logger.info("获取 genid 手动 fetch drafts: profile=%s task_id=%s", profile_id, task_id)
                         try:
-                            generation_id, manual_data = await self._publish_workflow.resolve_generation_id_by_task_id(
+                            generation_id, manual_data = await self._service._sora_publish_workflow._resolve_generation_id_by_task_id(  # noqa: SLF001
                                 task_id=task_id,
                                 page=page if page and (page.url or "").startswith("https://sora.chatgpt.com") else None,
                                 context=context,

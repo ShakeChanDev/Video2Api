@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-from bisect import bisect_right
 import logging
-import json
 import re
 import time
 from datetime import datetime
@@ -242,9 +240,6 @@ class SoraJobsMixin:
                 "status": "queued",
                 "phase": "queue",
                 "progress_pct": 0,
-                "priority": int(getattr(request, "priority", 100) or 100),
-                "engine_version": "v2",
-                "actor_id": f"profile-{int(selected_profile_id)}",
                 "dispatch_mode": dispatch_mode,
                 "dispatch_score": dispatch_score,
                 "dispatch_quantity_score": dispatch_quantity_score,
@@ -306,9 +301,6 @@ class SoraJobsMixin:
         status: Optional[str] = None,
         phase: Optional[str] = None,
         keyword: Optional[str] = None,
-        error_class: Optional[str] = None,
-        actor_id: Optional[str] = None,
-        engine_version: Optional[str] = None,
     ) -> List[SoraJob]:
         rows = sqlite_db.list_sora_jobs(
             group_title=group_title,
@@ -317,9 +309,6 @@ class SoraJobsMixin:
             status=status,
             phase=phase,
             keyword=keyword,
-            error_class=error_class,
-            actor_id=actor_id,
-            engine_version=engine_version,
         )
         return [self._build_sora_job(row) for row in rows]
 
@@ -603,165 +592,11 @@ class SoraJobsMixin:
         events = sqlite_db.list_sora_job_events(job_id)
         return [SoraJobEvent(**event) for event in events]
 
-    async def create_sora_job_v2(self, request, operator_user: Optional[dict] = None) -> Dict[str, Any]:
-        dispatch_mode = "manual" if getattr(request, "profile_id", None) else "weighted_auto"
-        compat_request = SoraJobRequest(
-            profile_id=getattr(request, "profile_id", None),
-            dispatch_mode=dispatch_mode,
-            prompt=str(getattr(request, "prompt", "")),
-            image_url=getattr(request, "image_url", None),
-            duration=str(getattr(request, "duration", "10s")),
-            aspect_ratio=str(getattr(request, "aspect_ratio", "landscape")),
-            group_title=str(getattr(request, "group_title", "Sora")),
-        )
-        result = await self.create_sora_job(compat_request, operator_user=operator_user)
-        sqlite_db.update_sora_job(
-            int(result.job.job_id),
-            {"priority": int(getattr(request, "priority", 100) or 100)},
-        )
-        row = sqlite_db.get_sora_job(int(result.job.job_id)) or {}
-        return {
-            "job": self._build_sora_job_v2_payload(row),
-            "run_context": self._build_run_context(row),
-        }
-
-    def list_sora_jobs_v2(
-        self,
-        *,
-        group_title: Optional[str] = None,
-        profile_id: Optional[int] = None,
-        status: Optional[str] = None,
-        phase: Optional[str] = None,
-        keyword: Optional[str] = None,
-        error_class: Optional[str] = None,
-        actor_id: Optional[str] = None,
-        engine_version: Optional[str] = None,
-        limit: int = 50,
-    ) -> List[Dict[str, Any]]:
-        rows = sqlite_db.list_sora_jobs(
-            group_title=group_title,
-            limit=limit,
-            profile_id=profile_id,
-            status=status,
-            phase=phase,
-            keyword=keyword,
-            error_class=error_class,
-            actor_id=actor_id,
-            engine_version=engine_version,
-        )
-        run_context_map = self._build_run_context_map(rows)
-        return [
-            self._build_sora_job_v2_payload(
-                row,
-                run_context=run_context_map.get(int(row.get("id") or 0)),
-            )
-            for row in rows
-        ]
-
-    def get_sora_job_v2_detail(self, job_id: int) -> Dict[str, Any]:
-        row = sqlite_db.get_sora_job(int(job_id))
-        if not row:
-            raise IXBrowserNotFoundError(f"未找到任务：{job_id}")
-
-        run_id = int(row.get("last_run_id") or 0)
-        run = sqlite_db.get_sora_run(run_id) if run_id > 0 else None
-        if not run:
-            run = sqlite_db.get_latest_sora_run(int(job_id))
-            if run:
-                try:
-                    run_id = int(run.get("id") or 0)
-                except Exception:
-                    run_id = 0
-
-        phase_attempts_summary = sqlite_db.summarize_sora_phase_attempts(run_id) if run_id > 0 else []
-        session_stats = {
-            "session_reconnect_count": int(row.get("session_reconnect_count") or 0),
-            "phase_retry_count": int(row.get("phase_retry_count") or 0),
-            "last_recover_action": row.get("last_recover_action"),
-        }
-        return {
-            "job": self._build_sora_job_v2_payload(row),
-            "current_run": run,
-            "phase_attempts_summary": phase_attempts_summary,
-            "session_stats": session_stats,
-        }
-
-    def list_sora_job_timeline_v2(self, job_id: int, limit: int = 500) -> List[Dict[str, Any]]:
-        row = sqlite_db.get_sora_job(int(job_id))
-        if not row:
-            raise IXBrowserNotFoundError(f"未找到任务：{job_id}")
-        rows = sqlite_db.list_sora_job_timeline(int(job_id), limit=limit)
-        result: List[Dict[str, Any]] = []
-        for item in rows:
-            payload = item.get("payload_json")
-            detail: Dict[str, Any] = {}
-            if isinstance(payload, str) and payload.strip():
-                try:
-                    loaded = json.loads(payload)
-                    if isinstance(loaded, dict):
-                        detail = loaded
-                except Exception:  # noqa: BLE001
-                    detail = {"raw": payload}
-            result.append(
-                {
-                    "id": int(item.get("id") or 0),
-                    "job_id": int(item.get("job_id") or 0),
-                    "run_id": item.get("run_id"),
-                    "event_type": item.get("event_type"),
-                    "from_status": item.get("from_status"),
-                    "to_status": item.get("to_status"),
-                    "phase": item.get("phase"),
-                    "detail": detail,
-                    "created_at": item.get("created_at"),
-                }
-            )
-        return result
-
-    async def apply_sora_job_action_v2(self, job_id: int, action: str) -> Dict[str, Any]:
-        action_text = str(action or "").strip().lower()
-        if action_text == "retry":
-            await self.retry_sora_job(int(job_id))
-        elif action_text == "cancel":
-            await self.cancel_sora_job(int(job_id))
-        elif action_text == "force_rebind_profile":
-            row = sqlite_db.get_sora_job(int(job_id))
-            if not row:
-                raise IXBrowserNotFoundError(f"未找到任务：{job_id}")
-            profile_id = int(row.get("profile_id") or 0)
-            sqlite_db.force_release_profile_runtime_lock(profile_id)
-            status = str(row.get("status") or "").strip().lower()
-            if status in {"queued", "running", "failed"}:
-                sqlite_db.update_sora_job(
-                    int(job_id),
-                    {
-                        "status": "queued",
-                        "phase": "queue",
-                        "error": None,
-                        "last_error_class": "profile_preempted",
-                        "last_recover_action": "session_reconnect",
-                    },
-                )
-            sqlite_db.create_sora_job_timeline(
-                {
-                    "job_id": int(job_id),
-                    "run_id": row.get("last_run_id"),
-                    "event_type": "force_rebind_profile",
-                    "phase": row.get("phase"),
-                    "payload_json": json.dumps({"profile_id": profile_id}, ensure_ascii=False),
-                    "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                }
-            )
-        else:
-            raise IXBrowserServiceError("action 仅支持 retry|cancel|force_rebind_profile")
-
-        return self.get_sora_job_v2_detail(int(job_id))
-
     async def run_sora_job(self, job_id: int) -> None:
         """对外公开执行入口（避免外部依赖私有方法）。"""
-        await self._sora_job_engine.run_job(job_id)
+        await self._sora_job_runner.run_sora_job(job_id)
 
     async def _run_sora_job(self, job_id: int) -> None:
-        # 兼容测试中的旧私有入口；正式 worker 走 run_sora_job(v2 engine)。
         await self._sora_job_runner.run_sora_job(job_id)
 
     def _complete_sora_job_after_watermark(self, job_id: int, watermark_url: str) -> None:
@@ -775,86 +610,6 @@ class SoraJobsMixin:
 
     async def _run_sora_watermark(self, job_id: int, publish_url: str) -> str:
         return await self._sora_job_runner.run_sora_watermark(job_id, publish_url)
-
-    def _build_run_context(self, row: dict) -> Dict[str, Any]:
-        profile_id = int(row.get("profile_id") or 0)
-        job_id = int(row.get("id") or 0)
-        lock = sqlite_db.get_profile_runtime_lock(profile_id) or {}
-        return {
-            "actor_id": str(row.get("actor_id") or f"profile-{profile_id}"),
-            "actor_queue_position": int(sqlite_db.estimate_sora_actor_queue_position(profile_id, job_id) or 1),
-            "profile_lock_state": "locked" if lock else "free",
-        }
-
-    def _build_run_context_map(self, rows: List[dict]) -> Dict[int, Dict[str, Any]]:
-        profile_ids = sorted({int(item.get("profile_id") or 0) for item in rows if int(item.get("profile_id") or 0) > 0})
-        active_ids_by_profile = sqlite_db.list_active_sora_job_ids_by_profiles(profile_ids) if profile_ids else {}
-        locked_profile_ids = set()
-        if profile_ids:
-            profile_id_set = set(profile_ids)
-            for lock in sqlite_db.list_profile_runtime_locks():
-                try:
-                    pid = int(lock.get("profile_id") or 0)
-                except Exception:
-                    continue
-                if pid > 0 and pid in profile_id_set:
-                    locked_profile_ids.add(pid)
-
-        context_map: Dict[int, Dict[str, Any]] = {}
-        for row in rows:
-            job_id = int(row.get("id") or 0)
-            if job_id <= 0:
-                continue
-            profile_id = int(row.get("profile_id") or 0)
-            actor_id = str(row.get("actor_id") or f"profile-{profile_id}")
-            queue_position = 1
-            if profile_id > 0:
-                active_ids = active_ids_by_profile.get(profile_id) or []
-                queue_position = max(1, int(bisect_right(active_ids, job_id) or 1))
-            context_map[job_id] = {
-                "actor_id": actor_id,
-                "actor_queue_position": queue_position,
-                "profile_lock_state": "locked" if profile_id in locked_profile_ids else "free",
-            }
-        return context_map
-
-    @staticmethod
-    def _is_retryable_error_class(error_class: Optional[str]) -> bool:
-        return str(error_class or "").strip() in {
-            "execution_context_destroyed",
-            "page_closed_external",
-            "ixbrowser_busy",
-            "navigation_aborted",
-        }
-
-    def _build_v2_error_payload(self, row: dict, *, fallback_message: Optional[str] = None) -> Optional[Dict[str, Any]]:
-        error_class = row.get("last_error_class")
-        message = row.get("error") or fallback_message
-        recover_action = row.get("last_recover_action")
-        if not error_class and not message:
-            return None
-        return {
-            "class": error_class or "unknown_error",
-            "retryable": self._is_retryable_error_class(error_class),
-            "recover_action": recover_action or "abort",
-            "message": message,
-        }
-
-    def _build_sora_job_v2_payload(
-        self,
-        row: dict,
-        *,
-        run_context: Optional[Dict[str, Any]] = None,
-    ) -> Dict[str, Any]:
-        data = self._build_sora_job(row).model_dump()
-        error_message = data.pop("error", None)
-        data["error_message"] = error_message
-        data["error"] = self._build_v2_error_payload(row, fallback_message=error_message)
-        if isinstance(run_context, dict):
-            data["run_context"] = dict(run_context)
-        else:
-            data["run_context"] = self._build_run_context(row)
-        return data
 
     @staticmethod
     def _normalize_custom_parse_path(path: str) -> str:
@@ -925,14 +680,6 @@ class SoraJobsMixin:
             dispatch_quantity_score=row.get("dispatch_quantity_score"),
             dispatch_quality_score=row.get("dispatch_quality_score"),
             dispatch_reason=row.get("dispatch_reason"),
-            priority=row.get("priority"),
-            engine_version=row.get("engine_version"),
-            actor_id=row.get("actor_id"),
-            last_run_id=row.get("last_run_id"),
-            last_error_class=row.get("last_error_class"),
-            last_recover_action=row.get("last_recover_action"),
-            session_reconnect_count=row.get("session_reconnect_count"),
-            phase_retry_count=row.get("phase_retry_count"),
             retry_of_job_id=row.get("retry_of_job_id"),
             retry_root_job_id=row.get("retry_root_job_id"),
             retry_index=row.get("retry_index"),
@@ -990,3 +737,4 @@ class SoraJobsMixin:
             updated_at=str(row.get("updated_at") or ""),
             operator_username=row.get("operator_username"),
         )
+

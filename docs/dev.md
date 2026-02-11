@@ -97,7 +97,6 @@ python -m playwright install
   - `GET /api/v1/admin/logs`：游标分页查询（`items/has_more/next_cursor`）
   - `GET /api/v1/admin/logs/stats`：统计卡片数据（总量、失败率、P95、Top）
   - `GET /api/v1/admin/logs/stream`：SSE 实时流（`event: log` / `event: ping`）
-  - `GET /api/v1/admin/sora-requests/dashboard`：Sora 请求看板聚合数据（趋势/Top/延迟/状态码/热力图/样本）
 - 默认策略：
   - API 日志全量采集（可通过配置改为 `failed_slow` 或 `failed_only`）
   - 仅记录 `path + query`，不记录请求体
@@ -113,16 +112,6 @@ python -m playwright install
   - `API_SLOW_THRESHOLD_MS`
   - `LOG_MASK_MODE`
   - `SYSTEM_LOGGER_INGEST_LEVEL`
-
-### Sora 请求看板接口说明
-- 统计口径：`source='api'` 且 `path` 包含 `'/sora'`，并排除 `'/api/v1/admin/sora-requests%'`。
-- 关键参数：
-  - `window`：`1h|6h|24h|7d`（默认 `24h`）
-  - `bucket`：`auto|1m|5m|1h`（默认 `auto`）
-  - `endpoint_limit`：`5~30`（默认 `10`）
-  - `include_stream_volume`：请求量统计是否包含 `.../stream`（默认 `true`）
-  - `include_stream_latency`：延迟统计是否包含 `.../stream`（默认 `false`）
-  - `sample_limit`：样本条数 `10~100`（默认 `30`）
 
 ## 常见问题排查
 - ixBrowser 连接不上：检查 `.env` 的 `IXBROWSER_API_BASE`，并确认本地 ixBrowser 服务已启动。

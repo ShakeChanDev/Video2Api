@@ -160,10 +160,6 @@
               >
                 <span class="status-error">{{ shorten(jobErrorSummary(row), 72) }}</span>
               </el-tooltip>
-              <span v-if="row.error?.class" class="status-error">
-                {{ row.error.class }}
-                <template v-if="row.error.recover_action"> · {{ row.error.recover_action }}</template>
-              </span>
             </div>
           </template>
         </el-table-column>
@@ -360,16 +356,16 @@
           <div class="detail-text">{{ detailJob.prompt }}</div>
         </div>
       </div>
-        <div class="detail-block">
+      <div class="detail-block">
         <div class="detail-label">阶段事件</div>
         <div v-if="detailEvents.length" class="event-list">
           <div v-for="event in detailEvents" :key="event.id" class="event-item">
             <div class="event-time">{{ formatTime(event.created_at) }}</div>
             <div class="event-meta">
               <span class="event-phase">{{ event.phase }}</span>
-              <span class="event-action">{{ event.event || event.event_type }}</span>
+              <span class="event-action">{{ event.event }}</span>
             </div>
-            <div class="event-message">{{ event.message || event.detail?.message || '-' }}</div>
+            <div class="event-message">{{ event.message || '-' }}</div>
           </div>
         </div>
         <div v-else class="event-empty">暂无事件记录</div>
@@ -457,9 +453,7 @@ const filteredJobs = computed(() => {
       job.generation_id || '',
       job.prompt || '',
       job.image_url || '',
-      job.error_message || '',
-      job.error?.class || '',
-      job.error?.recover_action || '',
+      job.error || '',
       job.watermark_url || '',
       job.watermark_error || ''
     ]
@@ -538,9 +532,7 @@ const canRetryWatermark = (row) => row?.watermark_status === 'failed' && Boolean
 
 const jobErrorSummary = (row) => {
   if (!row) return ''
-  const err = row.error && typeof row.error === 'object' ? row.error : null
-  const structured = err?.message || err?.class || ''
-  if (row.status === 'failed') return structured || row.error_message || row.watermark_error || ''
+  if (row.status === 'failed') return row.error || row.watermark_error || ''
   return ''
 }
 
@@ -819,74 +811,28 @@ const startJobRealtime = () => {
     }
   })
 
-  realtimeSource.addEventListener('job_patch', (event) => {
+  realtimeSource.addEventListener('job', (event) => {
     try {
       const payload = JSON.parse(event.data || '{}')
-      const patch = payload?.job_patch
-      if (patch?._deleted) {
-        removeJob(patch?.job_id)
-        return
-      }
-      upsertJob(patch || payload)
+      upsertJob(payload)
     } catch {
       // noop
     }
   })
 
-  realtimeSource.addEventListener('phase_update', (event) => {
+  realtimeSource.addEventListener('remove', (event) => {
     try {
       const payload = JSON.parse(event.data || '{}')
-      appendDetailEvent(payload?.phase_update || payload)
+      removeJob(payload?.job_id)
     } catch {
       // noop
     }
   })
 
-  realtimeSource.addEventListener('run_update', (event) => {
+  realtimeSource.addEventListener('phase', (event) => {
     try {
       const payload = JSON.parse(event.data || '{}')
-      const run = payload?.run_update
-      if (!run?.job_id) return
-      const idx = jobs.value.findIndex((job) => Number(job?.job_id || 0) === Number(run.job_id || 0))
-      if (idx < 0) return
-      const target = jobs.value[idx] || {}
-      const merged = {
-        ...target,
-        last_run_id: run.id || target.last_run_id,
-        phase: run.phase || target.phase,
-        status: run.status === 'failed' ? 'failed' : target.status,
-        error: run.error_class
-          ? {
-              ...(target.error || {}),
-              class: run.error_class,
-              message: run.error_message || target?.error?.message || target.error_message || '',
-              recover_action: target?.error?.recover_action || target.last_recover_action || 'abort',
-              retryable: Boolean(target?.error?.retryable)
-            }
-          : target.error
-      }
-      jobs.value.splice(idx, 1, merged)
-      syncDetailJob()
-    } catch {
-      // noop
-    }
-  })
-
-  realtimeSource.addEventListener('lock_update', (event) => {
-    try {
-      const payload = JSON.parse(event.data || '{}')
-      const lock = payload?.lock_update
-      if (!lock?.profile_id) return
-      jobs.value = jobs.value.map((job) => {
-        if (Number(job?.profile_id || 0) !== Number(lock.profile_id || 0)) return job
-        return {
-          ...job,
-          run_context: {
-            ...(job.run_context || {}),
-            profile_lock_state: lock.owner_run_id ? 'locked' : 'free'
-          }
-        }
-      })
+      appendDetailEvent(payload)
     } catch {
       // noop
     }
@@ -961,11 +907,11 @@ const submitTask = async () => {
   submitting.value = true
   try {
     const payload = {
+      dispatch_mode: mode,
       prompt,
       duration: createForm.value.duration,
       aspect_ratio: createForm.value.aspect_ratio,
-      group_title: createForm.value.group_title || 'Sora',
-      priority: 100
+      group_title: createForm.value.group_title || 'Sora'
     }
     if (imageUrl) {
       payload.image_url = imageUrl
@@ -992,7 +938,7 @@ const retryJob = async (row) => {
   submitting.value = true
   try {
     const result = await retrySoraJob(row.job_id)
-    const newJobId = result?.job?.job_id
+    const newJobId = result?.job_id
     if (newJobId && newJobId !== row.job_id) {
       ElMessage.success(`已换号创建新任务 Job #${newJobId}（原 Job #${row.job_id} 保留失败记录）`)
     } else {
@@ -1033,18 +979,7 @@ const openDetail = async (row) => {
   detailEvents.value = []
   try {
     const data = await listSoraJobEvents(row.job_id)
-    const sorted = (Array.isArray(data) ? data : [])
-      .map((item) => ({
-        id: item.id,
-        job_id: item.job_id,
-        phase: item.phase,
-        event: item.event || item.event_type,
-        event_type: item.event_type,
-        message: item.message || item.detail?.message || '',
-        detail: item.detail || {},
-        created_at: item.created_at
-      }))
-      .sort((a, b) => Number(a.id || 0) - Number(b.id || 0))
+    const sorted = (Array.isArray(data) ? data : []).sort((a, b) => Number(a.id || 0) - Number(b.id || 0))
     detailEvents.value = sorted
   } catch (error) {
     detailEvents.value = []

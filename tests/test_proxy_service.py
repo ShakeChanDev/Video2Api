@@ -189,11 +189,9 @@ def test_proxy_list_contains_cf_recent_stats_and_unknown_bucket():
 
     resp = svc.list_proxies(keyword=None, page=1, limit=50)
     assert int(resp.cf_recent_window) == 30
-    assert int(resp.cf_trend_window) == 10
     assert int(resp.unknown_cf_recent_count) == 3
     assert int(resp.unknown_cf_recent_total) == 8
     assert float(resp.unknown_cf_recent_ratio) == 37.5
-    assert list(resp.unknown_cf_recent_seq) == [0, 0, 0, 0, 0, 1, 1, 1]
 
     items = {int(item.id): item for item in resp.items}
     item_1 = items[proxy_1_id]
@@ -201,50 +199,9 @@ def test_proxy_list_contains_cf_recent_stats_and_unknown_bucket():
     assert int(item_1.cf_recent_count) == 9
     assert int(item_1.cf_recent_total) == 30
     assert float(item_1.cf_recent_ratio) == 30.0
-    assert list(item_1.cf_recent_seq) == [0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
     assert int(item_2.cf_recent_count) == 3
     assert int(item_2.cf_recent_total) == 8
     assert float(item_2.cf_recent_ratio) == 37.5
-    assert list(item_2.cf_recent_seq) == [0, 0, 0, 0, 0, 1, 1, 1]
-
-
-def test_proxy_list_prioritizes_recent_cf_event_then_address_order():
-    svc = ProxyService()
-    import_resp = svc.batch_import(
-        ProxyBatchImportRequest(
-            text="\n".join(["8.8.8.8:8080", "2.2.2.2:8080", "9.9.9.9:8080", "1.1.1.1:8080"]),
-            default_type="http",
-            tag=None,
-            note=None,
-        )
-    )
-    assert int(import_resp.created) == 4
-
-    rows = sqlite_db.list_proxies(page=1, limit=50).get("items", [])
-    by_ip = {str(item.get("proxy_ip") or ""): int(item.get("id") or 0) for item in rows}
-
-    sqlite_db.create_proxy_cf_event(
-        proxy_id=by_ip["8.8.8.8"],
-        profile_id=11,
-        source="test",
-        endpoint="/pending",
-        status_code=403,
-        error_text="cf_challenge",
-        is_cf=True,
-    )
-    sqlite_db.create_proxy_cf_event(
-        proxy_id=by_ip["2.2.2.2"],
-        profile_id=12,
-        source="test",
-        endpoint="/pending",
-        status_code=200,
-        error_text=None,
-        is_cf=False,
-    )
-
-    resp = svc.list_proxies(keyword=None, page=1, limit=50)
-    ordered_ips = [str(item.proxy_ip or "") for item in resp.items]
-    assert ordered_ips == ["2.2.2.2", "8.8.8.8", "1.1.1.1", "9.9.9.9"]
 
 
 def test_proxy_cf_event_retention_limit_works():

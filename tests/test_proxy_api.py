@@ -92,51 +92,13 @@ def test_proxy_list_returns_cf_recent_fields(client):
     assert listed.status_code == 200
     payload = listed.json()
     assert int(payload.get("cf_recent_window") or 0) == 30
-    assert int(payload.get("cf_trend_window") or 0) == 10
     assert int(payload.get("unknown_cf_recent_count") or 0) == 1
     assert int(payload.get("unknown_cf_recent_total") or 0) == 1
     assert float(payload.get("unknown_cf_recent_ratio") or 0.0) == 100.0
-    assert payload.get("unknown_cf_recent_seq") == [1]
     item = payload["items"][0]
     assert int(item.get("cf_recent_count") or 0) == 1
     assert int(item.get("cf_recent_total") or 0) == 2
     assert float(item.get("cf_recent_ratio") or 0.0) == 50.0
-    assert item.get("cf_recent_seq") == [0, 1]
-
-
-def test_proxy_list_orders_by_recent_cf_event_then_address(client):
-    resp = client.post(
-        "/api/v1/proxies/batch-import",
-        json={"text": "\n".join(["8.8.8.8:8080", "2.2.2.2:8080", "9.9.9.9:8080", "1.1.1.1:8080"]), "default_type": "http"},
-    )
-    assert resp.status_code == 200
-
-    rows = sqlite_db.list_proxies(page=1, limit=50).get("items", [])
-    by_ip = {str(item.get("proxy_ip") or ""): int(item.get("id") or 0) for item in rows}
-    sqlite_db.create_proxy_cf_event(
-        proxy_id=by_ip["8.8.8.8"],
-        profile_id=21,
-        source="test",
-        endpoint="/pending",
-        status_code=403,
-        error_text="cf_challenge",
-        is_cf=True,
-    )
-    sqlite_db.create_proxy_cf_event(
-        proxy_id=by_ip["2.2.2.2"],
-        profile_id=22,
-        source="test",
-        endpoint="/pending",
-        status_code=200,
-        error_text=None,
-        is_cf=False,
-    )
-
-    listed = client.get("/api/v1/proxies", params={"page": 1, "limit": 50})
-    assert listed.status_code == 200
-    payload = listed.json()
-    ordered_ips = [str(item.get("proxy_ip") or "") for item in (payload.get("items") or [])]
-    assert ordered_ips == ["2.2.2.2", "8.8.8.8", "1.1.1.1", "9.9.9.9"]
 
 
 def test_proxy_batch_update(client):

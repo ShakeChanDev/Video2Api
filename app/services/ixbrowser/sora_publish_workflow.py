@@ -31,65 +31,8 @@ class SoraPublishWorkflow:
         self._service_error_cls = getattr(service, "_service_error_cls", RuntimeError)
         self._connection_error_cls = getattr(service, "_connection_error_cls", RuntimeError)
 
-    def _require_service_method(self, name: str):
-        method = getattr(self._service, name, None)
-        if method is None:
-            raise AttributeError(f"SoraPublishWorkflow 缺少依赖方法: {name}")
-        return method
-
-    @property
-    def draft_wait_timeout_seconds(self) -> float:
-        return float(getattr(self._service, "draft_wait_timeout_seconds", 20 * 60))
-
-    def playwright_factory(self):
-        return self._service.playwright_factory()
-
-    def get_cached_proxy_binding(self, profile_id: int) -> Dict[str, Any]:
-        return self._require_service_method("get_cached_proxy_binding")(profile_id)
-
-    async def _open_profile_with_retry(self, profile_id: int, max_attempts: int = 2) -> dict:
-        return await self._require_service_method("_open_profile_with_retry")(profile_id, max_attempts=max_attempts)
-
-    async def _close_profile(self, profile_id: int) -> bool:
-        return await self._require_service_method("_close_profile")(profile_id)
-
-    async def _prepare_sora_page(self, page, profile_id: int) -> None:
-        await self._require_service_method("_prepare_sora_page")(page, profile_id)
-
-    def _is_page_closed_error(self, exc: Exception) -> bool:
-        return bool(self._require_service_method("_is_page_closed_error")(exc))
-
-    def _is_execution_context_destroyed(self, exc: Exception) -> bool:
-        return bool(self._require_service_method("_is_execution_context_destroyed")(exc))
-
-    def _is_sora_cf_challenge(self, status: Optional[int], raw_text: Optional[str]) -> bool:
-        return bool(self._require_service_method("_is_sora_cf_challenge")(status, raw_text))
-
-    def _build_httpx_proxy_url_from_record(self, row: Dict[str, Any]) -> Optional[str]:
-        return self._require_service_method("_build_httpx_proxy_url_from_record")(row)
-
-    def _normalize_proxy_type(self, value: Optional[str], default: str = "http") -> str:
-        return self._require_service_method("_normalize_proxy_type")(value, default=default)
-
-    def _select_iphone_user_agent(self, profile_id: int) -> str:
-        return str(self._require_service_method("_select_iphone_user_agent")(profile_id))
-
-    async def _request_sora_api_via_curl_cffi(
-        self,
-        url: str,
-        access_token: str,
-        *,
-        proxy_url: Optional[str] = None,
-        user_agent: Optional[str] = None,
-        profile_id: Optional[int] = None,
-    ) -> Dict[str, Any]:
-        return await self._require_service_method("_request_sora_api_via_curl_cffi")(
-            url=url,
-            access_token=access_token,
-            proxy_url=proxy_url,
-            user_agent=user_agent,
-            profile_id=profile_id,
-        )
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._service, name)
 
     def _service_error(self, message: str) -> Exception:
         return self._service_error_cls(message)
@@ -144,95 +87,6 @@ class SoraPublishWorkflow:
     def is_valid_publish_url(self, url: Optional[str]) -> bool:
         return self._is_valid_publish_url(url)
 
-    async def publish_sora_video(
-        self,
-        profile_id: int,
-        task_id: Optional[str],
-        task_url: Optional[str],
-        prompt: str,
-        created_after: Optional[str] = None,
-        generation_id: Optional[str] = None,
-    ) -> Optional[str]:
-        return await self._publish_sora_video(
-            profile_id=profile_id,
-            task_id=task_id,
-            task_url=task_url,
-            prompt=prompt,
-            created_after=created_after,
-            generation_id=generation_id,
-        )
-
-    async def publish_sora_from_page(
-        self,
-        *,
-        page,
-        profile_id: int,
-        task_id: Optional[str],
-        prompt: str,
-        created_after: Optional[str],
-        generation_id: Optional[str],
-    ) -> Optional[str]:
-        return await self._publish_sora_from_page(
-            page=page,
-            profile_id=profile_id,
-            task_id=task_id,
-            prompt=prompt,
-            created_after=created_after,
-            generation_id=generation_id,
-        )
-
-    async def submit_video_request_from_page(
-        self,
-        *,
-        page,
-        prompt: str,
-        image_url: Optional[str] = None,
-        aspect_ratio: str,
-        n_frames: int,
-        device_id: str,
-    ) -> Dict[str, Any]:
-        return await self._submit_video_request_from_page(
-            page=page,
-            prompt=prompt,
-            image_url=image_url,
-            aspect_ratio=aspect_ratio,
-            n_frames=n_frames,
-            device_id=device_id,
-        )
-
-    async def get_access_token_from_page(self, page) -> Optional[str]:
-        return await self._get_access_token_from_page(page)
-
-    async def get_device_id_from_context(self, context) -> str:
-        return await self._get_device_id_from_context(context)
-
-    def watch_draft_item_by_task_id_any_context(self, context, task_id: Optional[str]):
-        return self._watch_draft_item_by_task_id_any_context(context, task_id)
-
-    def extract_generation_id(self, item: Optional[dict]) -> Optional[str]:
-        return self._extract_generation_id(item)
-
-    async def resolve_generation_id_by_task_id(
-        self,
-        *,
-        task_id: Optional[str],
-        page=None,
-        context=None,
-        limit: int = 15,
-        max_pages: int = 3,
-        retries: int = 2,
-        delay_ms: int = 1200,
-    ) -> Tuple[Optional[str], Optional[Dict[str, Any]]]:
-        return await self._resolve_generation_id_by_task_id(
-            task_id=task_id,
-            page=page,
-            context=context,
-            limit=limit,
-            max_pages=max_pages,
-            retries=retries,
-            delay_ms=delay_ms,
-        )
-
     async def _publish_sora_video(
         self,
         profile_id: int,
@@ -267,7 +121,7 @@ class SoraPublishWorkflow:
                 await self._prepare_sora_page(page, profile_id)
                 publish_future = self._watch_publish_url(page, task_id=task_id)
                 draft_generation = None
-                if isinstance(generation_id, str) and generation_id.strip():
+                if isinstance(generation_id, str) and generation_id.strip() and generation_id.strip().startswith("gen_"):
                     draft_generation = generation_id.strip()
                 if not draft_generation:
                     draft_future = self._watch_draft_item_by_task_id(page, task_id)
@@ -461,7 +315,7 @@ class SoraPublishWorkflow:
         )
         publish_future = self._watch_publish_url(page, task_id=task_id)
         draft_generation = None
-        if isinstance(generation_id, str) and generation_id.strip():
+        if isinstance(generation_id, str) and generation_id.strip() and generation_id.strip().startswith("gen_"):
             draft_generation = generation_id.strip()
         if not draft_generation:
             draft_future = self._watch_draft_item_by_task_id(page, task_id)
@@ -1388,20 +1242,16 @@ class SoraPublishWorkflow:
             generation_id = item.get("generation", {}).get("id") or item.get("generation", {}).get("generation_id")
         if not generation_id:
             item_id = item.get("id")
-            if isinstance(item_id, str) and item_id.strip():
-                generation_id = item_id.strip()
+            if isinstance(item_id, str) and item_id.startswith("gen_"):
+                generation_id = item_id
         if not generation_id:
             try:
                 raw = json.dumps(item)
             except Exception:  # noqa: BLE001
                 raw = ""
-            url_match = re.search(r"/d/([a-zA-Z0-9_-]{6,})", raw)
-            if url_match:
-                generation_id = url_match.group(1)
-            else:
-                match = re.search(r'"generation(?:_id|Id)?"\\s*[:=]\\s*"([a-zA-Z0-9_-]{6,})"', raw)
-                if match:
-                    generation_id = match.group(1)
+            match = re.search(r"gen_[a-zA-Z0-9]{8,}", raw)
+            if match:
+                generation_id = match.group(0)
         if isinstance(generation_id, str) and generation_id.strip():
             return generation_id.strip()
         return None
@@ -1409,7 +1259,7 @@ class SoraPublishWorkflow:
     def _extract_generation_id_from_url(self, url: Optional[str]) -> Optional[str]:
         if not url:
             return None
-        match = re.search(r"/d/([a-zA-Z0-9_-]{6,})", str(url))
+        match = re.search(r"/d/(gen_[a-zA-Z0-9]{8,})", str(url))
         if match:
             return match.group(1)
         return None
@@ -2131,7 +1981,8 @@ class SoraPublishWorkflow:
             return None
         generation_id = self._extract_generation_id(item)
         if isinstance(generation_id, str) and generation_id.strip():
-            return f"https://sora.chatgpt.com/d/{generation_id}"
+            if generation_id.startswith("gen_"):
+                return f"https://sora.chatgpt.com/d/{generation_id}"
         for key in ("share_url", "public_url", "publish_url", "url"):
             value = item.get(key)
             if isinstance(value, str) and value.strip():

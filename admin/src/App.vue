@@ -87,8 +87,7 @@ const navGroups = [
     items: [
       { path: '/users', label: '用户管理' },
       { path: '/settings', label: '系统设置' },
-      { path: '/logs', label: '日志中心' },
-      { path: '/sora-requests', label: 'Sora 请求看板' }
+      { path: '/logs', label: '日志中心' }
     ]
   }
 ]

@@ -93,7 +93,6 @@ class SQLiteSchemaMixin:
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_event_logs_trace_id ON event_logs(trace_id)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_event_logs_request_id ON event_logs(request_id)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_event_logs_resource_created ON event_logs(resource_type, resource_id, created_at DESC)')
-        cursor.execute('CREATE INDEX IF NOT EXISTS idx_event_logs_api_created_path ON event_logs(source, created_at DESC, path)')
         cursor.execute(
             'CREATE INDEX IF NOT EXISTS idx_event_logs_task_fail_lookup '
             'ON event_logs(source, resource_type, event, created_at DESC, resource_id)'
@@ -374,14 +373,6 @@ class SQLiteSchemaMixin:
                 heartbeat_at TIMESTAMP,
                 run_attempt INTEGER NOT NULL DEFAULT 0,
                 run_last_error TEXT,
-                priority INTEGER NOT NULL DEFAULT 100,
-                engine_version TEXT NOT NULL DEFAULT 'v2',
-                actor_id TEXT,
-                last_run_id INTEGER,
-                last_error_class TEXT,
-                last_recover_action TEXT,
-                session_reconnect_count INTEGER NOT NULL DEFAULT 0,
-                phase_retry_count INTEGER NOT NULL DEFAULT 0,
                 error TEXT,
                 started_at TIMESTAMP,
                 finished_at TIMESTAMP,
@@ -492,124 +483,7 @@ class SQLiteSchemaMixin:
             cursor.execute(
                 "ALTER TABLE sora_jobs ADD COLUMN run_last_error TEXT"
             )
-        if "priority" not in columns:
-            cursor.execute(
-                "ALTER TABLE sora_jobs ADD COLUMN priority INTEGER NOT NULL DEFAULT 100"
-            )
-        if "engine_version" not in columns:
-            cursor.execute(
-                "ALTER TABLE sora_jobs ADD COLUMN engine_version TEXT NOT NULL DEFAULT 'v2'"
-            )
-        if "actor_id" not in columns:
-            cursor.execute(
-                "ALTER TABLE sora_jobs ADD COLUMN actor_id TEXT"
-            )
-        if "last_run_id" not in columns:
-            cursor.execute(
-                "ALTER TABLE sora_jobs ADD COLUMN last_run_id INTEGER"
-            )
-        if "last_error_class" not in columns:
-            cursor.execute(
-                "ALTER TABLE sora_jobs ADD COLUMN last_error_class TEXT"
-            )
-        if "last_recover_action" not in columns:
-            cursor.execute(
-                "ALTER TABLE sora_jobs ADD COLUMN last_recover_action TEXT"
-            )
-        if "session_reconnect_count" not in columns:
-            cursor.execute(
-                "ALTER TABLE sora_jobs ADD COLUMN session_reconnect_count INTEGER NOT NULL DEFAULT 0"
-            )
-        if "phase_retry_count" not in columns:
-            cursor.execute(
-                "ALTER TABLE sora_jobs ADD COLUMN phase_retry_count INTEGER NOT NULL DEFAULT 0"
-            )
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_sora_jobs_status_lease ON sora_jobs(status, lease_until, id ASC)')
-        cursor.execute('CREATE INDEX IF NOT EXISTS idx_sora_jobs_engine_profile ON sora_jobs(engine_version, profile_id, id DESC)')
-        cursor.execute('CREATE INDEX IF NOT EXISTS idx_sora_jobs_actor ON sora_jobs(actor_id, id DESC)')
-        cursor.execute('CREATE INDEX IF NOT EXISTS idx_sora_jobs_error_class ON sora_jobs(last_error_class, id DESC)')
-
-        cursor.execute(
-            '''
-            CREATE TABLE IF NOT EXISTS sora_runs (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                job_id INTEGER NOT NULL,
-                profile_id INTEGER NOT NULL,
-                actor_id TEXT,
-                status TEXT NOT NULL,
-                phase TEXT NOT NULL,
-                started_at TIMESTAMP NOT NULL,
-                finished_at TIMESTAMP,
-                attempt INTEGER NOT NULL DEFAULT 1,
-                error_class TEXT,
-                error_code TEXT,
-                error_message TEXT,
-                session_reconnect_count INTEGER NOT NULL DEFAULT 0,
-                phase_retry_count INTEGER NOT NULL DEFAULT 0,
-                created_at TIMESTAMP NOT NULL,
-                updated_at TIMESTAMP NOT NULL,
-                FOREIGN KEY(job_id) REFERENCES sora_jobs(id) ON DELETE CASCADE
-            )
-            '''
-        )
-        cursor.execute('CREATE INDEX IF NOT EXISTS idx_sora_runs_job_id ON sora_runs(job_id, id DESC)')
-        cursor.execute('CREATE INDEX IF NOT EXISTS idx_sora_runs_profile_status ON sora_runs(profile_id, status, id DESC)')
-
-        cursor.execute(
-            '''
-            CREATE TABLE IF NOT EXISTS sora_phase_attempts (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                run_id INTEGER NOT NULL,
-                phase TEXT NOT NULL,
-                attempt INTEGER NOT NULL,
-                started_at TIMESTAMP NOT NULL,
-                finished_at TIMESTAMP,
-                outcome TEXT NOT NULL,
-                recover_action TEXT,
-                detail_json TEXT,
-                created_at TIMESTAMP NOT NULL,
-                FOREIGN KEY(run_id) REFERENCES sora_runs(id) ON DELETE CASCADE
-            )
-            '''
-        )
-        cursor.execute('CREATE INDEX IF NOT EXISTS idx_sora_phase_attempts_run ON sora_phase_attempts(run_id, id DESC)')
-        cursor.execute('CREATE INDEX IF NOT EXISTS idx_sora_phase_attempts_phase ON sora_phase_attempts(phase, attempt DESC)')
-
-        cursor.execute(
-            '''
-            CREATE TABLE IF NOT EXISTS profile_runtime_locks (
-                profile_id INTEGER PRIMARY KEY,
-                owner_run_id INTEGER NOT NULL,
-                actor_id TEXT,
-                lease_until TIMESTAMP NOT NULL,
-                heartbeat_at TIMESTAMP NOT NULL,
-                priority INTEGER NOT NULL DEFAULT 100,
-                created_at TIMESTAMP NOT NULL,
-                updated_at TIMESTAMP NOT NULL
-            )
-            '''
-        )
-        cursor.execute('CREATE INDEX IF NOT EXISTS idx_profile_runtime_locks_owner ON profile_runtime_locks(owner_run_id, lease_until)')
-        cursor.execute('CREATE INDEX IF NOT EXISTS idx_profile_runtime_locks_lease ON profile_runtime_locks(lease_until)')
-
-        cursor.execute(
-            '''
-            CREATE TABLE IF NOT EXISTS sora_job_timeline (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                job_id INTEGER NOT NULL,
-                run_id INTEGER,
-                event_type TEXT NOT NULL,
-                from_status TEXT,
-                to_status TEXT,
-                phase TEXT,
-                payload_json TEXT,
-                created_at TIMESTAMP NOT NULL,
-                FOREIGN KEY(job_id) REFERENCES sora_jobs(id) ON DELETE CASCADE
-            )
-            '''
-        )
-        cursor.execute('CREATE INDEX IF NOT EXISTS idx_sora_job_timeline_job ON sora_job_timeline(job_id, id ASC)')
-        cursor.execute('CREATE INDEX IF NOT EXISTS idx_sora_job_timeline_created ON sora_job_timeline(created_at DESC)')
 
         cursor.execute(
             '''
@@ -806,3 +680,4 @@ class SQLiteSchemaMixin:
 
         conn.commit()
         conn.close()
+

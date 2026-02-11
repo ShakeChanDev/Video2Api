@@ -12,7 +12,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from jose import JWTError, jwt
 
-from app.api import admin, auth, ixbrowser, nurture, proxy, sora, sora_v2, video_api
+from app.api import admin, auth, ixbrowser, nurture, proxy, sora, video_api
 from app.core.config import settings
 from app.core.errors import install_exception_handlers
 from app.core.logger import setup_logging
@@ -216,7 +216,6 @@ async def log_requests(request: Request, call_next):
 app.include_router(auth.router)
 app.include_router(ixbrowser.router)
 app.include_router(sora.router)
-app.include_router(sora_v2.router)
 app.include_router(nurture.router)
 app.include_router(proxy.router)
 app.include_router(admin.router)
