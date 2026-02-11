@@ -48,6 +48,7 @@ def test_sora_v2_create_job_returns_run_context(monkeypatch, client):
                 "status": "queued",
                 "phase": "queue",
                 "prompt": "x",
+                "image_url": "https://example.com/input.png",
                 "duration": "10s",
                 "aspect_ratio": "landscape",
                 "created_at": "2026-01-01 00:00:00",
@@ -68,6 +69,7 @@ def test_sora_v2_create_job_returns_run_context(monkeypatch, client):
         json={
             "group_title": "Sora",
             "prompt": "hello",
+            "image_url": "https://example.com/input.png",
             "duration": "10s",
             "aspect_ratio": "landscape",
             "priority": 100,
@@ -77,6 +79,12 @@ def test_sora_v2_create_job_returns_run_context(monkeypatch, client):
     data = resp.json()
     assert data["job"]["job_id"] == 88
     assert data["run_context"]["actor_id"] == "profile-1"
+
+    rows = sqlite_db.list_event_logs(source="audit", action="sora.v2.job.create", limit=5)["items"]
+    assert rows
+    metadata = rows[0].get("metadata") or {}
+    assert metadata.get("prompt") == "hello"
+    assert metadata.get("image_url") == "https://example.com/input.png"
 
 
 def test_sora_v2_list_and_detail(client):
@@ -114,6 +122,7 @@ def test_sora_v2_actions_retry_cancel_flow(client):
             "window_name": "w7",
             "group_title": "Sora",
             "prompt": "prompt",
+            "image_url": "https://example.com/retry.png",
             "duration": "10s",
             "aspect_ratio": "landscape",
             "status": "failed",
@@ -122,6 +131,15 @@ def test_sora_v2_actions_retry_cancel_flow(client):
             "engine_version": "v2",
             "actor_id": "profile-7",
         }
+    )
+    sqlite_db.update_sora_job(
+        job_id,
+        {
+            "watermark_status": "failed",
+            "watermark_url": "https://example.com/watermark.mp4",
+            "watermark_error": "parse failed",
+            "watermark_attempts": 2,
+        },
     )
 
     retry_resp = client.post(f"/api/v2/sora/jobs/{job_id}/actions", json={"action": "retry"})
@@ -133,3 +151,14 @@ def test_sora_v2_actions_retry_cancel_flow(client):
     assert cancel_resp.status_code == 200
     cancel_data = cancel_resp.json()
     assert cancel_data["job"]["status"] == "canceled"
+
+    rows = sqlite_db.list_event_logs(source="audit", action="sora.v2.job.action", limit=10)["items"]
+    assert len(rows) >= 2
+    metadata = rows[0].get("metadata") or {}
+    assert metadata.get("action") == "cancel"
+    assert metadata.get("prompt") == "prompt"
+    assert metadata.get("image_url") == "https://example.com/retry.png"
+    assert metadata.get("watermark_status") == "failed"
+    assert metadata.get("watermark_url") == "https://example.com/watermark.mp4"
+    assert metadata.get("watermark_error") == "parse failed"
+    assert metadata.get("watermark_attempts") == 2

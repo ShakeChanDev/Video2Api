@@ -1060,21 +1060,39 @@ class SQLiteLogsRepo:
         conn.close()
         return deleted
 
-    def create_sora_job_event(self, job_id: int, phase: str, event: str, message: Optional[str] = None) -> int:
+    def create_sora_job_event(
+        self,
+        job_id: int,
+        phase: str,
+        event: str,
+        message: Optional[str] = None,
+        metadata_extra: Optional[Dict[str, Any]] = None,
+    ) -> int:
         row = self.get_sora_job(int(job_id)) or {}
         level = "ERROR" if str(event or "").strip().lower() == "fail" else "INFO"
         metadata = {
             "job_id": int(job_id),
             "group_title": row.get("group_title"),
             "profile_id": row.get("profile_id"),
+            "duration": row.get("duration"),
+            "aspect_ratio": row.get("aspect_ratio"),
+            "prompt": row.get("prompt"),
+            "image_url": row.get("image_url"),
+            "job_status": row.get("status"),
             "task_id": row.get("task_id"),
             "generation_id": row.get("generation_id"),
             "publish_url": row.get("publish_url"),
             "publish_post_id": row.get("publish_post_id"),
             "publish_permalink": row.get("publish_permalink"),
-            "prompt": row.get("prompt"),
-            "job_status": row.get("status"),
+            "watermark_status": row.get("watermark_status"),
+            "watermark_url": row.get("watermark_url"),
+            "watermark_error": row.get("watermark_error"),
+            "watermark_attempts": row.get("watermark_attempts"),
+            "watermark_started_at": row.get("watermark_started_at"),
+            "watermark_finished_at": row.get("watermark_finished_at"),
         }
+        if isinstance(metadata_extra, dict) and metadata_extra:
+            metadata.update(metadata_extra)
         return self.create_event_log(
             source="task",
             action=f"sora.job.{str(event or '').strip().lower()}",

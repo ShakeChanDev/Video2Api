@@ -115,6 +115,7 @@ def test_sora_job_event_compatibility_mapping(temp_db):
             "profile_id": 8,
             "group_title": "Sora",
             "prompt": "test",
+            "image_url": "https://example.com/ref.png",
             "duration": "10s",
             "aspect_ratio": "landscape",
             "status": "running",
@@ -123,7 +124,28 @@ def test_sora_job_event_compatibility_mapping(temp_db):
             "operator_username": "Admin",
         }
     )
-    sqlite_db.create_sora_job_event(job_id, "submit", "start", "开始执行")
+    sqlite_db.update_sora_job(
+        job_id,
+        {
+            "watermark_status": "failed",
+            "watermark_url": "https://example.com/nowatermark.mp4",
+            "watermark_error": "解析失败",
+            "watermark_attempts": 2,
+            "watermark_started_at": "2026-02-01 10:00:00",
+            "watermark_finished_at": "2026-02-01 10:01:00",
+        },
+    )
+    sqlite_db.create_sora_job_event(
+        job_id,
+        "submit",
+        "start",
+        "开始执行",
+        metadata_extra={
+            "prompt": "override prompt",
+            "image_url": "https://example.com/override.png",
+            "watermark_error": "override error",
+        },
+    )
     sqlite_db.create_sora_job_event(job_id, "submit", "fail", "boom")
 
     events = sqlite_db.list_sora_job_events(job_id)
@@ -138,6 +160,22 @@ def test_sora_job_event_compatibility_mapping(temp_db):
     log_rows = sqlite_db.list_sora_job_events_for_logs(keyword="boom", limit=20)
     assert log_rows
     assert any(int(item["job_id"]) == int(job_id) for item in log_rows)
+
+    event_rows = sqlite_db.list_event_logs(
+        source="task",
+        resource_type="sora_job",
+        resource_id=str(job_id),
+        limit=10,
+    )["items"]
+    start_row = next((item for item in event_rows if str(item.get("event") or "") == "start"), None)
+    assert start_row is not None
+    metadata = start_row.get("metadata") or {}
+    assert metadata.get("prompt") == "override prompt"
+    assert metadata.get("image_url") == "https://example.com/override.png"
+    assert metadata.get("watermark_status") == "failed"
+    assert metadata.get("watermark_url") == "https://example.com/nowatermark.mp4"
+    assert metadata.get("watermark_error") == "override error"
+    assert metadata.get("watermark_attempts") == 2
 
 
 def test_event_logs_size_limit_cleanup(temp_db):

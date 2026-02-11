@@ -59,6 +59,13 @@ def test_sora_watermark_parse_api_v2_success(monkeypatch, client):
     assert data["parse_method"] == "custom"
     assert data["watermark_url"] == "https://example.com/s_12345678.mp4"
 
+    rows = sqlite_db.list_event_logs(source="audit", action="sora.watermark.parse", limit=5)["items"]
+    assert rows
+    metadata = rows[0].get("metadata") or {}
+    assert metadata.get("share_id") == "s_12345678"
+    assert metadata.get("parse_method") == "custom"
+    assert metadata.get("watermark_url") == "https://example.com/s_12345678.mp4"
+
 
 def test_sora_watermark_parse_api_v2_service_error(monkeypatch, client):
     async def _fake_parse(_share_url):
@@ -74,6 +81,13 @@ def test_sora_watermark_parse_api_v2_service_error(monkeypatch, client):
     data = resp.json()
     assert data["error"]["type"] == "ixbrowser_service_error"
     assert "无效的 Sora 分享链接" in data["detail"]
+
+    rows = sqlite_db.list_event_logs(source="audit", action="sora.watermark.parse", limit=5)["items"]
+    assert rows
+    assert rows[0].get("status") == "failed"
+    metadata = rows[0].get("metadata") or {}
+    assert metadata.get("share_url") == "https://example.com/not-sora"
+    assert "无效的 Sora 分享链接" in str(metadata.get("error") or "")
 
 
 def test_sora_watermark_parse_api_v2_requires_auth(temp_db):

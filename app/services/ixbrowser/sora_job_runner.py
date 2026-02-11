@@ -88,6 +88,8 @@ class SoraJobRunner:
                         profile_id=int(row["profile_id"]),
                         task_id=task_id,
                         started_at=started_at,
+                        prompt=str(row.get("prompt") or ""),
+                        image_url=str(row.get("image_url") or "").strip() or None,
                     )
                     phase = "genid"
 
