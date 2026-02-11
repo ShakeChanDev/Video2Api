@@ -5,7 +5,7 @@ import asyncio
 import logging
 import re
 from datetime import datetime
-from typing import Any, Dict, Optional
+from typing import Any, Awaitable, Callable, Dict, Optional
 from urllib.parse import urlparse
 
 import httpx
@@ -35,6 +35,72 @@ class SoraJobRunner:
         err_cls = getattr(self._service, "_service_error_cls", RuntimeError)
         return err_cls(message)
 
+    def _resolve_generate_timeout_seconds(self) -> int:
+        raw = getattr(self._service, "generate_timeout_seconds", 60 * 60)
+        try:
+            timeout_seconds = int(raw)
+        except (TypeError, ValueError):
+            timeout_seconds = 60 * 60
+        return max(1, timeout_seconds)
+
+    @staticmethod
+    def _parse_datetime_text(value: Optional[str]) -> Optional[datetime]:
+        text = str(value or "").strip()
+        if not text:
+            return None
+        try:
+            return datetime.strptime(text, "%Y-%m-%d %H:%M:%S")
+        except ValueError:
+            pass
+        normalized = text.replace("Z", "+00:00")
+        try:
+            dt = datetime.fromisoformat(normalized)
+        except ValueError:
+            return None
+        if dt.tzinfo is not None:
+            dt = dt.astimezone().replace(tzinfo=None)
+        return dt
+
+    def _remaining_job_timeout_seconds(self, *, started_at: Optional[str], timeout_seconds: int) -> float:
+        timeout_sec = float(max(1, int(timeout_seconds)))
+        started_dt = self._parse_datetime_text(started_at)
+        if started_dt is None:
+            return timeout_sec
+        elapsed = max(0.0, (datetime.now() - started_dt).total_seconds())
+        return timeout_sec - elapsed
+
+    def _build_timeout_message(self, timeout_seconds: int) -> str:
+        total_seconds = max(1, int(timeout_seconds))
+        minutes, seconds = divmod(total_seconds, 60)
+        if minutes > 0 and seconds == 0:
+            return f"任务执行超时（>{minutes}分钟）"
+        return f"任务执行超时（>{total_seconds}秒）"
+
+    def _ensure_job_not_timed_out(self, *, started_at: Optional[str], timeout_seconds: int) -> float:
+        remaining = self._remaining_job_timeout_seconds(
+            started_at=started_at,
+            timeout_seconds=timeout_seconds,
+        )
+        if remaining <= 0:
+            raise self._service_error(self._build_timeout_message(timeout_seconds))
+        return remaining
+
+    async def _run_with_job_timeout(
+        self,
+        awaitable_factory: Callable[[], Awaitable[Any]],
+        *,
+        started_at: Optional[str],
+        timeout_seconds: int,
+    ) -> Any:
+        remaining = self._ensure_job_not_timed_out(
+            started_at=started_at,
+            timeout_seconds=timeout_seconds,
+        )
+        try:
+            return await asyncio.wait_for(awaitable_factory(), timeout=remaining)
+        except asyncio.TimeoutError as exc:
+            raise self._service_error(self._build_timeout_message(timeout_seconds)) from exc
+
     async def run_sora_job(self, job_id: int) -> None:
         if self._semaphore is None:
             self._semaphore = asyncio.Semaphore(self._max_concurrency)
@@ -50,6 +116,7 @@ class SoraJobRunner:
             if phase == "queue":
                 phase = "submit"
             started_at = row.get("started_at") or datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            job_timeout_seconds = self._resolve_generate_timeout_seconds()
             self._db.update_sora_job(
                 job_id,
                 {
@@ -66,38 +133,54 @@ class SoraJobRunner:
 
             try:
                 if phase == "submit":
-                    task_id, generation_id = await self._service._sora_generation_workflow.run_sora_submit_and_progress(  # noqa: SLF001
-                        job_id=job_id,
-                        profile_id=int(row["profile_id"]),
-                        prompt=str(row["prompt"]),
-                        image_url=str(row.get("image_url") or "").strip() or None,
-                        duration=str(row["duration"]),
-                        aspect_ratio=str(row["aspect_ratio"]),
+                    task_id, generation_id = await self._run_with_job_timeout(
+                        lambda: self._service._sora_generation_workflow.run_sora_submit_and_progress(  # noqa: SLF001
+                            job_id=job_id,
+                            profile_id=int(row["profile_id"]),
+                            prompt=str(row["prompt"]),
+                            image_url=str(row.get("image_url") or "").strip() or None,
+                            duration=str(row["duration"]),
+                            aspect_ratio=str(row["aspect_ratio"]),
+                            started_at=started_at,
+                        ),
                         started_at=started_at,
+                        timeout_seconds=job_timeout_seconds,
                     )
                     phase = "genid"
 
                 if phase == "progress":
                     if not task_id:
                         raise self._service_error("缺少 task_id，无法进入进度阶段")
-                    generation_id = await self._service._sora_generation_workflow.run_sora_progress_only(  # noqa: SLF001
-                        job_id=job_id,
-                        profile_id=int(row["profile_id"]),
-                        task_id=task_id,
+                    generation_id = await self._run_with_job_timeout(
+                        lambda: self._service._sora_generation_workflow.run_sora_progress_only(  # noqa: SLF001
+                            job_id=job_id,
+                            profile_id=int(row["profile_id"]),
+                            task_id=task_id,
+                            started_at=started_at,
+                        ),
                         started_at=started_at,
+                        timeout_seconds=job_timeout_seconds,
                     )
                     phase = "genid"
 
                 if phase == "genid":
+                    self._ensure_job_not_timed_out(
+                        started_at=started_at,
+                        timeout_seconds=job_timeout_seconds,
+                    )
                     if not task_id:
                         raise self._service_error("缺少 task_id，无法获取 genid")
                     self._db.update_sora_job(job_id, {"phase": "genid"})
                     self._db.create_sora_job_event(job_id, "genid", "start", "开始获取 genid")
                     if not generation_id:
-                        generation_id = await self._service._sora_generation_workflow.run_sora_fetch_generation_id(  # noqa: SLF001
-                            job_id=job_id,
-                            profile_id=int(row["profile_id"]),
-                            task_id=task_id,
+                        generation_id = await self._run_with_job_timeout(
+                            lambda: self._service._sora_generation_workflow.run_sora_fetch_generation_id(  # noqa: SLF001
+                                job_id=job_id,
+                                profile_id=int(row["profile_id"]),
+                                task_id=task_id,
+                            ),
+                            started_at=started_at,
+                            timeout_seconds=job_timeout_seconds,
                         )
                     if not generation_id:
                         raise self._service_error("20分钟内未捕获generation_id")
@@ -106,17 +189,25 @@ class SoraJobRunner:
                     phase = "publish"
 
                 if phase == "publish":
+                    self._ensure_job_not_timed_out(
+                        started_at=started_at,
+                        timeout_seconds=job_timeout_seconds,
+                    )
                     if not generation_id:
                         raise self._service_error("缺少 genid，无法发布")
                     self._db.update_sora_job(job_id, {"phase": "publish"})
                     self._db.create_sora_job_event(job_id, "publish", "start", "开始发布")
-                    publish_url = await self._service._sora_publish_workflow._publish_sora_video(  # noqa: SLF001
-                        profile_id=int(row["profile_id"]),
-                        task_id=task_id,
-                        task_url=None,
-                        prompt=str(row.get("prompt") or ""),
-                        created_after=started_at,
-                        generation_id=generation_id,
+                    publish_url = await self._run_with_job_timeout(
+                        lambda: self._service._sora_publish_workflow._publish_sora_video(  # noqa: SLF001
+                            profile_id=int(row["profile_id"]),
+                            task_id=task_id,
+                            task_url=None,
+                            prompt=str(row.get("prompt") or ""),
+                            created_after=started_at,
+                            generation_id=generation_id,
+                        ),
+                        started_at=started_at,
+                        timeout_seconds=job_timeout_seconds,
                     )
                     if not publish_url:
                         raise self._service_error("发布未返回链接")
@@ -138,7 +229,11 @@ class SoraJobRunner:
                     self._db.create_sora_job_event(job_id, "publish", "finish", "发布完成")
 
                     try:
-                        watermark_url = await self.run_sora_watermark(job_id=job_id, publish_url=publish_url)
+                        watermark_url = await self._run_with_job_timeout(
+                            lambda: self.run_sora_watermark(job_id=job_id, publish_url=publish_url),
+                            started_at=started_at,
+                            timeout_seconds=job_timeout_seconds,
+                        )
                     except Exception as watermark_exc:  # noqa: BLE001
                         config = self._db.get_watermark_free_config() or {}
                         if self._is_fallback_enabled(config) and self._is_watermark_fallback_candidate(str(watermark_exc)):
@@ -250,6 +345,8 @@ class SoraJobRunner:
         lowered = str(error_text or "").strip().lower()
         if not lowered:
             return True
+        if "任务执行超时" in lowered:
+            return False
         return "去水印功能已关闭" not in lowered
 
     @staticmethod

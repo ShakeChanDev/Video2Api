@@ -78,7 +78,7 @@ class IXBrowserService(
     """ixBrowser 本地接口封装"""
 
     scan_history_limit = 10
-    generate_timeout_seconds = 30 * 60
+    generate_timeout_seconds = 60 * 60
     generate_poll_interval_seconds = 6
     draft_wait_timeout_seconds = 20 * 60
     draft_manual_poll_interval_seconds = 5 * 60

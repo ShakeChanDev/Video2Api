@@ -18,7 +18,7 @@ class IxBrowserSettings(BaseModel):
 class SoraSettings(BaseModel):
     job_max_concurrency: int = Field(2, ge=1, le=10)
     generate_poll_interval_sec: int = Field(6, ge=3, le=60)
-    generate_max_minutes: int = Field(30, ge=1, le=120)
+    generate_max_minutes: int = Field(60, ge=1, le=120)
     draft_wait_timeout_minutes: int = Field(20, ge=1, le=120)
     draft_manual_poll_interval_minutes: int = Field(5, ge=1, le=60)
     heavy_load_retry_max_attempts: int = Field(4, ge=1, le=10)

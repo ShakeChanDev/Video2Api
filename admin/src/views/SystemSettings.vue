@@ -39,7 +39,7 @@
                 <el-form-item label="任务轮询间隔（秒）">
                   <el-input-number v-model="systemForm.sora.generate_poll_interval_sec" :min="3" :max="60" />
                 </el-form-item>
-                <el-form-item label="任务最大等待（分钟）">
+                <el-form-item label="生成任务总超时（分钟）">
                   <el-input-number v-model="systemForm.sora.generate_max_minutes" :min="1" :max="120" />
                 </el-form-item>
                 <el-form-item label="Draft 等待超时（分钟）">
@@ -505,7 +505,7 @@ const defaultSystemForm = {
   sora: {
     job_max_concurrency: 2,
     generate_poll_interval_sec: 6,
-    generate_max_minutes: 30,
+    generate_max_minutes: 60,
     draft_wait_timeout_minutes: 20,
     draft_manual_poll_interval_minutes: 5,
     heavy_load_retry_max_attempts: 4,
