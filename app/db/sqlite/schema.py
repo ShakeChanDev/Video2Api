@@ -616,12 +616,44 @@ class SQLiteSchemaMixin:
                 check_country TEXT,
                 check_city TEXT,
                 check_timezone TEXT,
+                check_health_score INTEGER,
+                check_risk_level TEXT,
+                check_risk_flags TEXT,
+                check_proxycheck_type TEXT,
+                check_proxycheck_risk INTEGER,
+                check_is_proxy INTEGER,
+                check_is_vpn INTEGER,
+                check_is_tor INTEGER,
+                check_is_datacenter INTEGER,
+                check_is_abuser INTEGER,
                 check_at TIMESTAMP,
                 created_at TIMESTAMP NOT NULL,
                 updated_at TIMESTAMP NOT NULL
             )
             '''
         )
+        cursor.execute("PRAGMA table_info(proxies)")
+        proxy_columns = {row["name"] for row in cursor.fetchall()}
+        if "check_health_score" not in proxy_columns:
+            cursor.execute("ALTER TABLE proxies ADD COLUMN check_health_score INTEGER")
+        if "check_risk_level" not in proxy_columns:
+            cursor.execute("ALTER TABLE proxies ADD COLUMN check_risk_level TEXT")
+        if "check_risk_flags" not in proxy_columns:
+            cursor.execute("ALTER TABLE proxies ADD COLUMN check_risk_flags TEXT")
+        if "check_proxycheck_type" not in proxy_columns:
+            cursor.execute("ALTER TABLE proxies ADD COLUMN check_proxycheck_type TEXT")
+        if "check_proxycheck_risk" not in proxy_columns:
+            cursor.execute("ALTER TABLE proxies ADD COLUMN check_proxycheck_risk INTEGER")
+        if "check_is_proxy" not in proxy_columns:
+            cursor.execute("ALTER TABLE proxies ADD COLUMN check_is_proxy INTEGER")
+        if "check_is_vpn" not in proxy_columns:
+            cursor.execute("ALTER TABLE proxies ADD COLUMN check_is_vpn INTEGER")
+        if "check_is_tor" not in proxy_columns:
+            cursor.execute("ALTER TABLE proxies ADD COLUMN check_is_tor INTEGER")
+        if "check_is_datacenter" not in proxy_columns:
+            cursor.execute("ALTER TABLE proxies ADD COLUMN check_is_datacenter INTEGER")
+        if "check_is_abuser" not in proxy_columns:
+            cursor.execute("ALTER TABLE proxies ADD COLUMN check_is_abuser INTEGER")
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_proxies_ix_id ON proxies(ix_id)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_proxies_key ON proxies(proxy_type, proxy_ip, proxy_port, proxy_user)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_proxies_updated ON proxies(updated_at DESC)')
@@ -680,4 +712,3 @@ class SQLiteSchemaMixin:
 
         conn.commit()
         conn.close()
-

@@ -63,16 +63,16 @@
             <div class="addr-cell">
               <div class="addr-main">
                 <span class="mono addr-text" :title="formatProxyDisplay(row)">{{ formatProxyDisplay(row) }}</span>
-                <el-button
+                <button
                   v-if="!isUnknownRow(row)"
-                  class="copy-btn"
-                  link
-                  type="primary"
-                  size="small"
+                  type="button"
+                  class="copy-inline"
+                  title="复制代理"
+                  aria-label="复制代理"
                   @click.stop="copyProxyText(row)"
                 >
-                  复制
-                </el-button>
+                  <span class="copy-inline-icon">⧉</span>
+                </button>
               </div>
               <span v-if="!isUnknownRow(row) && (row.ix_country || row.ix_city)" class="addr-meta">
                 <span class="country-flag">{{ getCountryFlag(row?.ix_country) }}</span>
@@ -118,9 +118,11 @@
             <span v-if="isUnknownRow(row)" class="check-error check-empty">-</span>
             <div v-else class="check-cell">
               <el-tag
+                v-if="row.check_status === 'failed'"
+                class="check-status-tag"
                 size="small"
                 effect="light"
-                :type="row.check_status === 'success' ? 'success' : row.check_status === 'failed' ? 'danger' : 'info'"
+                type="danger"
               >
                 {{ formatCheckStatusTag(row) }}
               </el-tag>
@@ -917,9 +919,29 @@ onMounted(() => {
   white-space: nowrap;
 }
 
-.copy-btn {
+.copy-inline {
   flex: 0 0 auto;
+  width: 18px;
+  height: 18px;
   padding: 0;
+  border: 0;
+  background: transparent;
+  color: #94a3b8;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  border-radius: 4px;
+}
+
+.copy-inline:hover {
+  color: #64748b;
+  background: rgba(148, 163, 184, 0.12);
+}
+
+.copy-inline-icon {
+  font-size: 13px;
+  line-height: 1;
 }
 
 .addr-meta {
@@ -984,6 +1006,12 @@ onMounted(() => {
   display: flex;
   flex-direction: column;
   gap: 4px;
+  align-items: flex-start;
+}
+
+.check-status-tag {
+  width: fit-content;
+  max-width: 100%;
 }
 
 .health-cell {

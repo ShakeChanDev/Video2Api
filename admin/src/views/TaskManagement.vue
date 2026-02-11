@@ -60,7 +60,8 @@
         </div>
         <div class="actions">
           <el-button @click="handleRealtimeFilterChange">刷新</el-button>
-          <el-button type="primary" @click="openCreateDialog">新建任务</el-button>
+          <el-button type="primary" @click="openCreateDialog('sora')">新建任务</el-button>
+          <el-button type="primary" plain @click="openCreateDialog('video_api')">新建任务（/v1/videos）</el-button>
         </div>
       </div>
     </section>
@@ -222,82 +223,103 @@
       </el-table>
     </el-card>
 
-    <el-dialog v-model="createDialogVisible" title="新建任务" width="620px">
+    <el-dialog
+      v-model="createDialogVisible"
+      :title="createEntryMode === 'video_api' ? '新建任务（/v1/videos）' : '新建任务'"
+      width="620px"
+    >
       <el-form :model="createForm" label-width="90px">
-        <el-form-item label="分组">
-          <el-select v-model="createForm.group_title" style="width: 100%">
-            <el-option
-              v-for="group in groups"
-              :key="group.id"
-              :label="`${group.title} (ID:${group.id})`"
-              :value="group.title"
-            />
-          </el-select>
-        </el-form-item>
-        <el-form-item label="账号">
-          <div class="dispatch-mode">
-            <el-radio-group v-model="createForm.dispatch_mode">
-              <el-radio-button label="weighted_auto">自动分配</el-radio-button>
-              <el-radio-button label="manual">手动指定</el-radio-button>
-            </el-radio-group>
-            <div class="dispatch-tip">自动分配会优先选择高权重账号（可用次数 + 账号质量）。</div>
-          </div>
-        </el-form-item>
+        <template v-if="createEntryMode === 'sora'">
+          <el-form-item label="分组">
+            <el-select v-model="createForm.group_title" style="width: 100%">
+              <el-option
+                v-for="group in groups"
+                :key="group.id"
+                :label="`${group.title} (ID:${group.id})`"
+                :value="group.title"
+              />
+            </el-select>
+          </el-form-item>
+          <el-form-item label="账号">
+            <div class="dispatch-mode">
+              <el-radio-group v-model="createForm.dispatch_mode">
+                <el-radio-button label="weighted_auto">自动分配</el-radio-button>
+                <el-radio-button label="manual">手动指定</el-radio-button>
+              </el-radio-group>
+              <div class="dispatch-tip">自动分配会优先选择高权重账号（可用次数 + 账号质量）。</div>
+            </div>
+          </el-form-item>
 
-        <template v-if="createForm.dispatch_mode === 'manual'">
-          <el-form-item label="窗口ID">
-            <el-input-number v-model="createForm.profile_id" style="width: 100%" :min="1" />
+          <template v-if="createForm.dispatch_mode === 'manual'">
+            <el-form-item label="窗口ID">
+              <el-input-number v-model="createForm.profile_id" style="width: 100%" :min="1" />
+            </el-form-item>
+          </template>
+          <template v-else>
+            <el-form-item label="推荐账号">
+              <div class="weights-panel" v-loading="weightsLoading">
+                <el-table v-if="accountWeights.length" :data="accountWeights" size="small" class="weights-table">
+                  <el-table-column label="窗口" width="110">
+                    <template #default="{ row }">
+                      <span class="mono">#{{ row.profile_id }}</span>
+                    </template>
+                  </el-table-column>
+                  <el-table-column label="总分" width="90" align="center">
+                    <template #default="{ row }">
+                      <span class="score">{{ row.score_total }}</span>
+                    </template>
+                  </el-table-column>
+                  <el-table-column label="可用" width="80" align="center">
+                    <template #default="{ row }">
+                      <span>{{ row.quota_remaining_count ?? '-' }}</span>
+                    </template>
+                  </el-table-column>
+                  <el-table-column label="说明" min-width="200">
+                    <template #default="{ row }">
+                      <span class="weights-reason">{{ (row.reasons || []).slice(0, 2).join('；') || '-' }}</span>
+                    </template>
+                  </el-table-column>
+                  <el-table-column label="可选" width="80" align="center">
+                    <template #default="{ row }">
+                      <el-tag size="small" :type="row.selectable ? 'success' : 'info'">
+                        {{ row.selectable ? '可用' : '不可用' }}
+                      </el-tag>
+                    </template>
+                  </el-table-column>
+                </el-table>
+                <div v-else class="weights-empty">暂无权重数据（可先去“账号管理”扫描一次）。</div>
+              </div>
+            </el-form-item>
+          </template>
+          <el-form-item label="时长">
+            <el-select v-model="createForm.duration" style="width: 100%">
+              <el-option label="10秒" value="10s" />
+              <el-option label="15秒" value="15s" />
+              <el-option label="25秒" value="25s" />
+            </el-select>
+          </el-form-item>
+          <el-form-item label="比例">
+            <el-select v-model="createForm.aspect_ratio" style="width: 100%">
+              <el-option label="横屏 landscape" value="landscape" />
+              <el-option label="竖屏 portrait" value="portrait" />
+            </el-select>
           </el-form-item>
         </template>
         <template v-else>
-          <el-form-item label="推荐账号">
-            <div class="weights-panel" v-loading="weightsLoading">
-              <el-table v-if="accountWeights.length" :data="accountWeights" size="small" class="weights-table">
-                <el-table-column label="窗口" width="110">
-                  <template #default="{ row }">
-                    <span class="mono">#{{ row.profile_id }}</span>
-                  </template>
-                </el-table-column>
-                <el-table-column label="总分" width="90" align="center">
-                  <template #default="{ row }">
-                    <span class="score">{{ row.score_total }}</span>
-                  </template>
-                </el-table-column>
-                <el-table-column label="可用" width="80" align="center">
-                  <template #default="{ row }">
-                    <span>{{ row.quota_remaining_count ?? '-' }}</span>
-                  </template>
-                </el-table-column>
-                <el-table-column label="说明" min-width="200">
-                  <template #default="{ row }">
-                    <span class="weights-reason">{{ (row.reasons || []).slice(0, 2).join('；') || '-' }}</span>
-                  </template>
-                </el-table-column>
-                <el-table-column label="可选" width="80" align="center">
-                  <template #default="{ row }">
-                    <el-tag size="small" :type="row.selectable ? 'success' : 'info'">
-                      {{ row.selectable ? '可用' : '不可用' }}
-                    </el-tag>
-                  </template>
-                </el-table-column>
-              </el-table>
-              <div v-else class="weights-empty">暂无权重数据（可先去“账号管理”扫描一次）。</div>
-            </div>
+          <el-form-item label="说明">
+            <span class="create-mode-hint">该模式会调用 /v1/videos，账号由后端自动分配。</span>
+          </el-form-item>
+          <el-form-item label="型号">
+            <el-select v-model="createForm.video_api_model" style="width: 100%">
+              <el-option
+                v-for="item in videoApiModelOptions"
+                :key="item.value"
+                :label="item.label"
+                :value="item.value"
+              />
+            </el-select>
           </el-form-item>
         </template>
-        <el-form-item label="时长">
-          <el-select v-model="createForm.duration" style="width: 100%">
-            <el-option label="10秒" value="10s" />
-            <el-option label="15秒" value="15s" />
-            <el-option label="25秒" value="25s" />
-          </el-select>
-        </el-form-item>
-        <el-form-item label="比例">
-          <el-select v-model="createForm.aspect_ratio" style="width: 100%">
-            <el-option label="横屏 landscape" value="landscape" />
-            <el-option label="竖屏 portrait" value="portrait" />
-          </el-select>
-        </el-form-item>
         <el-form-item label="提示词">
           <el-input
             v-model="createForm.prompt"
@@ -380,6 +402,7 @@ import { ElMessage } from 'element-plus'
 import { formatRelativeTimeZh } from '../utils/relativeTime'
 import {
   buildSoraJobStreamUrl,
+  createVideoViaVideoApi,
   createSoraJob,
   getSoraAccountWeights,
   getIxBrowserGroupWindows,
@@ -420,6 +443,14 @@ const accountPlanGroupTitle = ref(null)
 const accountPlanUpdatedAt = ref(0)
 const ACCOUNT_PLAN_TTL_MS = 60 * 1000
 let accountPlanLoading = false
+const createEntryMode = ref('sora')
+
+const videoApiModelOptions = [
+  { value: 'sora2-landscape', label: 'sora2-landscape：横屏（电脑）10秒' },
+  { value: 'sora2-portrait', label: 'sora2-portrait：竖屏（手机）10秒' },
+  { value: 'sora2-landscape-15s', label: 'sora2-landscape-15s：横屏（电脑）15秒' },
+  { value: 'sora2-portrait-15s', label: 'sora2-portrait-15s：竖屏（手机）15秒' }
+]
 
 const createForm = ref({
   group_title: 'Sora',
@@ -428,8 +459,26 @@ const createForm = ref({
   prompt: '',
   image_url: '',
   duration: '10s',
-  aspect_ratio: 'landscape'
+  aspect_ratio: 'landscape',
+  video_api_model: 'sora2-landscape'
 })
+
+const normalizeVideoApiModel = (value) => {
+  const text = String(value || '').trim()
+  if (videoApiModelOptions.some((item) => item.value === text)) {
+    return text
+  }
+  return 'sora2-landscape'
+}
+
+const buildVideoApiModel = (aspectRatio, duration) => {
+  const ratio = String(aspectRatio || '').trim().toLowerCase() === 'portrait' ? 'portrait' : 'landscape'
+  const seconds = String(duration || '').trim().toLowerCase() === '15s' ? '15s' : '10s'
+  if (seconds === '15s') {
+    return `sora2-${ratio}-15s`
+  }
+  return `sora2-${ratio}`
+}
 
 const concurrencyLimit = computed(() => systemSettings.value?.sora?.job_max_concurrency || 2)
 
@@ -628,6 +677,9 @@ const applySystemDefaults = () => {
   if (defaults.default_aspect_ratio) {
     createForm.value.aspect_ratio = defaults.default_aspect_ratio
   }
+  createForm.value.video_api_model = normalizeVideoApiModel(
+    buildVideoApiModel(createForm.value.aspect_ratio, createForm.value.duration)
+  )
 }
 
 const loadSystemSettings = async () => {
@@ -863,21 +915,28 @@ const handleRealtimeFilterChange = async () => {
   startJobRealtime()
 }
 
-const openCreateDialog = () => {
+const openCreateDialog = (mode = 'sora') => {
+  createEntryMode.value = mode === 'video_api' ? 'video_api' : 'sora'
+  const defaults = systemSettings.value?.sora || {}
+  const duration = defaults.default_duration || '10s'
+  const aspectRatio = defaults.default_aspect_ratio || 'landscape'
+  const groupTitle = selectedGroupTitle.value || defaults.default_group_title || 'Sora'
   createForm.value = {
-    group_title: selectedGroupTitle.value || 'Sora',
+    group_title: groupTitle,
     dispatch_mode: 'weighted_auto',
     profile_id: null,
     prompt: '',
     image_url: '',
-    duration: '10s',
-    aspect_ratio: 'landscape'
+    duration,
+    aspect_ratio: aspectRatio,
+    video_api_model: normalizeVideoApiModel(buildVideoApiModel(aspectRatio, duration))
   }
   createDialogVisible.value = true
 }
 
 const loadAccountWeights = async () => {
   if (!createDialogVisible.value) return
+  if (createEntryMode.value !== 'sora') return
   if (createForm.value.dispatch_mode !== 'weighted_auto') return
   weightsLoading.value = true
   try {
@@ -893,34 +952,52 @@ const loadAccountWeights = async () => {
 }
 
 const submitTask = async () => {
-  const mode = createForm.value.dispatch_mode || (createForm.value.profile_id ? 'manual' : 'weighted_auto')
-  if (mode === 'manual' && !createForm.value.profile_id) {
-    ElMessage.warning('请输入窗口 ID')
-    return
-  }
   const prompt = createForm.value.prompt?.trim()
   if (!prompt) {
     ElMessage.warning('请输入提示词')
     return
   }
   const imageUrl = createForm.value.image_url?.trim()
+  const isVideoApiMode = createEntryMode.value === 'video_api'
+  const mode = createForm.value.dispatch_mode || (createForm.value.profile_id ? 'manual' : 'weighted_auto')
+  if (!isVideoApiMode && mode === 'manual' && !createForm.value.profile_id) {
+    ElMessage.warning('请输入窗口 ID')
+    return
+  }
+  const videoApiToken = String(systemSettings.value?.video_api?.bearer_token || '').trim()
+  if (isVideoApiMode && !videoApiToken) {
+    ElMessage.warning('请先在系统设置中配置 Video API Token')
+    return
+  }
   submitting.value = true
   try {
-    const payload = {
-      dispatch_mode: mode,
-      prompt,
-      duration: createForm.value.duration,
-      aspect_ratio: createForm.value.aspect_ratio,
-      group_title: createForm.value.group_title || 'Sora'
+    if (isVideoApiMode) {
+      const payload = {
+        prompt,
+        model: normalizeVideoApiModel(createForm.value.video_api_model)
+      }
+      if (imageUrl) {
+        payload.image_url = imageUrl
+      }
+      await createVideoViaVideoApi(payload, videoApiToken)
+      ElMessage.success('任务已通过 /v1/videos 创建并进入队列')
+    } else {
+      const payload = {
+        dispatch_mode: mode,
+        prompt,
+        duration: createForm.value.duration,
+        aspect_ratio: createForm.value.aspect_ratio,
+        group_title: createForm.value.group_title || 'Sora'
+      }
+      if (imageUrl) {
+        payload.image_url = imageUrl
+      }
+      if (mode === 'manual') {
+        payload.profile_id = createForm.value.profile_id
+      }
+      await createSoraJob(payload)
+      ElMessage.success('任务已创建并进入队列')
     }
-    if (imageUrl) {
-      payload.image_url = imageUrl
-    }
-    if (mode === 'manual') {
-      payload.profile_id = createForm.value.profile_id
-    }
-    await createSoraJob(payload)
-    ElMessage.success('任务已创建并进入队列')
     createDialogVisible.value = false
     await loadJobs()
   } catch (error) {
@@ -1081,6 +1158,12 @@ onUnmounted(() => {
 .actions {
   display: flex;
   gap: 8px;
+}
+
+.create-mode-hint {
+  font-size: 12px;
+  color: var(--muted);
+  line-height: 1.5;
 }
 
 .overview-card.danger {
