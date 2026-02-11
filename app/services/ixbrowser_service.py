@@ -115,7 +115,11 @@ class IXBrowserService(
         from app.services.ixbrowser.sora_job_runner import SoraJobRunner  # noqa: WPS433
 
         self._sora_publish_workflow = SoraPublishWorkflow(service=self)
-        self._sora_generation_workflow = SoraGenerationWorkflow(service=self, db=sqlite_db)
+        self._sora_generation_workflow = SoraGenerationWorkflow(
+            service=self,
+            db=sqlite_db,
+            publish_workflow=self._sora_publish_workflow,
+        )
         self._realtime_quota_service = RealtimeQuotaService(service=self, db=sqlite_db)
         self._realtime_quota_service.set_cache_ttl(self._realtime_quota_cache_ttl)
         self._sora_job_runner = SoraJobRunner(service=self, db=sqlite_db)
@@ -124,6 +128,16 @@ class IXBrowserService(
     def playwright_factory(self):
         """对外暴露 Playwright factory（供 workflow/测试复用）。"""
         return self._deps.playwright_factory()
+
+    @property
+    def sora_publish_workflow(self):
+        """对外公开发布 workflow（避免外部依赖私有属性）。"""
+        return self._sora_publish_workflow
+
+    @property
+    def sora_generation_workflow(self):
+        """对外公开生成 workflow（避免外部依赖私有属性）。"""
+        return self._sora_generation_workflow
 
     def register_realtime_subscriber(self) -> asyncio.Queue:
         """对外公开的实时订阅入口（避免外部依赖私有方法）。"""
@@ -148,6 +162,20 @@ class IXBrowserService(
     async def close_profile(self, profile_id: int) -> bool:
         """对外公开关闭窗口（供 e2e/业务复用）。"""
         return await self._close_profile(profile_id)
+
+    def is_sora_overload_error(self, text: str) -> bool:
+        """对外公开重载错误识别（供 runner/调度复用）。"""
+        return self._is_sora_overload_error(text)
+
+    async def spawn_sora_job_on_overload(self, row: dict, trigger: str) -> SoraJob:
+        """对外公开 overload 换号重排入口（避免外部依赖私有方法）。"""
+        return await self._spawn_sora_job_on_overload(row, trigger=trigger)
+
+    def extract_share_id_from_url(self, url: Optional[str]) -> Optional[str]:
+        """对外公开 share_id 提取（避免外部依赖私有 runner）。"""
+        if not isinstance(url, str) or not url.strip():
+            return None
+        return self._sora_job_runner.extract_share_id_from_url(url.strip())
 
     def set_realtime_quota_cache_ttl(self, ttl_sec: float) -> None:
         self._realtime_quota_cache_ttl = float(ttl_sec)

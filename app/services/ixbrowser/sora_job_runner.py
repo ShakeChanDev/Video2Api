@@ -40,6 +40,9 @@ class SoraJobRunner:
             self._semaphore = asyncio.Semaphore(self._max_concurrency)
 
         async with self._semaphore:
+            generation_workflow = self._service.sora_generation_workflow
+            publish_workflow = self._service.sora_publish_workflow
+
             row = self._db.get_sora_job(job_id)
             if not row:
                 return
@@ -66,7 +69,7 @@ class SoraJobRunner:
 
             try:
                 if phase == "submit":
-                    task_id, generation_id = await self._service._sora_generation_workflow.run_sora_submit_and_progress(  # noqa: SLF001
+                    task_id, generation_id = await generation_workflow.run_sora_submit_and_progress(
                         job_id=job_id,
                         profile_id=int(row["profile_id"]),
                         prompt=str(row["prompt"]),
@@ -80,7 +83,7 @@ class SoraJobRunner:
                 if phase == "progress":
                     if not task_id:
                         raise self._service_error("缺少 task_id，无法进入进度阶段")
-                    generation_id = await self._service._sora_generation_workflow.run_sora_progress_only(  # noqa: SLF001
+                    generation_id = await generation_workflow.run_sora_progress_only(
                         job_id=job_id,
                         profile_id=int(row["profile_id"]),
                         task_id=task_id,
@@ -94,7 +97,7 @@ class SoraJobRunner:
                     self._db.update_sora_job(job_id, {"phase": "genid"})
                     self._db.create_sora_job_event(job_id, "genid", "start", "开始获取 genid")
                     if not generation_id:
-                        generation_id = await self._service._sora_generation_workflow.run_sora_fetch_generation_id(  # noqa: SLF001
+                        generation_id = await generation_workflow.run_sora_fetch_generation_id(
                             job_id=job_id,
                             profile_id=int(row["profile_id"]),
                             task_id=task_id,
@@ -110,7 +113,7 @@ class SoraJobRunner:
                         raise self._service_error("缺少 genid，无法发布")
                     self._db.update_sora_job(job_id, {"phase": "publish"})
                     self._db.create_sora_job_event(job_id, "publish", "start", "开始发布")
-                    publish_url = await self._service._sora_publish_workflow._publish_sora_video(  # noqa: SLF001
+                    publish_url = await publish_workflow.publish_sora_video(
                         profile_id=int(row["profile_id"]),
                         task_id=task_id,
                         task_url=None,
@@ -174,10 +177,10 @@ class SoraJobRunner:
                     },
                 )
                 self._db.create_sora_job_event(job_id, failed_phase, "fail", str(exc))
-                if str(failed_phase or "").strip().lower() == "submit" and self._service._is_sora_overload_error(str(exc)):  # noqa: SLF001
+                if str(failed_phase or "").strip().lower() == "submit" and self._service.is_sora_overload_error(str(exc)):
                     try:
                         updated_row = self._db.get_sora_job(job_id) or current_row
-                        await self._service._spawn_sora_job_on_overload(updated_row, trigger="auto")  # noqa: SLF001
+                        await self._service.spawn_sora_job_on_overload(updated_row, trigger="auto")
                     except Exception as retry_exc:  # noqa: BLE001
                         self._db.create_sora_job_event(job_id, failed_phase, "auto_retry_giveup", str(retry_exc))
                 return
