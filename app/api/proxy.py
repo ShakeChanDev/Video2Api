@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-from fastapi import APIRouter, Body, Depends, Query, Request
+from fastapi import APIRouter, Body, Depends, Path, Query, Request
 
 from app.core.audit import log_audit
 from app.core.auth import get_current_active_user
@@ -15,6 +15,7 @@ from app.models.proxy import (
     ProxyBatchImportResponse,
     ProxyBatchUpdateRequest,
     ProxyBatchUpdateResponse,
+    ProxyCfEventListResponse,
     ProxyListResponse,
     ProxySyncPullResponse,
     ProxySyncPushRequest,
@@ -34,6 +35,25 @@ async def list_proxies(
 ):
     del current_user
     return proxy_service.list_proxies(keyword=keyword, page=page, limit=limit)
+
+
+@router.get("/cf-events/unknown", response_model=ProxyCfEventListResponse)
+async def get_unknown_proxy_cf_events(
+    window: int = Query(30, ge=1, le=300, description="近 N 次事件窗口"),
+    current_user: dict = Depends(get_current_active_user),
+):
+    del current_user
+    return proxy_service.get_unknown_proxy_cf_events(window=window)
+
+
+@router.get("/{proxy_id}/cf-events", response_model=ProxyCfEventListResponse)
+async def get_proxy_cf_events(
+    proxy_id: int = Path(..., ge=1, description="代理ID"),
+    window: int = Query(30, ge=1, le=300, description="近 N 次事件窗口"),
+    current_user: dict = Depends(get_current_active_user),
+):
+    del current_user
+    return proxy_service.get_proxy_cf_events(proxy_id=proxy_id, window=window)
 
 
 @router.post("/batch-import", response_model=ProxyBatchImportResponse)
@@ -158,7 +178,7 @@ async def batch_check_proxies(
             resource_id=None,
             extra={
                 "count": len(payload.proxy_ids),
-                "check_url": str(payload.check_url or "").strip() or None,
+                "force_refresh": bool(payload.force_refresh),
             },
         )
     except Exception:  # noqa: BLE001

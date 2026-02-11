@@ -40,7 +40,18 @@ class SQLiteProxyRepo:
         total = int(row["cnt"]) if row and row["cnt"] is not None else 0
 
         cursor.execute(
-            f"SELECT * FROM proxies {where_clause} ORDER BY id DESC LIMIT ? OFFSET ?",
+            f"""
+            SELECT * FROM proxies
+            {where_clause}
+            ORDER BY
+                COALESCE(
+                    (SELECT MAX(e.id) FROM proxy_cf_events e WHERE e.proxy_id = proxies.id),
+                    0
+                ) DESC,
+                proxy_ip ASC,
+                id DESC
+            LIMIT ? OFFSET ?
+            """,
             params + [safe_limit, offset],
         )
         rows = cursor.fetchall()
@@ -252,6 +263,16 @@ class SQLiteProxyRepo:
             "check_country",
             "check_city",
             "check_timezone",
+            "check_health_score",
+            "check_risk_level",
+            "check_risk_flags",
+            "check_proxycheck_type",
+            "check_proxycheck_risk",
+            "check_is_proxy",
+            "check_is_vpn",
+            "check_is_tor",
+            "check_is_datacenter",
+            "check_is_abuser",
             "check_at",
         }
         updates: Dict[str, Any] = {}
@@ -460,6 +481,116 @@ class SQLiteProxyRepo:
             "cf_recent_total": total_count,
             "cf_recent_ratio": float(ratio),
         }
+
+    def get_proxy_cf_recent_flags(self, proxy_ids: List[int], window: int = 30) -> Dict[int, List[int]]:
+        ids: List[int] = []
+        seen = set()
+        for raw in proxy_ids or []:
+            try:
+                pid = int(raw)
+            except Exception:
+                continue
+            if pid <= 0 or pid in seen:
+                continue
+            seen.add(pid)
+            ids.append(pid)
+        if not ids:
+            return {}
+
+        safe_window = min(max(int(window or 30), 1), 500)
+        placeholders = ",".join(["?"] * len(ids))
+        conn = self._get_conn()
+        cursor = conn.cursor()
+        cursor.execute(
+            f'''
+            SELECT proxy_id, is_cf
+            FROM (
+              SELECT
+                proxy_id,
+                is_cf,
+                ROW_NUMBER() OVER (PARTITION BY proxy_id ORDER BY id DESC) AS rn
+              FROM proxy_cf_events
+              WHERE proxy_id IN ({placeholders})
+            ) t
+            WHERE rn <= ?
+            ORDER BY proxy_id ASC, rn ASC
+            ''',
+            [*ids, safe_window],
+        )
+        rows = cursor.fetchall()
+        conn.close()
+
+        result: Dict[int, List[int]] = {pid: [] for pid in ids}
+        for row in rows:
+            try:
+                proxy_id = int(row["proxy_id"] or 0)
+            except Exception:
+                continue
+            if proxy_id <= 0:
+                continue
+            flag = 1 if int(row["is_cf"] or 0) == 1 else 0
+            result.setdefault(proxy_id, []).append(flag)
+        return result
+
+    def get_unknown_proxy_cf_recent_flags(self, window: int = 30) -> List[int]:
+        safe_window = min(max(int(window or 30), 1), 500)
+        conn = self._get_conn()
+        cursor = conn.cursor()
+        cursor.execute(
+            '''
+            SELECT is_cf
+            FROM proxy_cf_events
+            WHERE proxy_id IS NULL
+            ORDER BY id DESC
+            LIMIT ?
+            ''',
+            (safe_window,),
+        )
+        rows = cursor.fetchall()
+        conn.close()
+        return [1 if int(row["is_cf"] or 0) == 1 else 0 for row in rows]
+
+    def list_proxy_cf_recent_events(self, proxy_id: int, window: int = 30) -> List[Dict[str, Any]]:
+        try:
+            pid = int(proxy_id)
+        except Exception:
+            return []
+        if pid <= 0:
+            return []
+        safe_window = min(max(int(window or 30), 1), 500)
+        conn = self._get_conn()
+        cursor = conn.cursor()
+        cursor.execute(
+            '''
+            SELECT id, proxy_id, source, endpoint, status_code, error_text, is_cf, created_at
+            FROM proxy_cf_events
+            WHERE proxy_id = ?
+            ORDER BY id DESC
+            LIMIT ?
+            ''',
+            (pid, safe_window),
+        )
+        rows = cursor.fetchall()
+        conn.close()
+        return [dict(row) for row in rows]
+
+    def list_unknown_proxy_cf_recent_events(self, window: int = 30) -> List[Dict[str, Any]]:
+        safe_window = min(max(int(window or 30), 1), 500)
+        conn = self._get_conn()
+        cursor = conn.cursor()
+        cursor.execute(
+            '''
+            SELECT id, proxy_id, source, endpoint, status_code, error_text, is_cf, created_at
+            FROM proxy_cf_events
+            WHERE proxy_id IS NULL
+            ORDER BY id DESC
+            LIMIT ?
+            ''',
+            (safe_window,),
+        )
+        rows = cursor.fetchall()
+        conn.close()
+        return [dict(row) for row in rows]
 
     def upsert_proxies_from_batch_import(self, records: List[Dict[str, Any]]) -> Dict[str, Any]:
         created = 0

@@ -50,6 +50,20 @@ export const listProxies = async (params) => {
   return response.data
 }
 
+export const getProxyCfEvents = async (proxyId, window = 30) => {
+  const response = await api.get(`/proxies/${proxyId}/cf-events`, {
+    params: { window }
+  })
+  return response.data
+}
+
+export const getUnknownProxyCfEvents = async (window = 30) => {
+  const response = await api.get('/proxies/cf-events/unknown', {
+    params: { window }
+  })
+  return response.data
+}
+
 export const batchImportProxies = async (data) => {
   const response = await api.post('/proxies/batch-import', data, { timeout: 60000 })
   return response.data
@@ -143,6 +157,16 @@ export const createIxBrowserSoraGenerateJob = async (data) => {
 export const createSoraJob = async (data) => {
   const response = await api.post('/sora/jobs', data, {
     timeout: 60000
+  })
+  return response.data
+}
+
+export const createVideoViaVideoApi = async (data, bearerToken) => {
+  const token = String(bearerToken || '').trim()
+  const headers = token ? { Authorization: `Bearer ${token}` } : {}
+  const response = await axios.post('/v1/videos', data, {
+    timeout: 60000,
+    headers
   })
   return response.data
 }

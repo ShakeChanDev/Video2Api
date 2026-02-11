@@ -3,6 +3,7 @@ import os
 import pytest
 from fastapi.testclient import TestClient
 
+import app.services.proxy_service as proxy_service_module
 from app.core.auth import get_current_active_user
 from app.db.sqlite import sqlite_db
 from app.main import app
@@ -95,10 +96,70 @@ def test_proxy_list_returns_cf_recent_fields(client):
     assert int(payload.get("unknown_cf_recent_count") or 0) == 1
     assert int(payload.get("unknown_cf_recent_total") or 0) == 1
     assert float(payload.get("unknown_cf_recent_ratio") or 0.0) == 100.0
+    assert isinstance(payload.get("unknown_cf_recent_heat"), str)
+    assert len(payload.get("unknown_cf_recent_heat") or "") == 30
+    assert str(payload.get("unknown_cf_recent_heat") or "").endswith("C")
     item = payload["items"][0]
     assert int(item.get("cf_recent_count") or 0) == 1
     assert int(item.get("cf_recent_total") or 0) == 2
     assert float(item.get("cf_recent_ratio") or 0.0) == 50.0
+    assert isinstance(item.get("cf_recent_heat"), str)
+    assert len(item.get("cf_recent_heat") or "") == 30
+    assert str(item.get("cf_recent_heat") or "").endswith("CP")
+
+
+def test_proxy_cf_event_detail_endpoints(client):
+    imported = client.post(
+        "/api/v1/proxies/batch-import",
+        json={"text": "12.12.12.12:8080", "default_type": "http"},
+    )
+    assert imported.status_code == 200
+    pid = client.get("/api/v1/proxies", params={"page": 1, "limit": 50}).json()["items"][0]["id"]
+
+    sqlite_db.create_proxy_cf_event(
+        proxy_id=int(pid),
+        profile_id=10,
+        source="test",
+        endpoint="/proxy/a",
+        status_code=200,
+        error_text=None,
+        is_cf=False,
+    )
+    sqlite_db.create_proxy_cf_event(
+        proxy_id=int(pid),
+        profile_id=10,
+        source="test",
+        endpoint="/proxy/b",
+        status_code=403,
+        error_text="cf_challenge",
+        is_cf=True,
+    )
+    sqlite_db.create_proxy_cf_event(
+        proxy_id=None,
+        profile_id=11,
+        source="test",
+        endpoint="/unknown",
+        status_code=403,
+        error_text="cf_challenge",
+        is_cf=True,
+    )
+
+    unknown_resp = client.get("/api/v1/proxies/cf-events/unknown", params={"window": 30})
+    assert unknown_resp.status_code == 200
+    unknown_payload = unknown_resp.json()
+    assert unknown_payload.get("proxy_id") is None
+    assert int(unknown_payload.get("window") or 0) == 30
+    assert len(unknown_payload.get("events") or []) == 1
+    assert unknown_payload["events"][0]["endpoint"] == "/unknown"
+
+    proxy_resp = client.get(f"/api/v1/proxies/{pid}/cf-events", params={"window": 2})
+    assert proxy_resp.status_code == 200
+    proxy_payload = proxy_resp.json()
+    assert int(proxy_payload.get("proxy_id") or 0) == int(pid)
+    assert int(proxy_payload.get("window") or 0) == 2
+    assert len(proxy_payload.get("events") or []) == 2
+    assert proxy_payload["events"][0]["endpoint"] == "/proxy/b"
+    assert proxy_payload["events"][1]["endpoint"] == "/proxy/a"
 
 
 def test_proxy_batch_update(client):
@@ -176,3 +237,114 @@ def test_proxy_sync_push_creates_and_binds(client, monkeypatch):
 
     listed = client.get("/api/v1/proxies", params={"page": 1, "limit": 50}).json()
     assert int(listed["items"][0]["ix_id"] or 0) == 888
+
+
+def test_proxy_batch_check_returns_extended_fields(client, monkeypatch):
+    imported = client.post(
+        "/api/v1/proxies/batch-import",
+        json={"text": "6.6.6.6:8080", "default_type": "http"},
+    )
+    assert imported.status_code == 200
+    pid = client.get("/api/v1/proxies", params={"page": 1, "limit": 50}).json()["items"][0]["id"]
+
+    async def fake_fetch_ipapi(_client):
+        return {
+            "ip": "6.6.6.6",
+            "country": "US",
+            "city": "Seattle",
+            "timezone": "America/Los_Angeles",
+            "is_proxy": False,
+            "is_vpn": True,
+            "is_tor": False,
+            "is_datacenter": True,
+            "is_abuser": False,
+        }
+
+    async def fake_fetch_proxycheck(_client, ip):
+        return {
+            "status": "ok",
+            ip: {
+                "proxy": "yes",
+                "type": "VPN",
+                "risk": 25,
+            },
+        }
+
+    monkeypatch.setattr(proxy_service_module, "_fetch_ipapi", fake_fetch_ipapi, raising=True)
+    monkeypatch.setattr(proxy_service_module, "_fetch_proxycheck", fake_fetch_proxycheck, raising=True)
+
+    checked = client.post(
+        "/api/v1/proxies/batch-check",
+        json={"proxy_ids": [pid], "concurrency": 5, "timeout_sec": 8, "force_refresh": True},
+    )
+    assert checked.status_code == 200
+    payload = checked.json()
+    assert payload.get("results")
+    item = payload["results"][0]
+    assert item.get("reused") is False
+    assert item.get("quota_limited") is False
+    assert isinstance(item.get("health_score"), int)
+    assert item.get("risk_level") in {"low", "medium", "high"}
+    assert isinstance(item.get("risk_flags"), list)
+
+    listed = client.get("/api/v1/proxies", params={"page": 1, "limit": 50})
+    assert listed.status_code == 200
+    row = listed.json()["items"][0]
+    assert isinstance(row.get("check_health_score"), int)
+    assert row.get("check_risk_level") in {"low", "medium", "high"}
+    assert row.get("check_proxycheck_type") == "VPN"
+
+
+def test_proxy_batch_check_rejects_removed_check_url(client):
+    resp = client.post(
+        "/api/v1/proxies/batch-check",
+        json={"proxy_ids": [1], "concurrency": 5, "timeout_sec": 8, "check_url": "https://ipinfo.io/json"},
+    )
+    assert resp.status_code == 422
+
+
+def test_proxy_batch_check_force_refresh_false_reuses(client, monkeypatch):
+    imported = client.post(
+        "/api/v1/proxies/batch-import",
+        json={"text": "7.7.7.7:8080", "default_type": "http"},
+    )
+    assert imported.status_code == 200
+    pid = client.get("/api/v1/proxies", params={"page": 1, "limit": 50}).json()["items"][0]["id"]
+
+    sqlite_db.update_proxy_check_result(
+        int(pid),
+        {
+            "check_status": "success",
+            "check_error": None,
+            "check_ip": "7.7.7.7",
+            "check_country": "US",
+            "check_city": "Austin",
+            "check_timezone": "America/Chicago",
+            "check_health_score": 90,
+            "check_risk_level": "low",
+            "check_risk_flags": "[]",
+            "check_proxycheck_type": "Business",
+            "check_proxycheck_risk": 5,
+            "check_is_proxy": False,
+            "check_is_vpn": False,
+            "check_is_tor": False,
+            "check_is_datacenter": False,
+            "check_is_abuser": False,
+            "check_at": proxy_service_module._now_str(),
+        },
+    )
+
+    async def fail_if_called(*_args, **_kwargs):
+        raise AssertionError("复用场景不应触发外部请求")
+
+    monkeypatch.setattr(proxy_service_module, "_fetch_ipapi", fail_if_called, raising=True)
+    monkeypatch.setattr(proxy_service_module, "_fetch_proxycheck", fail_if_called, raising=True)
+
+    checked = client.post(
+        "/api/v1/proxies/batch-check",
+        json={"proxy_ids": [pid], "concurrency": 5, "timeout_sec": 8, "force_refresh": False},
+    )
+    assert checked.status_code == 200
+    item = checked.json()["results"][0]
+    assert item.get("ok") is True
+    assert item.get("reused") is True

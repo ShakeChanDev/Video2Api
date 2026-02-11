@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import List, Optional
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class ProxyItem(BaseModel):
@@ -33,10 +33,21 @@ class ProxyItem(BaseModel):
     check_country: Optional[str] = None
     check_city: Optional[str] = None
     check_timezone: Optional[str] = None
+    check_health_score: Optional[int] = None
+    check_risk_level: Optional[str] = None
+    check_risk_flags: Optional[str] = None
+    check_proxycheck_type: Optional[str] = None
+    check_proxycheck_risk: Optional[int] = None
+    check_is_proxy: Optional[bool] = None
+    check_is_vpn: Optional[bool] = None
+    check_is_tor: Optional[bool] = None
+    check_is_datacenter: Optional[bool] = None
+    check_is_abuser: Optional[bool] = None
     check_at: Optional[str] = None
     cf_recent_count: int = 0
     cf_recent_total: int = 0
     cf_recent_ratio: float = 0.0
+    cf_recent_heat: str = ""
 
     created_at: str
     updated_at: str
@@ -50,7 +61,24 @@ class ProxyListResponse(BaseModel):
     unknown_cf_recent_count: int = 0
     unknown_cf_recent_total: int = 0
     unknown_cf_recent_ratio: float = 0.0
+    unknown_cf_recent_heat: str = ""
     items: List[ProxyItem] = Field(default_factory=list)
+
+
+class ProxyCfEventItem(BaseModel):
+    id: int
+    is_cf: bool = False
+    source: Optional[str] = None
+    endpoint: Optional[str] = None
+    status_code: Optional[int] = None
+    error_text: Optional[str] = None
+    created_at: Optional[str] = None
+
+
+class ProxyCfEventListResponse(BaseModel):
+    window: int
+    proxy_id: Optional[int] = None
+    events: List[ProxyCfEventItem] = Field(default_factory=list)
 
 
 class ProxyBatchImportRequest(BaseModel):
@@ -121,10 +149,12 @@ class ProxyBatchUpdateResponse(BaseModel):
 
 
 class ProxyBatchCheckRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     proxy_ids: List[int] = Field(default_factory=list)
-    check_url: Optional[str] = Field(None, description="探测 URL（默认 https://ipinfo.io/json）")
     concurrency: int = Field(20, ge=1, le=100)
     timeout_sec: float = Field(8.0, ge=1.0, le=60.0)
+    force_refresh: bool = Field(True, description="是否强制实时检测（关闭后 30 天内复用历史成功结果）")
 
     @field_validator("proxy_ids")
     @classmethod
@@ -152,6 +182,11 @@ class ProxyBatchCheckItem(BaseModel):
     country: Optional[str] = None
     city: Optional[str] = None
     timezone: Optional[str] = None
+    reused: bool = False
+    quota_limited: bool = False
+    health_score: Optional[int] = None
+    risk_level: Optional[str] = None
+    risk_flags: Optional[List[str]] = None
     error: Optional[str] = None
     checked_at: Optional[str] = None
 
