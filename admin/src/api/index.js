@@ -141,34 +141,38 @@ export const createIxBrowserSoraGenerateJob = async (data) => {
 }
 
 export const createSoraJob = async (data) => {
-  const response = await api.post('/sora/jobs', data, {
+  const response = await api.post('/api/v2/sora/jobs', data, {
     timeout: 60000
   })
   return response.data
 }
 
 export const listSoraJobs = async (params) => {
-  const response = await api.get('/sora/jobs', { params })
+  const response = await api.get('/api/v2/sora/jobs', { params })
   return response.data
 }
 
 export const getSoraJob = async (jobId) => {
-  const response = await api.get(`/sora/jobs/${jobId}`)
+  const response = await api.get(`/api/v2/sora/jobs/${jobId}`)
   return response.data
 }
 
 export const retrySoraJob = async (jobId) => {
-  const response = await api.post(`/sora/jobs/${jobId}/retry`)
+  const response = await api.post(`/api/v2/sora/jobs/${jobId}/actions`, {
+    action: 'retry'
+  })
   return response.data
 }
 
 export const cancelSoraJob = async (jobId) => {
-  const response = await api.post(`/sora/jobs/${jobId}/cancel`)
+  const response = await api.post(`/api/v2/sora/jobs/${jobId}/actions`, {
+    action: 'cancel'
+  })
   return response.data
 }
 
 export const listSoraJobEvents = async (jobId) => {
-  const response = await api.get(`/sora/jobs/${jobId}/events`)
+  const response = await api.get(`/api/v2/sora/jobs/${jobId}/timeline`)
   return response.data
 }
 
@@ -185,21 +189,23 @@ export const buildSoraJobStreamUrl = (params = {}) => {
     query.set('with_events', params.with_events ? 'true' : 'false')
   }
   if (token) query.set('token', token)
-  return `/api/v1/sora/jobs/stream?${query.toString()}`
+  return `/api/v2/sora/jobs/stream?${query.toString()}`
 }
 
 export const retrySoraJobWatermark = async (jobId) => {
-  const response = await api.post(`/sora/jobs/${jobId}/watermark/retry`)
+  const response = await api.post(`/api/v2/sora/jobs/${jobId}/actions`, {
+    action: 'retry'
+  })
   return response.data
 }
 
 export const parseSoraWatermarkLink = async (data) => {
-  const response = await api.post('/sora/watermark/parse', data)
+  const response = await api.post('/api/v2/sora/watermark/parse', data)
   return response.data
 }
 
 export const getSoraAccountWeights = async (groupTitle = 'Sora', limit = 100) => {
-  const response = await api.get('/sora/accounts/weights', {
+  const response = await api.get('/api/v2/sora/accounts/weights', {
     params: { group_title: groupTitle, limit }
   })
   return response.data
@@ -282,6 +288,11 @@ export const listSystemLogsV2 = async (params) => {
 
 export const getSystemLogStats = async (params) => {
   const response = await api.get('/admin/logs/stats', { params })
+  return response.data
+}
+
+export const getSoraRequestDashboard = async (params) => {
+  const response = await api.get('/admin/sora-requests/dashboard', { params })
   return response.data
 }
 

@@ -113,6 +113,7 @@ class IXBrowserService(
         from app.services.ixbrowser.sora_generation_workflow import SoraGenerationWorkflow  # noqa: WPS433
         from app.services.ixbrowser.realtime_quota_service import RealtimeQuotaService  # noqa: WPS433
         from app.services.ixbrowser.sora_job_runner import SoraJobRunner  # noqa: WPS433
+        from app.services.sora_engine import SoraJobEngine  # noqa: WPS433
 
         self._sora_publish_workflow = SoraPublishWorkflow(service=self)
         self._sora_generation_workflow = SoraGenerationWorkflow(
@@ -123,6 +124,7 @@ class IXBrowserService(
         self._realtime_quota_service = RealtimeQuotaService(service=self, db=sqlite_db)
         self._realtime_quota_service.set_cache_ttl(self._realtime_quota_cache_ttl)
         self._sora_job_runner = SoraJobRunner(service=self, db=sqlite_db)
+        self._sora_job_engine = SoraJobEngine(service=self, db=sqlite_db)
         self.request_timeout_ms = int(self.request_timeout_ms)
 
     def playwright_factory(self):
@@ -162,6 +164,37 @@ class IXBrowserService(
     async def close_profile(self, profile_id: int) -> bool:
         """对外公开关闭窗口（供 e2e/业务复用）。"""
         return await self._close_profile(profile_id)
+
+    async def close_profile_with_owner(self, profile_id: int, owner_run_id: Optional[int]) -> bool:
+        """仅允许持有运行锁的 run 关闭 profile。"""
+        lock = sqlite_db.get_profile_runtime_lock(int(profile_id))
+        if lock:
+            lock_owner = lock.get("owner_run_id")
+            try:
+                lock_owner_int = int(lock_owner) if lock_owner is not None else None
+            except Exception:
+                lock_owner_int = None
+            if owner_run_id is None or lock_owner_int != int(owner_run_id):
+                try:
+                    sqlite_db.create_event_log(
+                        source="task",
+                        action="sora.profile.close.denied",
+                        event="deny",
+                        status="failed",
+                        level="WARN",
+                        message="非持有者关闭 profile 被拒绝",
+                        resource_type="profile",
+                        resource_id=str(int(profile_id)),
+                        metadata={
+                            "profile_id": int(profile_id),
+                            "request_owner_run_id": owner_run_id,
+                            "lock_owner_run_id": lock_owner_int,
+                        },
+                    )
+                except Exception:  # noqa: BLE001
+                    pass
+                return False
+        return await self._close_profile(int(profile_id))
 
     def is_sora_overload_error(self, text: str) -> bool:
         """对外公开重载错误识别（供 runner/调度复用）。"""

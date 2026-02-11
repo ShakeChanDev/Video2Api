@@ -40,7 +40,23 @@ class SQLiteProxyRepo:
         total = int(row["cnt"]) if row and row["cnt"] is not None else 0
 
         cursor.execute(
-            f"SELECT * FROM proxies {where_clause} ORDER BY id DESC LIMIT ? OFFSET ?",
+            f"""
+            SELECT p.*
+            FROM proxies p
+            LEFT JOIN (
+                SELECT proxy_id, MAX(id) AS last_cf_event_id
+                FROM proxy_cf_events
+                WHERE proxy_id IS NOT NULL
+                GROUP BY proxy_id
+            ) cf ON cf.proxy_id = p.id
+            {where_clause}
+            ORDER BY
+                CASE WHEN cf.last_cf_event_id IS NULL THEN 0 ELSE 1 END DESC,
+                cf.last_cf_event_id DESC,
+                (p.proxy_ip || ':' || p.proxy_port) ASC,
+                p.id DESC
+            LIMIT ? OFFSET ?
+            """,
             params + [safe_limit, offset],
         )
         rows = cursor.fetchall()
@@ -372,7 +388,12 @@ class SQLiteProxyRepo:
         conn.close()
         return event_id
 
-    def get_proxy_cf_recent_stats(self, proxy_ids: List[int], window: int = 30) -> Dict[int, Dict[str, Any]]:
+    def get_proxy_cf_recent_stats(
+        self,
+        proxy_ids: List[int],
+        window: int = 30,
+        trend_window: int = 10,
+    ) -> Dict[int, Dict[str, Any]]:
         ids: List[int] = []
         seen = set()
         for raw in proxy_ids or []:
@@ -388,6 +409,7 @@ class SQLiteProxyRepo:
             return {}
 
         safe_window = min(max(int(window or 30), 1), 500)
+        safe_trend_window = min(max(int(trend_window or 10), 1), 100)
         placeholders = ",".join(["?"] * len(ids))
         conn = self._get_conn()
         cursor = conn.cursor()
@@ -411,7 +433,6 @@ class SQLiteProxyRepo:
             [*ids, safe_window],
         )
         rows = cursor.fetchall()
-        conn.close()
 
         result: Dict[int, Dict[str, Any]] = {}
         for row in rows:
@@ -428,11 +449,52 @@ class SQLiteProxyRepo:
                 "cf_recent_count": cf_count,
                 "cf_recent_total": total_count,
                 "cf_recent_ratio": float(ratio),
+                "cf_recent_seq": [],
             }
+
+        cursor.execute(
+            f'''
+            SELECT proxy_id, is_cf
+            FROM (
+              SELECT
+                proxy_id,
+                is_cf,
+                ROW_NUMBER() OVER (PARTITION BY proxy_id ORDER BY id DESC) AS rn
+              FROM proxy_cf_events
+              WHERE proxy_id IN ({placeholders})
+            ) t
+            WHERE rn <= ?
+            ORDER BY proxy_id ASC, rn ASC
+            ''',
+            [*ids, safe_trend_window],
+        )
+        trend_rows = cursor.fetchall()
+        conn.close()
+
+        for row in trend_rows:
+            try:
+                proxy_id = int(row["proxy_id"] or 0)
+            except Exception:
+                continue
+            if proxy_id <= 0:
+                continue
+            if proxy_id not in result:
+                result[proxy_id] = {
+                    "cf_recent_count": 0,
+                    "cf_recent_total": 0,
+                    "cf_recent_ratio": 0.0,
+                    "cf_recent_seq": [],
+                }
+            try:
+                flag = 1 if int(row["is_cf"] or 0) == 1 else 0
+            except Exception:
+                flag = 0
+            result[proxy_id]["cf_recent_seq"].append(flag)
         return result
 
-    def get_unknown_proxy_cf_recent_stats(self, window: int = 30) -> Dict[str, Any]:
+    def get_unknown_proxy_cf_recent_stats(self, window: int = 30, trend_window: int = 10) -> Dict[str, Any]:
         safe_window = min(max(int(window or 30), 1), 500)
+        safe_trend_window = min(max(int(trend_window or 10), 1), 100)
         conn = self._get_conn()
         cursor = conn.cursor()
         cursor.execute(
@@ -451,14 +513,33 @@ class SQLiteProxyRepo:
             (safe_window,),
         )
         row = cursor.fetchone()
+        cursor.execute(
+            '''
+            SELECT is_cf
+            FROM proxy_cf_events
+            WHERE proxy_id IS NULL
+            ORDER BY id DESC
+            LIMIT ?
+            ''',
+            (safe_trend_window,),
+        )
+        trend_rows = cursor.fetchall()
         conn.close()
         total_count = int(row["total_count"] or 0) if row else 0
         cf_count = int(row["cf_count"] or 0) if row else 0
         ratio = round((cf_count / total_count) * 100, 1) if total_count > 0 else 0.0
+        seq: List[int] = []
+        for trend_row in trend_rows:
+            try:
+                flag = 1 if int(trend_row["is_cf"] or 0) == 1 else 0
+            except Exception:
+                flag = 0
+            seq.append(flag)
         return {
             "cf_recent_count": cf_count,
             "cf_recent_total": total_count,
             "cf_recent_ratio": float(ratio),
+            "cf_recent_seq": seq,
         }
 
     def upsert_proxies_from_batch_import(self, records: List[Dict[str, Any]]) -> Dict[str, Any]:

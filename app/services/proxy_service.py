@@ -30,6 +30,7 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_CHECK_URL = "https://ipinfo.io/json"
 CF_RECENT_WINDOW = 30
+CF_TREND_WINDOW = 10
 
 
 def _now_str() -> str:
@@ -154,8 +155,15 @@ class ProxyService:
             if pid > 0:
                 proxy_ids.append(pid)
 
-        stats_by_proxy = sqlite_db.get_proxy_cf_recent_stats(proxy_ids, window=CF_RECENT_WINDOW)
-        unknown_stats = sqlite_db.get_unknown_proxy_cf_recent_stats(window=CF_RECENT_WINDOW)
+        stats_by_proxy = sqlite_db.get_proxy_cf_recent_stats(
+            proxy_ids,
+            window=CF_RECENT_WINDOW,
+            trend_window=CF_TREND_WINDOW,
+        )
+        unknown_stats = sqlite_db.get_unknown_proxy_cf_recent_stats(
+            window=CF_RECENT_WINDOW,
+            trend_window=CF_TREND_WINDOW,
+        )
 
         for item in rows:
             try:
@@ -166,11 +174,17 @@ class ProxyService:
             item["cf_recent_count"] = int(stat.get("cf_recent_count") or 0)
             item["cf_recent_total"] = int(stat.get("cf_recent_total") or 0)
             item["cf_recent_ratio"] = float(stat.get("cf_recent_ratio") or 0.0)
+            item["cf_recent_seq"] = [1 if int(value or 0) == 1 else 0 for value in (stat.get("cf_recent_seq") or [])]
 
         raw["cf_recent_window"] = CF_RECENT_WINDOW
+        raw["cf_trend_window"] = CF_TREND_WINDOW
         raw["unknown_cf_recent_count"] = int(unknown_stats.get("cf_recent_count") or 0)
         raw["unknown_cf_recent_total"] = int(unknown_stats.get("cf_recent_total") or 0)
         raw["unknown_cf_recent_ratio"] = float(unknown_stats.get("cf_recent_ratio") or 0.0)
+        raw["unknown_cf_recent_seq"] = [
+            1 if int(value or 0) == 1 else 0
+            for value in (unknown_stats.get("cf_recent_seq") or [])
+        ]
         return ProxyListResponse.model_validate(raw)
 
     def batch_import(self, request: ProxyBatchImportRequest) -> ProxyBatchImportResponse:

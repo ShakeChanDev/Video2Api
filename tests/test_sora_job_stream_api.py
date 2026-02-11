@@ -1,15 +1,14 @@
+import asyncio
 import json
 import os
-import asyncio
 
 import pytest
 from fastapi.testclient import TestClient
 
-from app.api.sora import stream_sora_jobs
+from app.api.sora_v2 import stream_sora_jobs_v2
 from app.core.auth import create_access_token
 from app.db.sqlite import sqlite_db
 from app.main import app
-from app.services.sora_job_stream_service import sora_job_stream_service
 
 pytestmark = pytest.mark.unit
 
@@ -18,7 +17,7 @@ pytestmark = pytest.mark.unit
 def temp_db(tmp_path):
     old_db_path = sqlite_db._db_path
     try:
-        db_path = tmp_path / "sora-job-stream.db"
+        db_path = tmp_path / "sora-job-stream-v2.db"
         sqlite_db._db_path = str(db_path)
         sqlite_db._ensure_data_dir()
         sqlite_db._init_db()
@@ -35,13 +34,6 @@ def temp_db(tmp_path):
 def client(temp_db):
     del temp_db
     yield TestClient(app, raise_server_exceptions=False)
-
-
-@pytest.fixture(autouse=True)
-def fast_stream_intervals(monkeypatch):
-    monkeypatch.setattr(sora_job_stream_service, "poll_interval_seconds", 0.05, raising=False)
-    monkeypatch.setattr(sora_job_stream_service, "ping_interval_seconds", 0.2, raising=False)
-    monkeypatch.setattr(sora_job_stream_service, "phase_poll_limit", 200, raising=False)
 
 
 def _parse_sse_chunk(chunk):
@@ -64,7 +56,7 @@ def _parse_sse_chunk(chunk):
     return events
 
 
-async def _next_event(response, expected=None, max_steps=30):
+async def _next_event(response, expected=None, max_steps=40):
     expected_set = set(expected or [])
     pending = getattr(response, "_sse_pending_events", None)
     if pending is None:
@@ -82,16 +74,18 @@ async def _next_event(response, expected=None, max_steps=30):
     raise AssertionError(f"未在 {max_steps} 个事件内收到目标事件: {expected_set}")
 
 
-async def _open_stream(*, token: str, status: str | None = None, with_events: bool = True):
-    return await stream_sora_jobs(
+async def _open_stream(*, token: str, status: str | None = None):
+    return await stream_sora_jobs_v2(
         token=token,
         group_title=None,
         profile_id=None,
         status=status,
         phase=None,
         keyword=None,
+        error_class=None,
+        actor_id=None,
+        engine_version="v2",
         limit=100,
-        with_events=with_events,
     )
 
 
@@ -113,24 +107,26 @@ def _seed_job(*, status="running", phase="progress", progress_pct=10.0, group_ti
             "status": status,
             "phase": phase,
             "progress_pct": progress_pct,
+            "engine_version": "v2",
+            "actor_id": "profile-1",
         }
     )
 
 
-def test_sora_job_stream_requires_valid_token(client):
-    no_token_resp = client.get("/api/v1/sora/jobs/stream")
+def test_sora_job_stream_v2_requires_valid_token(client):
+    no_token_resp = client.get("/api/v2/sora/jobs/stream")
     assert no_token_resp.status_code == 401
 
-    bad_token_resp = client.get("/api/v1/sora/jobs/stream", params={"token": "bad-token"})
+    bad_token_resp = client.get("/api/v2/sora/jobs/stream", params={"token": "bad-token"})
     assert bad_token_resp.status_code == 401
 
     missing_user_token = create_access_token({"sub": "no-such-user"})
-    missing_user_resp = client.get("/api/v1/sora/jobs/stream", params={"token": missing_user_token})
+    missing_user_resp = client.get("/api/v2/sora/jobs/stream", params={"token": missing_user_token})
     assert missing_user_resp.status_code == 401
 
 
 @pytest.mark.asyncio
-async def test_sora_job_stream_first_event_is_snapshot():
+async def test_sora_job_stream_v2_first_event_is_snapshot():
     token = _seed_user_token()
     job_id = _seed_job()
 
@@ -147,90 +143,94 @@ async def test_sora_job_stream_first_event_is_snapshot():
 
 
 @pytest.mark.asyncio
-async def test_sora_job_stream_snapshot_contains_image_url():
-    token = _seed_user_token()
-    job_id = _seed_job(image_url="https://example.com/snapshot.png")
-
-    resp = await _open_stream(token=token)
-    try:
-        event_name, payload = await _next_event(resp, expected={"snapshot"})
-        assert event_name == "snapshot"
-        data = json.loads(payload or "{}")
-        matched = next((item for item in data.get("jobs", []) if int(item.get("job_id") or 0) == int(job_id)), None)
-        assert matched is not None
-        assert matched.get("image_url") == "https://example.com/snapshot.png"
-    finally:
-        await resp.body_iterator.aclose()
-
-
-@pytest.mark.asyncio
-async def test_sora_job_stream_emits_job_change_after_update():
+async def test_sora_job_stream_v2_emits_job_patch_after_update():
     token = _seed_user_token()
     job_id = _seed_job(status="running", phase="progress", progress_pct=11.0)
 
-    resp = await _open_stream(token=token, with_events=False)
+    resp = await _open_stream(token=token)
     try:
         await _next_event(resp, expected={"snapshot"})
         sqlite_db.update_sora_job(job_id, {"progress_pct": 55, "phase": "progress", "status": "running"})
-        event_name, payload = await _next_event(resp, expected={"job"})
-        assert event_name == "job"
+        event_name, payload = await _next_event(resp, expected={"job_patch"})
+        assert event_name == "job_patch"
         data = json.loads(payload or "{}")
-        assert int(data["job_id"]) == int(job_id)
-        assert float(data["progress_pct"]) == pytest.approx(55.0)
-        assert data["status"] == "running"
+        patch = data.get("job_patch") or {}
+        assert int(patch.get("job_id") or 0) == int(job_id)
+        assert float(patch.get("progress_pct") or 0) == pytest.approx(55.0)
     finally:
         await resp.body_iterator.aclose()
 
 
 @pytest.mark.asyncio
-async def test_sora_job_stream_emits_phase_event():
+async def test_sora_job_stream_v2_emits_phase_update():
     token = _seed_user_token()
     job_id = _seed_job(status="running", phase="progress", progress_pct=30.0)
 
-    resp = await _open_stream(token=token, status="running", with_events=True)
+    resp = await _open_stream(token=token, status="running")
     try:
         await _next_event(resp, expected={"snapshot"})
-        sqlite_db.create_sora_job_event(job_id, "progress", "start", "进入进度轮询")
-        event_name, payload = await _next_event(resp, expected={"phase"})
-        assert event_name == "phase"
+        sqlite_db.create_sora_job_timeline(
+            {
+                "job_id": int(job_id),
+                "run_id": None,
+                "event_type": "phase_transition",
+                "phase": "progress",
+                "payload_json": json.dumps({"note": "tick"}, ensure_ascii=False),
+                "created_at": "2026-01-01 00:00:00",
+            }
+        )
+        event_name, payload = await _next_event(resp, expected={"phase_update"})
+        assert event_name == "phase_update"
         data = json.loads(payload or "{}")
-        assert int(data["job_id"]) == int(job_id)
-        assert data["phase"] == "progress"
-        assert data["event"] == "start"
+        phase = data.get("phase_update") or {}
+        assert int(phase.get("job_id") or 0) == int(job_id)
+        assert phase.get("phase") == "progress"
     finally:
         await resp.body_iterator.aclose()
 
 
 @pytest.mark.asyncio
-async def test_sora_job_stream_emits_remove_when_filtered_out():
+async def test_sora_job_stream_v2_emits_run_update():
+    token = _seed_user_token()
+    job_id = _seed_job(status="running", phase="progress", progress_pct=33.0)
+
+    resp = await _open_stream(token=token, status="running")
+    try:
+        await _next_event(resp, expected={"snapshot"})
+        run_id = sqlite_db.create_sora_run(
+            {
+                "job_id": int(job_id),
+                "profile_id": 1,
+                "actor_id": "profile-1",
+                "status": "running",
+                "phase": "progress",
+                "attempt": 1,
+            }
+        )
+        sqlite_db.update_sora_job(job_id, {"last_run_id": int(run_id)})
+        event_name, payload = await _next_event(resp, expected={"run_update"})
+        assert event_name == "run_update"
+        data = json.loads(payload or "{}")
+        run = data.get("run_update") or {}
+        assert int(run.get("job_id") or 0) == int(job_id)
+    finally:
+        await resp.body_iterator.aclose()
+
+
+@pytest.mark.asyncio
+async def test_sora_job_stream_v2_emits_deleted_patch_when_filtered_out():
     token = _seed_user_token()
     job_id = _seed_job(status="running", phase="progress", progress_pct=42.0)
 
-    resp = await _open_stream(token=token, status="running", with_events=False)
+    resp = await _open_stream(token=token, status="running")
     try:
         await _next_event(resp, expected={"snapshot"})
         sqlite_db.update_sora_job(job_id, {"status": "completed", "phase": "done", "progress_pct": 100})
-        event_name, payload = await _next_event(resp, expected={"remove"})
-        assert event_name == "remove"
+        event_name, payload = await _next_event(resp, expected={"job_patch"})
+        assert event_name == "job_patch"
         data = json.loads(payload or "{}")
-        assert int(data["job_id"]) == int(job_id)
-    finally:
-        await resp.body_iterator.aclose()
-
-
-@pytest.mark.asyncio
-async def test_sora_job_stream_with_events_false_wont_emit_phase():
-    token = _seed_user_token()
-    job_id = _seed_job(status="running", phase="progress", progress_pct=25.0)
-
-    resp = await _open_stream(token=token, status="running", with_events=False)
-    try:
-        await _next_event(resp, expected={"snapshot"})
-        sqlite_db.create_sora_job_event(job_id, "progress", "start", "不应推送")
-        observed = []
-        for _ in range(3):
-            name, _payload = await _next_event(resp)
-            observed.append(name)
-        assert "phase" not in observed
+        patch = data.get("job_patch") or {}
+        assert int(patch.get("job_id") or 0) == int(job_id)
+        assert patch.get("_deleted") is True
     finally:
         await resp.body_iterator.aclose()

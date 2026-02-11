@@ -37,6 +37,7 @@ class ProxyItem(BaseModel):
     cf_recent_count: int = 0
     cf_recent_total: int = 0
     cf_recent_ratio: float = 0.0
+    cf_recent_seq: List[int] = Field(default_factory=list)
 
     created_at: str
     updated_at: str
@@ -47,9 +48,11 @@ class ProxyListResponse(BaseModel):
     page: int
     limit: int
     cf_recent_window: int = 30
+    cf_trend_window: int = 10
     unknown_cf_recent_count: int = 0
     unknown_cf_recent_total: int = 0
     unknown_cf_recent_ratio: float = 0.0
+    unknown_cf_recent_seq: List[int] = Field(default_factory=list)
     items: List[ProxyItem] = Field(default_factory=list)
 
 

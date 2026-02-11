@@ -135,6 +135,95 @@ class SQLiteLogsRepo:
         data["metadata"] = metadata
         return data
 
+    @staticmethod
+    def _normalize_sora_dashboard_window(window: Optional[str]) -> str:
+        text = str(window or "24h").strip().lower()
+        return text if text in {"1h", "6h", "24h", "7d"} else "24h"
+
+    @staticmethod
+    def _normalize_sora_dashboard_bucket(bucket: Optional[str]) -> str:
+        text = str(bucket or "auto").strip().lower()
+        return text if text in {"auto", "1m", "5m", "1h"} else "auto"
+
+    @staticmethod
+    def _resolve_sora_dashboard_bucket(window: str, bucket: str) -> str:
+        if bucket != "auto":
+            return bucket
+        if window in {"1h", "6h"}:
+            return "1m"
+        if window == "24h":
+            return "5m"
+        return "1h"
+
+    @staticmethod
+    def _sora_dashboard_bucket_seconds(bucket: str) -> int:
+        if bucket == "1m":
+            return 60
+        if bucket == "5m":
+            return 300
+        return 3600
+
+    @staticmethod
+    def _floor_datetime_to_bucket(dt: datetime, bucket_seconds: int) -> datetime:
+        ts = int(dt.timestamp())
+        floored = (ts // max(1, int(bucket_seconds))) * max(1, int(bucket_seconds))
+        return datetime.fromtimestamp(floored)
+
+    @staticmethod
+    def _bucket_expr_for_sql(bucket: str) -> str:
+        if bucket == "1m":
+            return "strftime('%Y-%m-%d %H:%M:00', created_at)"
+        if bucket == "5m":
+            return (
+                "strftime('%Y-%m-%d %H:', created_at) || "
+                "printf('%02d:00', (CAST(strftime('%M', created_at) AS INTEGER) / 5) * 5)"
+            )
+        return "strftime('%Y-%m-%d %H:00:00', created_at)"
+
+    @staticmethod
+    def _calc_p95_int(sorted_values: List[int]) -> int:
+        if not sorted_values:
+            return 0
+        idx = max(0, math.ceil(len(sorted_values) * 0.95) - 1)
+        return int(sorted_values[idx])
+
+    @staticmethod
+    def _build_sora_scope_rule_text(include_stream: bool, path: Optional[str]) -> str:
+        parts = [
+            "source=api",
+            "instr(path,'/sora')>0",
+            "path NOT LIKE '/api/v1/admin/sora-requests%'",
+        ]
+        if not include_stream:
+            parts.append("path NOT LIKE '%/stream%'")
+        if path:
+            parts.append(f"path = '{str(path).strip()}'")
+        return " AND ".join(parts)
+
+    def _build_sora_scope_conditions(
+        self,
+        *,
+        start_at: str,
+        end_at: str,
+        include_stream: bool,
+        path: Optional[str],
+    ) -> Tuple[str, List[Any]]:
+        conditions: List[str] = [
+            "source = 'api'",
+            "path IS NOT NULL",
+            "instr(path, '/sora') > 0",
+            "path NOT LIKE '/api/v1/admin/sora-requests%'",
+            "created_at >= ?",
+            "created_at <= ?",
+        ]
+        params: List[Any] = [start_at, end_at]
+        if not include_stream:
+            conditions.append("path NOT LIKE '%/stream%'")
+        if path:
+            conditions.append("path = ?")
+            params.append(str(path).strip())
+        return f"WHERE {' AND '.join(conditions)}", params
+
     def create_event_log(
         self,
         *,
@@ -437,6 +526,433 @@ class SQLiteLogsRepo:
             "source_distribution": source_distribution,
             "top_actions": top_actions,
             "top_failed_reasons": top_failed_reasons,
+        }
+
+    def get_sora_requests_dashboard(
+        self,
+        *,
+        start_at: Optional[str] = None,
+        end_at: Optional[str] = None,
+        window: str = "24h",
+        bucket: str = "auto",
+        endpoint_limit: int = 10,
+        include_stream_volume: bool = True,
+        include_stream_latency: bool = False,
+        sample_limit: int = 30,
+        path: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        window_value = self._normalize_sora_dashboard_window(window)
+        bucket_value = self._normalize_sora_dashboard_bucket(bucket)
+        resolved_bucket = self._resolve_sora_dashboard_bucket(window_value, bucket_value)
+        bucket_seconds = self._sora_dashboard_bucket_seconds(resolved_bucket)
+        window_seconds_map = {
+            "1h": 3600,
+            "6h": 6 * 3600,
+            "24h": 24 * 3600,
+            "7d": 7 * 24 * 3600,
+        }
+        default_span_seconds = int(window_seconds_map.get(window_value, 24 * 3600))
+        now_dt = datetime.now()
+        parsed_start: Optional[datetime] = None
+        parsed_end: Optional[datetime] = None
+        try:
+            if start_at:
+                parsed_start = datetime.fromisoformat(str(start_at).replace("T", " "))
+        except Exception:
+            parsed_start = None
+        try:
+            if end_at:
+                parsed_end = datetime.fromisoformat(str(end_at).replace("T", " "))
+        except Exception:
+            parsed_end = None
+
+        if parsed_start is None and parsed_end is None:
+            parsed_end = now_dt
+            parsed_start = parsed_end - timedelta(seconds=default_span_seconds)
+        elif parsed_start is None and parsed_end is not None:
+            parsed_start = parsed_end - timedelta(seconds=default_span_seconds)
+        elif parsed_start is not None and parsed_end is None:
+            parsed_end = now_dt
+
+        assert parsed_start is not None
+        assert parsed_end is not None
+        if parsed_start > parsed_end:
+            parsed_start, parsed_end = parsed_end, parsed_start
+
+        safe_endpoint_limit = min(max(int(endpoint_limit), 5), 30)
+        safe_sample_limit = min(max(int(sample_limit), 10), 100)
+        normalized_path = str(path).strip() if path else None
+        if normalized_path == "":
+            normalized_path = None
+
+        range_start = parsed_start.strftime("%Y-%m-%d %H:%M:%S")
+        range_end = parsed_end.strftime("%Y-%m-%d %H:%M:%S")
+        aligned_start = self._floor_datetime_to_bucket(parsed_start, bucket_seconds)
+        aligned_end = self._floor_datetime_to_bucket(parsed_end, bucket_seconds)
+        bucket_expr = self._bucket_expr_for_sql(resolved_bucket)
+
+        where_volume, params_volume = self._build_sora_scope_conditions(
+            start_at=range_start,
+            end_at=range_end,
+            include_stream=bool(include_stream_volume),
+            path=normalized_path,
+        )
+        where_latency, params_latency = self._build_sora_scope_conditions(
+            start_at=range_start,
+            end_at=range_end,
+            include_stream=bool(include_stream_latency),
+            path=normalized_path,
+        )
+        duration_where_latency = f"{where_latency} AND duration_ms IS NOT NULL"
+
+        conn = self._get_conn()
+        cursor_obj = conn.cursor()
+
+        cursor_obj.execute(
+            f"""
+            SELECT
+              COUNT(*) AS total_count,
+              SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS failed_count,
+              SUM(CASE WHEN is_slow = 1 THEN 1 ELSE 0 END) AS slow_count
+            FROM event_logs {where_volume}
+            """,
+            params_volume,
+        )
+        total_row = cursor_obj.fetchone() or {}
+        total_count = int(total_row["total_count"] or 0)
+        failed_count = int(total_row["failed_count"] or 0)
+        slow_count = int(total_row["slow_count"] or 0)
+        failure_rate = round((failed_count / total_count) * 100, 2) if total_count > 0 else 0.0
+        slow_rate = round((slow_count / total_count) * 100, 2) if total_count > 0 else 0.0
+        range_minutes = max((parsed_end - parsed_start).total_seconds() / 60.0, 1.0)
+        avg_rpm = round(total_count / range_minutes, 2)
+
+        cursor_obj.execute(
+            f"""
+            SELECT duration_ms
+            FROM event_logs {duration_where_latency}
+            ORDER BY duration_ms ASC
+            """,
+            params_latency,
+        )
+        kpi_durations = [int(item["duration_ms"]) for item in cursor_obj.fetchall() if item["duration_ms"] is not None]
+        p95_ms = self._calc_p95_int(kpi_durations)
+
+        cursor_obj.execute(
+            f"""
+            SELECT
+              {bucket_expr} AS bucket_at,
+              COUNT(*) AS total_count,
+              SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS failed_count,
+              SUM(CASE WHEN is_slow = 1 THEN 1 ELSE 0 END) AS slow_count
+            FROM event_logs {where_volume}
+            GROUP BY bucket_at
+            ORDER BY bucket_at ASC
+            """,
+            params_volume,
+        )
+        bucket_count_map: Dict[str, Dict[str, int]] = {}
+        for row in cursor_obj.fetchall():
+            key = str(row["bucket_at"] or "")
+            if not key:
+                continue
+            bucket_count_map[key] = {
+                "total_count": int(row["total_count"] or 0),
+                "failed_count": int(row["failed_count"] or 0),
+                "slow_count": int(row["slow_count"] or 0),
+            }
+
+        cursor_obj.execute(
+            f"""
+            SELECT
+              {bucket_expr} AS bucket_at,
+              duration_ms
+            FROM event_logs {duration_where_latency}
+            ORDER BY bucket_at ASC, duration_ms ASC
+            """,
+            params_latency,
+        )
+        bucket_duration_map: Dict[str, List[int]] = {}
+        for row in cursor_obj.fetchall():
+            key = str(row["bucket_at"] or "")
+            if not key:
+                continue
+            bucket_duration_map.setdefault(key, []).append(int(row["duration_ms"] or 0))
+        bucket_p95_map = {
+            key: self._calc_p95_int(values)
+            for key, values in bucket_duration_map.items()
+        }
+
+        series: List[Dict[str, Any]] = []
+        current = aligned_start
+        while current <= aligned_end:
+            key = current.strftime("%Y-%m-%d %H:%M:%S")
+            row = bucket_count_map.get(key, {})
+            row_total = int(row.get("total_count") or 0)
+            row_failed = int(row.get("failed_count") or 0)
+            row_slow = int(row.get("slow_count") or 0)
+            row_failure_rate = round((row_failed / row_total) * 100, 2) if row_total > 0 else 0.0
+            series.append(
+                {
+                    "bucket_at": key,
+                    "total_count": row_total,
+                    "failed_count": row_failed,
+                    "slow_count": row_slow,
+                    "failure_rate": row_failure_rate,
+                    "p95_ms": int(bucket_p95_map[key]) if key in bucket_p95_map else None,
+                }
+            )
+            current = current + timedelta(seconds=bucket_seconds)
+
+        cursor_obj.execute(
+            f"""
+            SELECT
+              path,
+              COUNT(*) AS total_count,
+              SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) AS success_count,
+              SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS failed_count,
+              SUM(CASE WHEN is_slow = 1 THEN 1 ELSE 0 END) AS slow_count,
+              SUM(CASE WHEN duration_ms IS NOT NULL THEN duration_ms ELSE 0 END) AS duration_sum,
+              SUM(CASE WHEN duration_ms IS NOT NULL THEN 1 ELSE 0 END) AS duration_count,
+              MAX(duration_ms) AS max_duration_ms
+            FROM event_logs {where_volume}
+            GROUP BY path
+            ORDER BY total_count DESC, path ASC
+            """,
+            params_volume,
+        )
+        endpoint_rows = [dict(item) for item in cursor_obj.fetchall()]
+        endpoint_top_rows = endpoint_rows[:safe_endpoint_limit]
+        endpoint_tail_rows = endpoint_rows[safe_endpoint_limit:]
+        if endpoint_tail_rows:
+            endpoint_top_rows.append(
+                {
+                    "path": "__others__",
+                    "total_count": sum(int(item.get("total_count") or 0) for item in endpoint_tail_rows),
+                    "success_count": sum(int(item.get("success_count") or 0) for item in endpoint_tail_rows),
+                    "failed_count": sum(int(item.get("failed_count") or 0) for item in endpoint_tail_rows),
+                    "slow_count": sum(int(item.get("slow_count") or 0) for item in endpoint_tail_rows),
+                    "duration_sum": sum(int(item.get("duration_sum") or 0) for item in endpoint_tail_rows),
+                    "duration_count": sum(int(item.get("duration_count") or 0) for item in endpoint_tail_rows),
+                    "max_duration_ms": max(
+                        [int(item.get("max_duration_ms") or 0) for item in endpoint_tail_rows] or [0]
+                    ),
+                }
+            )
+
+        endpoint_top: List[Dict[str, Any]] = []
+        for row in endpoint_top_rows:
+            row_total = int(row.get("total_count") or 0)
+            duration_count = int(row.get("duration_count") or 0)
+            duration_sum = int(row.get("duration_sum") or 0)
+            endpoint_top.append(
+                {
+                    "path": str(row.get("path") or ""),
+                    "total_count": row_total,
+                    "success_count": int(row.get("success_count") or 0),
+                    "failed_count": int(row.get("failed_count") or 0),
+                    "slow_count": int(row.get("slow_count") or 0),
+                    "share_pct": round((row_total / total_count) * 100, 2) if total_count > 0 else 0.0,
+                    "avg_duration_ms": round(duration_sum / duration_count, 1) if duration_count > 0 else None,
+                    "max_duration_ms": int(row.get("max_duration_ms") or 0) if row.get("max_duration_ms") is not None else None,
+                }
+            )
+
+        cursor_obj.execute(
+            f"""
+            SELECT
+              CASE
+                WHEN status_code BETWEEN 200 AND 299 THEN '2xx'
+                WHEN status_code BETWEEN 300 AND 399 THEN '3xx'
+                WHEN status_code BETWEEN 400 AND 499 THEN '4xx'
+                WHEN status_code BETWEEN 500 AND 599 THEN '5xx'
+                ELSE 'other'
+              END AS key,
+              COUNT(*) AS count
+            FROM event_logs {where_volume}
+            GROUP BY key
+            ORDER BY key ASC
+            """,
+            params_volume,
+        )
+        code_map = {
+            str(item["key"] or "other"): int(item["count"] or 0)
+            for item in cursor_obj.fetchall()
+        }
+        status_code_dist = [
+            {"key": key, "count": int(code_map.get(key) or 0)}
+            for key in ["2xx", "3xx", "4xx", "5xx", "other"]
+        ]
+
+        cursor_obj.execute(
+            f"""
+            SELECT
+              SUM(CASE WHEN duration_ms < 200 THEN 1 ELSE 0 END) AS bucket_0_200,
+              SUM(CASE WHEN duration_ms >= 200 AND duration_ms < 500 THEN 1 ELSE 0 END) AS bucket_200_500,
+              SUM(CASE WHEN duration_ms >= 500 AND duration_ms < 1000 THEN 1 ELSE 0 END) AS bucket_500_1000,
+              SUM(CASE WHEN duration_ms >= 1000 AND duration_ms < 2000 THEN 1 ELSE 0 END) AS bucket_1000_2000,
+              SUM(CASE WHEN duration_ms >= 2000 AND duration_ms < 5000 THEN 1 ELSE 0 END) AS bucket_2000_5000,
+              SUM(CASE WHEN duration_ms >= 5000 THEN 1 ELSE 0 END) AS bucket_5000_inf
+            FROM event_logs {duration_where_latency}
+            """,
+            params_latency,
+        )
+        latency_row = cursor_obj.fetchone() or {}
+        latency_histogram = [
+            {
+                "key": "0_200",
+                "label": "0-200ms",
+                "count": int(latency_row["bucket_0_200"] or 0),
+                "min_ms": 0,
+                "max_ms": 200,
+            },
+            {
+                "key": "200_500",
+                "label": "200-500ms",
+                "count": int(latency_row["bucket_200_500"] or 0),
+                "min_ms": 200,
+                "max_ms": 500,
+            },
+            {
+                "key": "500_1000",
+                "label": "500-1000ms",
+                "count": int(latency_row["bucket_500_1000"] or 0),
+                "min_ms": 500,
+                "max_ms": 1000,
+            },
+            {
+                "key": "1000_2000",
+                "label": "1000-2000ms",
+                "count": int(latency_row["bucket_1000_2000"] or 0),
+                "min_ms": 1000,
+                "max_ms": 2000,
+            },
+            {
+                "key": "2000_5000",
+                "label": "2000-5000ms",
+                "count": int(latency_row["bucket_2000_5000"] or 0),
+                "min_ms": 2000,
+                "max_ms": 5000,
+            },
+            {
+                "key": "5000_inf",
+                "label": "5000ms+",
+                "count": int(latency_row["bucket_5000_inf"] or 0),
+                "min_ms": 5000,
+                "max_ms": None,
+            },
+        ]
+
+        cursor_obj.execute(
+            f"""
+            SELECT
+              CAST(strftime('%w', created_at) AS INTEGER) AS weekday_sunday0,
+              CAST(strftime('%H', created_at) AS INTEGER) AS hour,
+              COUNT(*) AS count
+            FROM event_logs {where_volume}
+            GROUP BY weekday_sunday0, hour
+            ORDER BY weekday_sunday0 ASC, hour ASC
+            """,
+            params_volume,
+        )
+        raw_heatmap_map: Dict[Tuple[int, int], int] = {}
+        for row in cursor_obj.fetchall():
+            weekday_sunday0 = int(row["weekday_sunday0"] or 0)
+            hour = int(row["hour"] or 0)
+            monday_index = (weekday_sunday0 + 6) % 7
+            raw_heatmap_map[(monday_index, hour)] = int(row["count"] or 0)
+
+        weekday_labels = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
+        heatmap_hourly: List[Dict[str, Any]] = []
+        for weekday in range(7):
+            for hour in range(24):
+                heatmap_hourly.append(
+                    {
+                        "weekday": int(weekday),
+                        "weekday_label": weekday_labels[weekday],
+                        "hour": int(hour),
+                        "count": int(raw_heatmap_map.get((weekday, hour), 0)),
+                    }
+                )
+
+        cursor_obj.execute(
+            f"""
+            SELECT
+              id,
+              created_at,
+              method,
+              path,
+              status,
+              status_code,
+              duration_ms,
+              is_slow,
+              request_id,
+              trace_id
+            FROM event_logs {where_volume}
+            ORDER BY id DESC
+            LIMIT ?
+            """,
+            params_volume + [safe_sample_limit],
+        )
+        recent_samples: List[Dict[str, Any]] = []
+        for row in cursor_obj.fetchall():
+            created_at_text = str(row["created_at"] or "")
+            bucket_at = None
+            try:
+                created_dt = datetime.fromisoformat(created_at_text.replace("T", " "))
+                bucket_at = self._floor_datetime_to_bucket(created_dt, bucket_seconds).strftime("%Y-%m-%d %H:%M:%S")
+            except Exception:
+                bucket_at = None
+            recent_samples.append(
+                {
+                    "id": int(row["id"] or 0),
+                    "created_at": created_at_text,
+                    "method": row["method"],
+                    "path": str(row["path"] or ""),
+                    "status": row["status"],
+                    "status_code": int(row["status_code"]) if row["status_code"] is not None else None,
+                    "duration_ms": int(row["duration_ms"]) if row["duration_ms"] is not None else None,
+                    "is_slow": bool(int(row["is_slow"] or 0)),
+                    "request_id": row["request_id"],
+                    "trace_id": row["trace_id"],
+                    "bucket_at": bucket_at,
+                }
+            )
+        conn.close()
+
+        try:
+            from app.core.config import settings
+
+            slow_threshold = int(getattr(settings, "api_slow_threshold_ms", 2000) or 2000)
+        except Exception:
+            slow_threshold = 2000
+
+        return {
+            "meta": {
+                "start_at": range_start,
+                "end_at": range_end,
+                "bucket": resolved_bucket,
+                "bucket_seconds": bucket_seconds,
+                "scope_rule": self._build_sora_scope_rule_text(include_stream=bool(include_stream_volume), path=normalized_path),
+                "slow_threshold_ms_current": int(slow_threshold),
+                "refreshed_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "path_filter": normalized_path,
+            },
+            "kpi": {
+                "total_count": total_count,
+                "failed_count": failed_count,
+                "failure_rate": failure_rate,
+                "slow_count": slow_count,
+                "slow_rate": slow_rate,
+                "p95_ms": p95_ms,
+                "avg_rpm": avg_rpm,
+            },
+            "series": series,
+            "endpoint_top": endpoint_top,
+            "status_code_dist": status_code_dist,
+            "latency_histogram": latency_histogram,
+            "heatmap_hourly": heatmap_hourly,
+            "recent_samples": recent_samples,
         }
 
     def _maybe_cleanup_event_logs(self) -> None:

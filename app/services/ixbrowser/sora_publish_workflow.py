@@ -267,7 +267,7 @@ class SoraPublishWorkflow:
                 await self._prepare_sora_page(page, profile_id)
                 publish_future = self._watch_publish_url(page, task_id=task_id)
                 draft_generation = None
-                if isinstance(generation_id, str) and generation_id.strip() and generation_id.strip().startswith("gen_"):
+                if isinstance(generation_id, str) and generation_id.strip():
                     draft_generation = generation_id.strip()
                 if not draft_generation:
                     draft_future = self._watch_draft_item_by_task_id(page, task_id)
@@ -461,7 +461,7 @@ class SoraPublishWorkflow:
         )
         publish_future = self._watch_publish_url(page, task_id=task_id)
         draft_generation = None
-        if isinstance(generation_id, str) and generation_id.strip() and generation_id.strip().startswith("gen_"):
+        if isinstance(generation_id, str) and generation_id.strip():
             draft_generation = generation_id.strip()
         if not draft_generation:
             draft_future = self._watch_draft_item_by_task_id(page, task_id)
@@ -1388,16 +1388,20 @@ class SoraPublishWorkflow:
             generation_id = item.get("generation", {}).get("id") or item.get("generation", {}).get("generation_id")
         if not generation_id:
             item_id = item.get("id")
-            if isinstance(item_id, str) and item_id.startswith("gen_"):
-                generation_id = item_id
+            if isinstance(item_id, str) and item_id.strip():
+                generation_id = item_id.strip()
         if not generation_id:
             try:
                 raw = json.dumps(item)
             except Exception:  # noqa: BLE001
                 raw = ""
-            match = re.search(r"gen_[a-zA-Z0-9]{8,}", raw)
-            if match:
-                generation_id = match.group(0)
+            url_match = re.search(r"/d/([a-zA-Z0-9_-]{6,})", raw)
+            if url_match:
+                generation_id = url_match.group(1)
+            else:
+                match = re.search(r'"generation(?:_id|Id)?"\\s*[:=]\\s*"([a-zA-Z0-9_-]{6,})"', raw)
+                if match:
+                    generation_id = match.group(1)
         if isinstance(generation_id, str) and generation_id.strip():
             return generation_id.strip()
         return None
@@ -1405,7 +1409,7 @@ class SoraPublishWorkflow:
     def _extract_generation_id_from_url(self, url: Optional[str]) -> Optional[str]:
         if not url:
             return None
-        match = re.search(r"/d/(gen_[a-zA-Z0-9]{8,})", str(url))
+        match = re.search(r"/d/([a-zA-Z0-9_-]{6,})", str(url))
         if match:
             return match.group(1)
         return None
@@ -2127,8 +2131,7 @@ class SoraPublishWorkflow:
             return None
         generation_id = self._extract_generation_id(item)
         if isinstance(generation_id, str) and generation_id.strip():
-            if generation_id.startswith("gen_"):
-                return f"https://sora.chatgpt.com/d/{generation_id}"
+            return f"https://sora.chatgpt.com/d/{generation_id}"
         for key in ("share_url", "public_url", "publish_url", "url"):
             value = item.get(key)
             if isinstance(value, str) and value.strip():

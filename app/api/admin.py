@@ -12,7 +12,11 @@ from app.core.auth import get_current_active_user
 from app.core.sse import format_sse_event
 from app.core.stream_auth import require_user_from_query_token
 from app.db.sqlite import sqlite_db
-from app.models.logs import LogEventListResponse, LogEventStatsResponse
+from app.models.logs import (
+    LogEventListResponse,
+    LogEventStatsResponse,
+    SoraRequestDashboardResponse,
+)
 from app.models.settings import (
     ScanSchedulerEnvelope,
     ScanSchedulerSettings,
@@ -127,6 +131,36 @@ async def get_system_log_stats(
         slow_only=bool(slow_only),
     )
     return LogEventStatsResponse.model_validate(stats)
+
+
+@router.get("/sora-requests/dashboard", response_model=SoraRequestDashboardResponse)
+async def get_sora_requests_dashboard(
+    start_at: Optional[str] = Query(None, description="开始时间"),
+    end_at: Optional[str] = Query(None, description="结束时间"),
+    window: str = Query("24h", description="时间窗：1h|6h|24h|7d"),
+    bucket: str = Query("auto", description="分桶：auto|1m|5m|1h"),
+    endpoint_limit: int = Query(10, ge=5, le=30, description="端点榜单条数"),
+    include_stream_volume: bool = Query(True, description="请求量统计是否包含 stream 接口"),
+    include_stream_latency: bool = Query(False, description="延迟统计是否包含 stream 接口"),
+    sample_limit: int = Query(30, ge=10, le=100, description="样本日志条数"),
+    path: Optional[str] = Query(None, description="按端点路径精确过滤"),
+    current_user: dict = Depends(get_current_active_user),
+):
+    del current_user
+    start_at_str = _parse_datetime(start_at)
+    end_at_str = _parse_datetime(end_at)
+    data = sqlite_db.get_sora_requests_dashboard(
+        start_at=start_at_str,
+        end_at=end_at_str,
+        window=window,
+        bucket=bucket,
+        endpoint_limit=endpoint_limit,
+        include_stream_volume=bool(include_stream_volume),
+        include_stream_latency=bool(include_stream_latency),
+        sample_limit=sample_limit,
+        path=path,
+    )
+    return SoraRequestDashboardResponse.model_validate(data)
 
 
 @router.get("/logs/stream")

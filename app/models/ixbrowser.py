@@ -1,7 +1,7 @@
 """ixBrowser 模型"""
 from typing import Any, Dict, List, Optional
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class IXBrowserGroup(BaseModel):
@@ -234,6 +234,14 @@ class SoraJob(BaseModel):
     dispatch_quantity_score: Optional[float] = None
     dispatch_quality_score: Optional[float] = None
     dispatch_reason: Optional[str] = None
+    priority: Optional[int] = None
+    engine_version: Optional[str] = None
+    actor_id: Optional[str] = None
+    last_run_id: Optional[int] = None
+    last_error_class: Optional[str] = None
+    last_recover_action: Optional[str] = None
+    session_reconnect_count: Optional[int] = None
+    phase_retry_count: Optional[int] = None
     retry_of_job_id: Optional[int] = None
     retry_root_job_id: Optional[int] = None
     retry_index: Optional[int] = None
@@ -265,6 +273,75 @@ class SoraJobEvent(BaseModel):
 
 class SoraJobCreateResponse(BaseModel):
     job: SoraJob
+
+
+class SoraJobV2Request(BaseModel):
+    group_title: str = "Sora"
+    profile_id: Optional[int] = Field(default=None, ge=1)
+    prompt: str
+    image_url: Optional[str] = None
+    duration: str = "10s"
+    aspect_ratio: str = "landscape"
+    priority: int = Field(default=100, ge=0, le=1000)
+
+    @field_validator("image_url")
+    @classmethod
+    def normalize_image_url_v2(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        text = str(value).strip()
+        return text or None
+
+
+class SoraJobRunContext(BaseModel):
+    actor_id: str
+    actor_queue_position: int
+    profile_lock_state: str
+
+
+class SoraJobV2CreateResponse(BaseModel):
+    job: Dict[str, Any]
+    run_context: SoraJobRunContext
+
+
+class SoraJobV2Error(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    class_: Optional[str] = Field(default=None, alias="class")
+    retryable: bool = False
+    recover_action: Optional[str] = None
+    message: Optional[str] = None
+
+
+class SoraJobV2DetailResponse(BaseModel):
+    job: Dict[str, Any]
+    current_run: Optional[Dict[str, Any]] = None
+    phase_attempts_summary: List[Dict[str, Any]] = Field(default_factory=list)
+    session_stats: Dict[str, Any] = Field(default_factory=dict)
+
+
+class SoraJobTimelineItem(BaseModel):
+    id: int
+    job_id: int
+    run_id: Optional[int] = None
+    event_type: str
+    from_status: Optional[str] = None
+    to_status: Optional[str] = None
+    phase: Optional[str] = None
+    detail: Dict[str, Any] = Field(default_factory=dict)
+    created_at: Optional[str] = None
+
+
+class SoraJobActionRequest(BaseModel):
+    action: str
+
+    @field_validator("action")
+    @classmethod
+    def validate_action(cls, value: str) -> str:
+        text = str(value or "").strip().lower()
+        if text not in {"retry", "cancel", "force_rebind_profile"}:
+            raise ValueError("action must be retry|cancel|force_rebind_profile")
+        return text
 
 
 class SoraAccountWeight(BaseModel):

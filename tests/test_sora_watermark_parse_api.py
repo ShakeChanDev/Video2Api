@@ -15,7 +15,7 @@ pytestmark = pytest.mark.unit
 def temp_db(tmp_path):
     old_db_path = sqlite_db._db_path
     try:
-        db_path = tmp_path / "sora-watermark-parse.db"
+        db_path = tmp_path / "sora-watermark-parse-v2.db"
         sqlite_db._db_path = str(db_path)
         sqlite_db._ensure_data_dir()
         sqlite_db._init_db()
@@ -38,7 +38,7 @@ def client(temp_db):
         app.dependency_overrides.clear()
 
 
-def test_sora_watermark_parse_api_success(monkeypatch, client):
+def test_sora_watermark_parse_api_v2_success(monkeypatch, client):
     async def _fake_parse(_share_url):
         return {
             "share_url": "https://sora.chatgpt.com/p/s_12345678",
@@ -50,7 +50,7 @@ def test_sora_watermark_parse_api_success(monkeypatch, client):
     monkeypatch.setattr(ixbrowser_service, "parse_sora_watermark_link", _fake_parse)
 
     resp = client.post(
-        "/api/v1/sora/watermark/parse",
+        "/api/v2/sora/watermark/parse",
         json={"share_url": "https://sora.chatgpt.com/p/s_12345678"},
     )
     assert resp.status_code == 200
@@ -60,14 +60,14 @@ def test_sora_watermark_parse_api_success(monkeypatch, client):
     assert data["watermark_url"] == "https://example.com/s_12345678.mp4"
 
 
-def test_sora_watermark_parse_api_service_error(monkeypatch, client):
+def test_sora_watermark_parse_api_v2_service_error(monkeypatch, client):
     async def _fake_parse(_share_url):
         raise IXBrowserServiceError("无效的 Sora 分享链接")
 
     monkeypatch.setattr(ixbrowser_service, "parse_sora_watermark_link", _fake_parse)
 
     resp = client.post(
-        "/api/v1/sora/watermark/parse",
+        "/api/v2/sora/watermark/parse",
         json={"share_url": "https://example.com/not-sora"},
     )
     assert resp.status_code == 400
@@ -76,14 +76,18 @@ def test_sora_watermark_parse_api_service_error(monkeypatch, client):
     assert "无效的 Sora 分享链接" in data["detail"]
 
 
-def test_sora_watermark_parse_api_requires_auth(temp_db):
+def test_sora_watermark_parse_api_v2_requires_auth(temp_db):
     del temp_db
     with TestClient(app, raise_server_exceptions=False) as no_auth_client:
         resp = no_auth_client.post(
-            "/api/v1/sora/watermark/parse",
+            "/api/v2/sora/watermark/parse",
             json={"share_url": "https://sora.chatgpt.com/p/s_12345678"},
         )
     assert resp.status_code == 401
     data = resp.json()
     assert data["error"]["type"] == "http_error"
 
+
+def test_sora_v1_disabled_returns_410(client):
+    resp = client.get("/api/v1/sora/jobs")
+    assert resp.status_code == 410
