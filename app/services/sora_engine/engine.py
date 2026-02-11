@@ -205,13 +205,14 @@ class SoraJobEngine:
                 phase="done",
             )
         except Exception as exc:  # noqa: BLE001
+            failed_phase = str(runtime.get("phase") or current_phase)
             classification = self._error_classifier.classify_exception(exc)
             now = self._now_str()
             self._db.update_sora_run(
                 int(run_id),
                 {
                     "status": "failed",
-                    "phase": str(runtime.get("phase") or current_phase),
+                    "phase": failed_phase,
                     "finished_at": now,
                     "error_class": classification.error_class,
                     "error_code": classification.error_code,
@@ -224,7 +225,7 @@ class SoraJobEngine:
                 int(job_id),
                 {
                     "status": "failed",
-                    "phase": str(runtime.get("phase") or current_phase),
+                    "phase": failed_phase,
                     "error": str(exc),
                     "finished_at": now,
                     "last_error_class": classification.error_class,
@@ -239,7 +240,7 @@ class SoraJobEngine:
                 event_type="run_failed",
                 from_status="running",
                 to_status="failed",
-                phase=str(runtime.get("phase") or current_phase),
+                phase=failed_phase,
                 payload={
                     "error_class": classification.error_class,
                     "recover_action": classification.recover_action,
@@ -251,12 +252,33 @@ class SoraJobEngine:
                 int(job_id),
                 int(run_id),
                 int(profile_id),
-                str(runtime.get("phase") or current_phase),
+                failed_phase,
                 classification.error_class,
                 classification.recover_action,
                 int(phase_retry_count),
                 str(exc),
             )
+            failed_phase_text = failed_phase.strip().lower()
+            if failed_phase_text == "submit" and self._service.is_sora_overload_error(str(exc)):
+                try:
+                    updated_row = self._db.get_sora_job(int(job_id)) or row
+                    await self._service.spawn_sora_job_on_overload(updated_row, trigger="auto")
+                except Exception as retry_exc:  # noqa: BLE001
+                    try:
+                        self._db.create_sora_job_event(
+                            int(job_id),
+                            failed_phase_text or "submit",
+                            "auto_retry_giveup",
+                            str(retry_exc),
+                        )
+                    except Exception:  # noqa: BLE001
+                        pass
+                    logger.warning(
+                        "sora.engine.overload.auto_retry.giveup | job_id=%s run_id=%s error=%s",
+                        int(job_id),
+                        int(run_id),
+                        str(retry_exc),
+                    )
         finally:
             lock_stop.set()
             lock_heartbeat_task.cancel()
