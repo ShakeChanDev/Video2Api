@@ -139,6 +139,7 @@
         <el-table-column label="事件说明" min-width="420">
           <template #default="{ row }">
             <div class="message-main">{{ formatReadableMessage(row) }}</div>
+            <div v-if="showGenerationSummary(row)" class="message-meta">{{ formatGenerationSummary(row) }}</div>
             <div v-if="showRawMessage(row)" class="message-sub">{{ row.message }}</div>
           </template>
         </el-table-column>
@@ -175,6 +176,24 @@
         </div>
         <div class="detail-label">消息</div>
         <div class="detail-text">{{ detailRow.message || '-' }}</div>
+
+        <template v-if="hasGenerationMetadata(detailRow)">
+          <div class="detail-label">生成关键信息</div>
+          <div class="detail-grid">
+            <div class="detail-item"><span>Prompt</span><strong>{{ detailGenerationValue(detailRow, 'prompt') }}</strong></div>
+            <div class="detail-item"><span>Image URL</span><strong>{{ detailGenerationValue(detailRow, 'image_url') }}</strong></div>
+            <div class="detail-item"><span>时长</span><strong>{{ detailGenerationValue(detailRow, 'duration') }}</strong></div>
+            <div class="detail-item"><span>比例</span><strong>{{ detailGenerationValue(detailRow, 'aspect_ratio') }}</strong></div>
+            <div class="detail-item"><span>去水印状态</span><strong>{{ detailGenerationValue(detailRow, 'watermark_status') }}</strong></div>
+            <div class="detail-item"><span>去水印重试</span><strong>{{ detailGenerationValue(detailRow, 'watermark_attempts') }}</strong></div>
+            <div class="detail-item"><span>去水印开始</span><strong>{{ detailGenerationValue(detailRow, 'watermark_started_at') }}</strong></div>
+            <div class="detail-item"><span>去水印结束</span><strong>{{ detailGenerationValue(detailRow, 'watermark_finished_at') }}</strong></div>
+          </div>
+          <div class="detail-label">无水印链接</div>
+          <div class="detail-text detail-text-break">{{ detailGenerationValue(detailRow, 'watermark_url') }}</div>
+          <div class="detail-label">去水印错误</div>
+          <div class="detail-text detail-text-break">{{ detailGenerationValue(detailRow, 'watermark_error') }}</div>
+        </template>
 
         <div class="detail-label">Metadata</div>
         <pre class="detail-json">{{ formatJson(detailRow.metadata) }}</pre>
@@ -229,6 +248,23 @@ let realtimeSource = null
 let reconnectTimer = null
 let statsRefreshTimer = null
 let reconnectDelay = 1000
+const GENERATION_METADATA_KEYS = [
+  'prompt',
+  'image_url',
+  'duration',
+  'aspect_ratio',
+  'task_id',
+  'generation_id',
+  'publish_url',
+  'publish_post_id',
+  'publish_permalink',
+  'watermark_status',
+  'watermark_url',
+  'watermark_error',
+  'watermark_attempts',
+  'watermark_started_at',
+  'watermark_finished_at'
+]
 
 const SOURCE_LABELS = {
   api: '接口',
@@ -401,6 +437,8 @@ const matchesFilters = (row) => {
   if (filters.value.request_id && String(row.request_id || '') !== filters.value.request_id) return false
   if (filters.value.slow_only && !row.is_slow) return false
   if (filters.value.keyword) {
+    const metadata = getLogMetadata(row)
+    const metadataTexts = GENERATION_METADATA_KEYS.map((key) => toSearchText(metadata[key]))
     const text = [
       row.message,
       row.action,
@@ -408,7 +446,8 @@ const matchesFilters = (row) => {
       row.request_id,
       row.trace_id,
       row.resource_id,
-      row.operator_username
+      row.operator_username,
+      ...metadataTexts
     ]
       .filter(Boolean)
       .join(' ')
@@ -626,6 +665,76 @@ const formatReadableMessage = (row) => {
   return actionText
 }
 
+const toSearchText = (value) => {
+  if (value === null || value === undefined) return ''
+  if (typeof value === 'string') return value
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value)
+  try {
+    return JSON.stringify(value)
+  } catch {
+    return String(value)
+  }
+}
+
+const getLogMetadata = (row) => {
+  if (!row || typeof row !== 'object') return {}
+  const metadata = row.metadata
+  if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) return {}
+  return metadata
+}
+
+const displayValue = (value) => {
+  if (value === null || value === undefined) return '-'
+  const text = String(value).trim()
+  return text || '-'
+}
+
+const truncateCenter = (value, max = 72) => {
+  const text = String(value || '').trim()
+  if (!text || text.length <= max) return text
+  const keep = Math.max(8, Math.floor((max - 3) / 2))
+  return `${text.slice(0, keep)}...${text.slice(-keep)}`
+}
+
+const truncateTail = (value, max = 72) => {
+  const text = String(value || '').trim()
+  if (!text || text.length <= max) return text
+  return `${text.slice(0, max - 3)}...`
+}
+
+const generationSummaryParts = (row) => {
+  const metadata = getLogMetadata(row)
+  const parts = []
+  const prompt = displayValue(metadata.prompt)
+  if (prompt !== '-') parts.push(`Prompt: ${truncateTail(prompt, 64)}`)
+  const imageUrl = displayValue(metadata.image_url)
+  if (imageUrl !== '-') parts.push(`Image: ${truncateCenter(imageUrl, 64)}`)
+  const watermarkStatus = displayValue(metadata.watermark_status)
+  if (watermarkStatus !== '-') {
+    const attempts = displayValue(metadata.watermark_attempts)
+    parts.push(attempts === '-' ? `去水印: ${watermarkStatus}` : `去水印: ${watermarkStatus} (${attempts})`)
+  }
+  const watermarkError = displayValue(metadata.watermark_error)
+  if (watermarkError !== '-') parts.push(`错误: ${truncateTail(watermarkError, 48)}`)
+  const watermarkUrl = displayValue(metadata.watermark_url)
+  if (watermarkUrl !== '-') parts.push(`无水印: ${truncateCenter(watermarkUrl, 64)}`)
+  return parts
+}
+
+const showGenerationSummary = (row) => generationSummaryParts(row).length > 0
+
+const formatGenerationSummary = (row) => generationSummaryParts(row).join(' · ')
+
+const hasGenerationMetadata = (row) => {
+  const metadata = getLogMetadata(row)
+  return GENERATION_METADATA_KEYS.some((key) => displayValue(metadata[key]) !== '-')
+}
+
+const detailGenerationValue = (row, key) => {
+  const metadata = getLogMetadata(row)
+  return displayValue(metadata[key])
+}
+
 const showRawMessage = (row) => {
   const raw = String(row?.message || '').trim()
   if (!raw) return false
@@ -782,6 +891,13 @@ onBeforeUnmount(() => {
   line-height: 1.35;
 }
 
+.message-meta {
+  margin-top: 4px;
+  color: #0f766e;
+  font-size: 12px;
+  line-height: 1.35;
+}
+
 .message-sub {
   margin-top: 4px;
   color: var(--muted);
@@ -831,6 +947,11 @@ onBeforeUnmount(() => {
   padding: 12px;
   border: 1px solid var(--border);
   font-size: 13px;
+}
+
+.detail-text-break {
+  word-break: break-all;
+  white-space: pre-wrap;
 }
 
 .detail-json {

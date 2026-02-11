@@ -105,7 +105,16 @@ class SoraGenerationWorkflow:
         n_frames = duration_to_frames[duration]
 
         sqlite_db.update_sora_job(job_id, {"phase": "submit"})
-        sqlite_db.create_sora_job_event(job_id, "submit", "start", "开始提交任务")
+        sqlite_db.create_sora_job_event(
+            job_id,
+            "submit",
+            "start",
+            "开始提交任务",
+            metadata_extra={
+                "prompt": prompt,
+                "image_url": image_url,
+            },
+        )
 
         open_data = await self._open_profile_with_retry(profile_id, max_attempts=3)
         ws_endpoint = open_data.get("ws")
@@ -169,7 +178,16 @@ class SoraGenerationWorkflow:
                         "task_id": task_id,
                     }
                 )
-                sqlite_db.create_sora_job_event(job_id, "submit", "finish", f"提交成功：{task_id}")
+                sqlite_db.create_sora_job_event(
+                    job_id,
+                    "submit",
+                    "finish",
+                    f"提交成功：{task_id}",
+                    metadata_extra={
+                        "prompt": prompt,
+                        "image_url": image_url,
+                    },
+                )
 
                 if not access_token:
                     access_token = await self._publish_workflow.get_access_token_from_page(page)
@@ -177,7 +195,16 @@ class SoraGenerationWorkflow:
                     raise self._service_error("提交成功但未获取到 accessToken，无法监听任务状态")
 
                 sqlite_db.update_sora_job(job_id, {"phase": "progress"})
-                sqlite_db.create_sora_job_event(job_id, "progress", "start", "进入进度轮询")
+                sqlite_db.create_sora_job_event(
+                    job_id,
+                    "progress",
+                    "start",
+                    "进入进度轮询",
+                    metadata_extra={
+                        "prompt": prompt,
+                        "image_url": image_url,
+                    },
+                )
 
                 started = time.perf_counter()
                 last_draft_fetch_at = started
@@ -260,7 +287,16 @@ class SoraGenerationWorkflow:
                         raise self._service_error(state.get("error") or "任务失败")
 
                     if state.get("state") == "completed":
-                        sqlite_db.create_sora_job_event(job_id, "progress", "finish", "进度完成")
+                        sqlite_db.create_sora_job_event(
+                            job_id,
+                            "progress",
+                            "finish",
+                            "进度完成",
+                            metadata_extra={
+                                "prompt": prompt,
+                                "image_url": image_url,
+                            },
+                        )
                         return task_id, generation_id
 
                     if use_proxy_poll:
@@ -297,9 +333,20 @@ class SoraGenerationWorkflow:
         profile_id: int,
         task_id: str,
         started_at: str,
+        prompt: Optional[str] = None,
+        image_url: Optional[str] = None,
     ) -> Optional[str]:
         sqlite_db.update_sora_job(job_id, {"phase": "progress"})
-        sqlite_db.create_sora_job_event(job_id, "progress", "start", "进入进度轮询")
+        sqlite_db.create_sora_job_event(
+            job_id,
+            "progress",
+            "start",
+            "进入进度轮询",
+            metadata_extra={
+                "prompt": prompt,
+                "image_url": image_url,
+            },
+        )
 
         open_data = await self._open_profile_with_retry(profile_id, max_attempts=2)
         ws_endpoint = open_data.get("ws")
@@ -401,7 +448,16 @@ class SoraGenerationWorkflow:
                         raise self._service_error(state.get("error") or "任务失败")
 
                     if state.get("state") == "completed":
-                        sqlite_db.create_sora_job_event(job_id, "progress", "finish", "进度完成")
+                        sqlite_db.create_sora_job_event(
+                            job_id,
+                            "progress",
+                            "finish",
+                            "进度完成",
+                            metadata_extra={
+                                "prompt": prompt,
+                                "image_url": image_url,
+                            },
+                        )
                         return generation_id
 
                     if use_proxy_poll:

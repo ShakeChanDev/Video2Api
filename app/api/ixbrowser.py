@@ -391,6 +391,7 @@ async def create_sora_generate_job(
                 resource_id=str(result.job.job_id),
                 extra={
                     "profile_id": request.profile_id,
+                    "prompt": request.prompt,
                     "duration": request.duration,
                     "aspect_ratio": request.aspect_ratio,
                 },

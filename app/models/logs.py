@@ -66,6 +66,9 @@ class SoraRequestDashboardMeta(BaseModel):
     slow_threshold_ms_current: int = 2000
     refreshed_at: str
     path_filter: Optional[str] = None
+    host_filter: Optional[str] = None
+    transport_filter: Optional[str] = None
+    profile_id_filter: Optional[int] = None
 
 
 class SoraRequestKpi(BaseModel):
@@ -74,6 +77,8 @@ class SoraRequestKpi(BaseModel):
     failure_rate: float = 0.0
     slow_count: int = 0
     slow_rate: float = 0.0
+    cf_count: int = 0
+    cf_rate: float = 0.0
     p95_ms: int = 0
     avg_rpm: float = 0.0
 
@@ -88,6 +93,7 @@ class SoraRequestSeriesPoint(BaseModel):
 
 
 class SoraRequestEndpointStat(BaseModel):
+    host: Optional[str] = None
     path: str
     total_count: int = 0
     success_count: int = 0
@@ -123,6 +129,9 @@ class SoraRequestSample(BaseModel):
     created_at: str
     method: Optional[str] = None
     path: str
+    host: Optional[str] = None
+    transport: Optional[str] = None
+    profile_id: Optional[int] = None
     status: Optional[str] = None
     status_code: Optional[int] = None
     duration_ms: Optional[int] = None
@@ -138,6 +147,8 @@ class SoraRequestDashboardResponse(BaseModel):
     series: List[SoraRequestSeriesPoint] = Field(default_factory=list)
     endpoint_top: List[SoraRequestEndpointStat] = Field(default_factory=list)
     status_code_dist: List[SoraRequestCodeStat] = Field(default_factory=list)
+    host_dist: List[SoraRequestCodeStat] = Field(default_factory=list)
+    transport_dist: List[SoraRequestCodeStat] = Field(default_factory=list)
     latency_histogram: List[SoraRequestLatencyBucket] = Field(default_factory=list)
     heatmap_hourly: List[SoraRequestHeatmapCell] = Field(default_factory=list)
     recent_samples: List[SoraRequestSample] = Field(default_factory=list)

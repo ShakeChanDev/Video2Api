@@ -5,11 +5,14 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import time
 from typing import Any, Dict, List, Optional
 from urllib.parse import quote
 from uuid import uuid4
 
 import httpx
+
+from app.db.sqlite import sqlite_db
 
 
 class SoraApiMixin:
@@ -161,6 +164,32 @@ class SoraApiMixin:
         did = str(uuid4())
         self._oai_did_by_profile[pid] = did
         return did
+
+    def _record_sora_outbound_event(
+        self,
+        *,
+        transport: str,
+        endpoint: str,
+        status: Any,
+        error: Optional[str],
+        duration_ms: Optional[int],
+        profile_id: Optional[int] = None,
+    ) -> None:
+        try:
+            status_code = int(status) if status is not None else None
+        except Exception:
+            status_code = None
+        try:
+            sqlite_db.create_sora_outbound_event(
+                transport=transport,
+                url=endpoint,
+                status_code=status_code,
+                error=str(error or "").strip() or None,
+                duration_ms=int(duration_ms) if duration_ms is not None else None,
+                profile_id=int(profile_id) if profile_id is not None else None,
+            )
+        except Exception:  # noqa: BLE001
+            return
 
     async def _sora_fetch_json_via_httpx(
         self,
@@ -383,6 +412,7 @@ class SoraApiMixin:
         if user_agent:
             headers["User-Agent"] = str(user_agent)
 
+        started_at = time.perf_counter()
         result = await self._sora_fetch_json_via_httpx(
             endpoint,
             headers=headers,
@@ -396,6 +426,15 @@ class SoraApiMixin:
         error = result.get("error")
         if result.get("is_cf") or self._is_sora_cf_challenge(status if isinstance(status, int) else None, raw_text):
             error = "cf_challenge"
+        duration_ms = int((time.perf_counter() - started_at) * 1000)
+        self._record_sora_outbound_event(
+            transport="httpx",
+            endpoint=endpoint,
+            status=status,
+            error=str(error or "").strip() or None,
+            duration_ms=duration_ms,
+            profile_id=None,
+        )
         return {
             "status": int(status) if isinstance(status, int) else status,
             "raw": raw_text,
@@ -435,6 +474,7 @@ class SoraApiMixin:
         else:
             headers["User-Agent"] = self._select_iphone_user_agent(profile_id)
 
+        started_at = time.perf_counter()
         result = await self._sora_fetch_json_via_curl_cffi(
             endpoint,
             headers=headers,
@@ -458,6 +498,15 @@ class SoraApiMixin:
             error=str(error or "").strip() or None,
             is_cf=is_cf,
             assume_proxy_chain=True,
+        )
+        duration_ms = int((time.perf_counter() - started_at) * 1000)
+        self._record_sora_outbound_event(
+            transport="curl_cffi",
+            endpoint=endpoint,
+            status=status,
+            error=str(error or "").strip() or None,
+            duration_ms=duration_ms,
+            profile_id=profile_id,
         )
         return {
             "status": int(status) if isinstance(status, int) else status,

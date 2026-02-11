@@ -95,6 +95,10 @@ class SQLiteSchemaMixin:
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_event_logs_resource_created ON event_logs(resource_type, resource_id, created_at DESC)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_event_logs_api_created_path ON event_logs(source, created_at DESC, path)')
         cursor.execute(
+            'CREATE INDEX IF NOT EXISTS idx_event_logs_sora_outbound_created_path '
+            'ON event_logs(source, resource_type, created_at DESC, action, path)'
+        )
+        cursor.execute(
             'CREATE INDEX IF NOT EXISTS idx_event_logs_task_fail_lookup '
             'ON event_logs(source, resource_type, event, created_at DESC, resource_id)'
         )

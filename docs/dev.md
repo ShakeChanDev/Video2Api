@@ -115,13 +115,17 @@ python -m playwright install
   - `SYSTEM_LOGGER_INGEST_LEVEL`
 
 ### Sora 请求看板接口说明
-- 统计口径：`source='api'` 且 `path` 包含 `'/sora'`，并排除 `'/api/v1/admin/sora-requests%'`。
+- 统计口径：仅统计服务端直连外呼（`httpx/curl-cffi`）到 `*.chatgpt.com` 的请求。
+  - 匹配规则：`host == 'chatgpt.com'` 或 `host` 以 `.chatgpt.com` 结尾。
+  - 不统计：本地 API 入站日志、浏览器上下文内页面 `fetch/xhr`。
+- 落库口径：`event_logs` 中 `source='task'` 且 `resource_type='sora_outbound'`。
 - 关键参数：
   - `window`：`1h|6h|24h|7d`（默认 `24h`）
   - `bucket`：`auto|1m|5m|1h`（默认 `auto`）
   - `endpoint_limit`：`5~30`（默认 `10`）
-  - `include_stream_volume`：请求量统计是否包含 `.../stream`（默认 `true`）
-  - `include_stream_latency`：延迟统计是否包含 `.../stream`（默认 `false`）
+  - `host`：按目标域名精确过滤（可选）
+  - `transport`：`all|httpx|curl_cffi`（默认 `all`）
+  - `profile_id`：按 profile 过滤（可选）
   - `sample_limit`：样本条数 `10~100`（默认 `30`）
 
 ## 常见问题排查

@@ -144,6 +144,9 @@ async def get_sora_requests_dashboard(
     include_stream_latency: bool = Query(False, description="延迟统计是否包含 stream 接口"),
     sample_limit: int = Query(30, ge=10, le=100, description="样本日志条数"),
     path: Optional[str] = Query(None, description="按端点路径精确过滤"),
+    host: Optional[str] = Query(None, description="按目标域名精确过滤"),
+    transport: str = Query("all", description="外呼通道：all|httpx|curl_cffi"),
+    profile_id: Optional[int] = Query(None, ge=1, description="按 profile_id 过滤"),
     current_user: dict = Depends(get_current_active_user),
 ):
     del current_user
@@ -159,6 +162,9 @@ async def get_sora_requests_dashboard(
         include_stream_latency=bool(include_stream_latency),
         sample_limit=sample_limit,
         path=path,
+        host=host,
+        transport=transport,
+        profile_id=profile_id,
     )
     return SoraRequestDashboardResponse.model_validate(data)
 

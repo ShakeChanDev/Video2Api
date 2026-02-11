@@ -8,6 +8,7 @@ import sqlite3
 import time
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Tuple
+from urllib.parse import urlsplit
 
 from app.core.log_mask import mask_log_payload
 
@@ -188,40 +189,107 @@ class SQLiteLogsRepo:
         return int(sorted_values[idx])
 
     @staticmethod
-    def _build_sora_scope_rule_text(include_stream: bool, path: Optional[str]) -> str:
+    def _normalize_sora_dashboard_transport(transport: Optional[str]) -> str:
+        text = str(transport or "all").strip().lower()
+        return text if text in {"all", "httpx", "curl_cffi"} else "all"
+
+    @staticmethod
+    def _normalize_host_text(host: Optional[str]) -> Optional[str]:
+        text = str(host or "").strip().lower().rstrip(".")
+        return text or None
+
+    @classmethod
+    def _is_chatgpt_host(cls, host: Optional[str]) -> bool:
+        text = cls._normalize_host_text(host)
+        if not text:
+            return False
+        return text == "chatgpt.com" or text.endswith(".chatgpt.com")
+
+    @staticmethod
+    def _sora_outbound_host_expr_for_sql() -> str:
+        return "lower(rtrim(trim(coalesce(json_extract(metadata_json, '$.host'), '')), '.'))"
+
+    @staticmethod
+    def _sora_outbound_transport_expr_for_sql() -> str:
+        return (
+            "CASE "
+            "WHEN action = 'sora.outbound.httpx' THEN 'httpx' "
+            "WHEN action = 'sora.outbound.curl_cffi' THEN 'curl_cffi' "
+            "ELSE 'other' "
+            "END"
+        )
+
+    @classmethod
+    def _build_sora_scope_rule_text(
+        cls,
+        *,
+        path: Optional[str],
+        host: Optional[str],
+        transport: str,
+        profile_id: Optional[int],
+    ) -> str:
         parts = [
-            "source=api",
-            "instr(path,'/sora')>0",
-            "path NOT LIKE '/api/v1/admin/sora-requests%'",
+            "source=task",
+            "resource_type=sora_outbound",
+            "host in {chatgpt.com, *.chatgpt.com}",
         ]
-        if not include_stream:
-            parts.append("path NOT LIKE '%/stream%'")
         if path:
             parts.append(f"path = '{str(path).strip()}'")
+        normalized_host = cls._normalize_host_text(host)
+        if normalized_host:
+            parts.append(f"host = '{normalized_host}'")
+        transport_text = cls._normalize_sora_dashboard_transport(transport)
+        if transport_text != "all":
+            parts.append(f"transport = '{transport_text}'")
+        try:
+            profile_value = int(profile_id) if profile_id is not None else None
+        except Exception:
+            profile_value = None
+        if profile_value is not None and profile_value > 0:
+            parts.append(f"profile_id = {profile_value}")
         return " AND ".join(parts)
 
+    @classmethod
     def _build_sora_scope_conditions(
-        self,
+        cls,
         *,
         start_at: str,
         end_at: str,
-        include_stream: bool,
         path: Optional[str],
+        host: Optional[str],
+        transport: str,
+        profile_id: Optional[int],
     ) -> Tuple[str, List[Any]]:
+        host_expr = cls._sora_outbound_host_expr_for_sql()
+        transport_value = cls._normalize_sora_dashboard_transport(transport)
+        host_value = cls._normalize_host_text(host)
         conditions: List[str] = [
-            "source = 'api'",
+            "source = 'task'",
+            "resource_type = 'sora_outbound'",
+            "action IN ('sora.outbound.httpx', 'sora.outbound.curl_cffi')",
             "path IS NOT NULL",
-            "instr(path, '/sora') > 0",
-            "path NOT LIKE '/api/v1/admin/sora-requests%'",
+            f"({host_expr} = 'chatgpt.com' OR {host_expr} LIKE '%.chatgpt.com')",
             "created_at >= ?",
             "created_at <= ?",
         ]
         params: List[Any] = [start_at, end_at]
-        if not include_stream:
-            conditions.append("path NOT LIKE '%/stream%'")
         if path:
             conditions.append("path = ?")
             params.append(str(path).strip())
+        if host_value:
+            conditions.append(f"{host_expr} = ?")
+            params.append(host_value)
+        if transport_value == "httpx":
+            conditions.append("action = 'sora.outbound.httpx'")
+        elif transport_value == "curl_cffi":
+            conditions.append("action = 'sora.outbound.curl_cffi'")
+        try:
+            profile_value = int(profile_id) if profile_id is not None else None
+        except Exception:
+            profile_value = None
+        if profile_value is not None and profile_value > 0:
+            conditions.append("resource_id = ?")
+            params.append(str(profile_value))
         return f"WHERE {' AND '.join(conditions)}", params
 
     def create_event_log(
@@ -316,6 +384,110 @@ class SQLiteLogsRepo:
         conn.close()
         self._maybe_cleanup_event_logs()
         return log_id
+
+    def create_sora_outbound_event(
+        self,
+        *,
+        transport: str,
+        url: str,
+        status_code: Optional[int],
+        error: Optional[str],
+        duration_ms: Optional[int],
+        profile_id: Optional[int] = None,
+        method: str = "GET",
+        request_id: Optional[str] = None,
+        trace_id: Optional[str] = None,
+        created_at: Optional[str] = None,
+    ) -> Optional[int]:
+        endpoint = str(url or "").strip()
+        if not endpoint:
+            return None
+        parsed = urlsplit(endpoint)
+        scheme = str(parsed.scheme or "").strip().lower()
+        if scheme not in {"http", "https"}:
+            return None
+
+        host = self._normalize_host_text(parsed.hostname)
+        if not self._is_chatgpt_host(host):
+            return None
+
+        transport_value = self._normalize_sora_dashboard_transport(transport)
+        if transport_value not in {"httpx", "curl_cffi"}:
+            return None
+
+        path = str(parsed.path or "/")
+        query_text = str(parsed.query or "").strip() or None
+        method_text = str(method or "GET").strip().upper() or "GET"
+
+        try:
+            status_int = int(status_code) if status_code is not None else None
+        except Exception:
+            status_int = None
+
+        error_text = str(error or "").strip() or None
+        status = "success" if status_int is not None and status_int < 400 and error_text is None else "failed"
+        level = "INFO" if status == "success" else "WARN"
+
+        error_type = None
+        if error_text:
+            if error_text.lower() == "cf_challenge":
+                error_type = "cf_challenge"
+            else:
+                error_type = "network_error"
+        elif status_int is not None and status_int >= 400:
+            error_type = "http_error"
+
+        try:
+            duration_int = int(duration_ms) if duration_ms is not None else None
+        except Exception:
+            duration_int = None
+
+        try:
+            from app.core.config import settings
+
+            slow_threshold = int(getattr(settings, "api_slow_threshold_ms", 2000) or 2000)
+        except Exception:
+            slow_threshold = 2000
+        is_slow = bool(duration_int is not None and duration_int >= slow_threshold)
+
+        profile_value: Optional[int]
+        try:
+            profile_value = int(profile_id) if profile_id is not None else None
+            if profile_value is not None and profile_value <= 0:
+                profile_value = None
+        except Exception:
+            profile_value = None
+
+        metadata: Dict[str, Any] = {
+            "host": host,
+            "transport": transport_value,
+            "scheme": scheme,
+        }
+        if profile_value is not None:
+            metadata["profile_id"] = int(profile_value)
+
+        return self.create_event_log(
+            source="task",
+            action=f"sora.outbound.{transport_value}",
+            event="request",
+            phase="outbound",
+            status=status,
+            level=level,
+            message=f"{method_text} {host}{path}",
+            trace_id=trace_id,
+            request_id=request_id,
+            method=method_text,
+            path=path,
+            query_text=query_text,
+            status_code=status_int,
+            duration_ms=duration_int,
+            is_slow=is_slow,
+            resource_type="sora_outbound",
+            resource_id=str(int(profile_value)) if profile_value is not None else None,
+            error_type=error_type,
+            metadata=metadata,
+            created_at=created_at,
+        )
 
     def list_event_logs(
         self,
@@ -540,7 +712,12 @@ class SQLiteLogsRepo:
         include_stream_latency: bool = False,
         sample_limit: int = 30,
         path: Optional[str] = None,
+        host: Optional[str] = None,
+        transport: str = "all",
+        profile_id: Optional[int] = None,
     ) -> Dict[str, Any]:
+        del include_stream_volume
+        del include_stream_latency
         window_value = self._normalize_sora_dashboard_window(window)
         bucket_value = self._normalize_sora_dashboard_bucket(bucket)
         resolved_bucket = self._resolve_sora_dashboard_bucket(window_value, bucket_value)
@@ -584,24 +761,38 @@ class SQLiteLogsRepo:
         normalized_path = str(path).strip() if path else None
         if normalized_path == "":
             normalized_path = None
+        normalized_host = self._normalize_host_text(host)
+        normalized_transport = self._normalize_sora_dashboard_transport(transport)
+        try:
+            normalized_profile_id = int(profile_id) if profile_id is not None else None
+        except Exception:
+            normalized_profile_id = None
+        if normalized_profile_id is not None and normalized_profile_id <= 0:
+            normalized_profile_id = None
 
         range_start = parsed_start.strftime("%Y-%m-%d %H:%M:%S")
         range_end = parsed_end.strftime("%Y-%m-%d %H:%M:%S")
         aligned_start = self._floor_datetime_to_bucket(parsed_start, bucket_seconds)
         aligned_end = self._floor_datetime_to_bucket(parsed_end, bucket_seconds)
         bucket_expr = self._bucket_expr_for_sql(resolved_bucket)
+        host_expr = self._sora_outbound_host_expr_for_sql()
+        transport_expr = self._sora_outbound_transport_expr_for_sql()
 
         where_volume, params_volume = self._build_sora_scope_conditions(
             start_at=range_start,
             end_at=range_end,
-            include_stream=bool(include_stream_volume),
             path=normalized_path,
+            host=normalized_host,
+            transport=normalized_transport,
+            profile_id=normalized_profile_id,
         )
         where_latency, params_latency = self._build_sora_scope_conditions(
             start_at=range_start,
             end_at=range_end,
-            include_stream=bool(include_stream_latency),
             path=normalized_path,
+            host=normalized_host,
+            transport=normalized_transport,
+            profile_id=normalized_profile_id,
         )
         duration_where_latency = f"{where_latency} AND duration_ms IS NOT NULL"
 
@@ -613,7 +804,8 @@ class SQLiteLogsRepo:
             SELECT
               COUNT(*) AS total_count,
               SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS failed_count,
-              SUM(CASE WHEN is_slow = 1 THEN 1 ELSE 0 END) AS slow_count
+              SUM(CASE WHEN is_slow = 1 THEN 1 ELSE 0 END) AS slow_count,
+              SUM(CASE WHEN error_type = 'cf_challenge' THEN 1 ELSE 0 END) AS cf_count
             FROM event_logs {where_volume}
             """,
             params_volume,
@@ -622,8 +814,10 @@ class SQLiteLogsRepo:
         total_count = int(total_row["total_count"] or 0)
         failed_count = int(total_row["failed_count"] or 0)
         slow_count = int(total_row["slow_count"] or 0)
+        cf_count = int(total_row["cf_count"] or 0)
         failure_rate = round((failed_count / total_count) * 100, 2) if total_count > 0 else 0.0
         slow_rate = round((slow_count / total_count) * 100, 2) if total_count > 0 else 0.0
+        cf_rate = round((cf_count / total_count) * 100, 2) if total_count > 0 else 0.0
         range_minutes = max((parsed_end - parsed_start).total_seconds() / 60.0, 1.0)
         avg_rpm = round(total_count / range_minutes, 2)
 
@@ -707,6 +901,7 @@ class SQLiteLogsRepo:
         cursor_obj.execute(
             f"""
             SELECT
+              {host_expr} AS host,
               path,
               COUNT(*) AS total_count,
               SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) AS success_count,
@@ -716,8 +911,8 @@ class SQLiteLogsRepo:
               SUM(CASE WHEN duration_ms IS NOT NULL THEN 1 ELSE 0 END) AS duration_count,
               MAX(duration_ms) AS max_duration_ms
             FROM event_logs {where_volume}
-            GROUP BY path
-            ORDER BY total_count DESC, path ASC
+            GROUP BY host, path
+            ORDER BY total_count DESC, host ASC, path ASC
             """,
             params_volume,
         )
@@ -727,6 +922,7 @@ class SQLiteLogsRepo:
         if endpoint_tail_rows:
             endpoint_top_rows.append(
                 {
+                    "host": "__others__",
                     "path": "__others__",
                     "total_count": sum(int(item.get("total_count") or 0) for item in endpoint_tail_rows),
                     "success_count": sum(int(item.get("success_count") or 0) for item in endpoint_tail_rows),
@@ -747,6 +943,7 @@ class SQLiteLogsRepo:
             duration_sum = int(row.get("duration_sum") or 0)
             endpoint_top.append(
                 {
+                    "host": str(row.get("host") or ""),
                     "path": str(row.get("path") or ""),
                     "total_count": row_total,
                     "success_count": int(row.get("success_count") or 0),
@@ -782,6 +979,40 @@ class SQLiteLogsRepo:
         status_code_dist = [
             {"key": key, "count": int(code_map.get(key) or 0)}
             for key in ["2xx", "3xx", "4xx", "5xx", "other"]
+        ]
+
+        cursor_obj.execute(
+            f"""
+            SELECT
+              {host_expr} AS key,
+              COUNT(*) AS count
+            FROM event_logs {where_volume}
+            GROUP BY key
+            ORDER BY count DESC, key ASC
+            """,
+            params_volume,
+        )
+        host_dist = [
+            {"key": str(item["key"] or "(unknown)"), "count": int(item["count"] or 0)}
+            for item in cursor_obj.fetchall()
+            if str(item["key"] or "").strip()
+        ]
+
+        cursor_obj.execute(
+            f"""
+            SELECT
+              {transport_expr} AS key,
+              COUNT(*) AS count
+            FROM event_logs {where_volume}
+            GROUP BY key
+            ORDER BY key ASC
+            """,
+            params_volume,
+        )
+        transport_map = {str(item["key"] or "other"): int(item["count"] or 0) for item in cursor_obj.fetchall()}
+        transport_dist = [
+            {"key": key, "count": int(transport_map.get(key) or 0)}
+            for key in ["httpx", "curl_cffi", "other"]
         ]
 
         cursor_obj.execute(
@@ -887,7 +1118,10 @@ class SQLiteLogsRepo:
               duration_ms,
               is_slow,
               request_id,
-              trace_id
+              trace_id,
+              action,
+              resource_id,
+              metadata_json
             FROM event_logs {where_volume}
             ORDER BY id DESC
             LIMIT ?
@@ -903,12 +1137,44 @@ class SQLiteLogsRepo:
                 bucket_at = self._floor_datetime_to_bucket(created_dt, bucket_seconds).strftime("%Y-%m-%d %H:%M:%S")
             except Exception:
                 bucket_at = None
+
+            metadata_payload: Dict[str, Any] = {}
+            metadata_raw = row["metadata_json"]
+            if isinstance(metadata_raw, str) and metadata_raw.strip():
+                try:
+                    parsed_metadata = json.loads(metadata_raw)
+                    if isinstance(parsed_metadata, dict):
+                        metadata_payload = parsed_metadata
+                except Exception:
+                    metadata_payload = {}
+
+            sample_host = self._normalize_host_text(metadata_payload.get("host"))
+            sample_transport = str(metadata_payload.get("transport") or "").strip().lower()
+            if sample_transport not in {"httpx", "curl_cffi"}:
+                action_text = str(row["action"] or "").strip().lower()
+                if action_text == "sora.outbound.httpx":
+                    sample_transport = "httpx"
+                elif action_text == "sora.outbound.curl_cffi":
+                    sample_transport = "curl_cffi"
+                else:
+                    sample_transport = "other"
+
+            sample_profile_id = None
+            try:
+                if row["resource_id"] is not None and str(row["resource_id"]).strip():
+                    sample_profile_id = int(str(row["resource_id"]).strip())
+            except Exception:
+                sample_profile_id = None
+
             recent_samples.append(
                 {
                     "id": int(row["id"] or 0),
                     "created_at": created_at_text,
                     "method": row["method"],
                     "path": str(row["path"] or ""),
+                    "host": sample_host,
+                    "transport": sample_transport,
+                    "profile_id": sample_profile_id,
                     "status": row["status"],
                     "status_code": int(row["status_code"]) if row["status_code"] is not None else None,
                     "duration_ms": int(row["duration_ms"]) if row["duration_ms"] is not None else None,
@@ -933,10 +1199,18 @@ class SQLiteLogsRepo:
                 "end_at": range_end,
                 "bucket": resolved_bucket,
                 "bucket_seconds": bucket_seconds,
-                "scope_rule": self._build_sora_scope_rule_text(include_stream=bool(include_stream_volume), path=normalized_path),
+                "scope_rule": self._build_sora_scope_rule_text(
+                    path=normalized_path,
+                    host=normalized_host,
+                    transport=normalized_transport,
+                    profile_id=normalized_profile_id,
+                ),
                 "slow_threshold_ms_current": int(slow_threshold),
                 "refreshed_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                 "path_filter": normalized_path,
+                "host_filter": normalized_host,
+                "transport_filter": normalized_transport,
+                "profile_id_filter": normalized_profile_id,
             },
             "kpi": {
                 "total_count": total_count,
@@ -944,12 +1218,16 @@ class SQLiteLogsRepo:
                 "failure_rate": failure_rate,
                 "slow_count": slow_count,
                 "slow_rate": slow_rate,
+                "cf_count": cf_count,
+                "cf_rate": cf_rate,
                 "p95_ms": p95_ms,
                 "avg_rpm": avg_rpm,
             },
             "series": series,
             "endpoint_top": endpoint_top,
             "status_code_dist": status_code_dist,
+            "host_dist": host_dist,
+            "transport_dist": transport_dist,
             "latency_histogram": latency_histogram,
             "heatmap_hourly": heatmap_hourly,
             "recent_samples": recent_samples,
@@ -1060,21 +1338,39 @@ class SQLiteLogsRepo:
         conn.close()
         return deleted
 
-    def create_sora_job_event(self, job_id: int, phase: str, event: str, message: Optional[str] = None) -> int:
+    def create_sora_job_event(
+        self,
+        job_id: int,
+        phase: str,
+        event: str,
+        message: Optional[str] = None,
+        metadata_extra: Optional[Dict[str, Any]] = None,
+    ) -> int:
         row = self.get_sora_job(int(job_id)) or {}
         level = "ERROR" if str(event or "").strip().lower() == "fail" else "INFO"
         metadata = {
             "job_id": int(job_id),
             "group_title": row.get("group_title"),
             "profile_id": row.get("profile_id"),
+            "duration": row.get("duration"),
+            "aspect_ratio": row.get("aspect_ratio"),
+            "prompt": row.get("prompt"),
+            "image_url": row.get("image_url"),
+            "job_status": row.get("status"),
             "task_id": row.get("task_id"),
             "generation_id": row.get("generation_id"),
             "publish_url": row.get("publish_url"),
             "publish_post_id": row.get("publish_post_id"),
             "publish_permalink": row.get("publish_permalink"),
-            "prompt": row.get("prompt"),
-            "job_status": row.get("status"),
+            "watermark_status": row.get("watermark_status"),
+            "watermark_url": row.get("watermark_url"),
+            "watermark_error": row.get("watermark_error"),
+            "watermark_attempts": row.get("watermark_attempts"),
+            "watermark_started_at": row.get("watermark_started_at"),
+            "watermark_finished_at": row.get("watermark_finished_at"),
         }
+        if isinstance(metadata_extra, dict) and metadata_extra:
+            metadata.update(metadata_extra)
         return self.create_event_log(
             source="task",
             action=f"sora.job.{str(event or '').strip().lower()}",

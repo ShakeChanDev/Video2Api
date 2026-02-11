@@ -45,6 +45,8 @@ async def create_sora_job_v2(
         extra={
             "profile_id": result["job"].get("profile_id"),
             "group_title": payload.group_title,
+            "prompt": payload.prompt,
+            "image_url": payload.image_url,
             "duration": payload.duration,
             "aspect_ratio": payload.aspect_ratio,
             "priority": payload.priority,
@@ -66,10 +68,42 @@ async def list_sora_account_weights_v2(
 @router.post("/watermark/parse", response_model=SoraWatermarkParseResponse)
 async def parse_sora_watermark_link_v2(
     payload: SoraWatermarkParseRequest,
+    http_request: Request,
     current_user: dict = Depends(get_current_active_user),
 ):
-    del current_user
-    return await ixbrowser_service.parse_sora_watermark_link(payload.share_url)
+    try:
+        result = await ixbrowser_service.parse_sora_watermark_link(payload.share_url)
+        log_audit(
+            request=http_request,
+            current_user=current_user,
+            action="sora.watermark.parse",
+            status="success",
+            message="去水印链接解析成功",
+            resource_type="sora_watermark",
+            resource_id=str(result.get("share_id") or ""),
+            extra={
+                "share_url": result.get("share_url"),
+                "share_id": result.get("share_id"),
+                "parse_method": result.get("parse_method"),
+                "watermark_url": result.get("watermark_url"),
+            },
+        )
+        return result
+    except Exception as exc:  # noqa: BLE001
+        log_audit(
+            request=http_request,
+            current_user=current_user,
+            action="sora.watermark.parse",
+            status="failed",
+            level="WARN",
+            message=str(exc),
+            resource_type="sora_watermark",
+            extra={
+                "share_url": payload.share_url,
+                "error": str(exc),
+            },
+        )
+        raise
 
 
 @router.get("/jobs")
@@ -126,6 +160,9 @@ async def apply_sora_job_action_v2(
     current_user: dict = Depends(get_current_active_user),
 ):
     result = await ixbrowser_service.apply_sora_job_action_v2(job_id, payload.action)
+    job_payload = result.get("job") if isinstance(result, dict) else {}
+    if not isinstance(job_payload, dict):
+        job_payload = {}
     log_audit(
         request=http_request,
         current_user=current_user,
@@ -134,7 +171,17 @@ async def apply_sora_job_action_v2(
         message=f"执行动作 {payload.action}",
         resource_type="job",
         resource_id=str(job_id),
-        extra={"action": payload.action},
+        extra={
+            "action": payload.action,
+            "status": job_payload.get("status"),
+            "phase": job_payload.get("phase"),
+            "prompt": job_payload.get("prompt"),
+            "image_url": job_payload.get("image_url"),
+            "watermark_status": job_payload.get("watermark_status"),
+            "watermark_url": job_payload.get("watermark_url"),
+            "watermark_error": job_payload.get("watermark_error"),
+            "watermark_attempts": job_payload.get("watermark_attempts"),
+        },
     )
     return result
 
