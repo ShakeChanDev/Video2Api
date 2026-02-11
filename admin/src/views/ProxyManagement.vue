@@ -399,12 +399,11 @@ const toCfRiskClass = (row) => {
 const formatCfSummary = (row) => {
   const count = Number(row?.cf_recent_count || 0)
   const totalCount = Number(row?.cf_recent_total || 0)
-  const windowSize = Math.max(1, Number(cfRecentWindow.value || 30))
   if (!Number.isFinite(totalCount) || totalCount <= 0) {
-    return `0% · 0/0 · 0/${windowSize}`
+    return '0% · 0/0'
   }
   const ratio = formatPercent(row?.cf_recent_ratio)
-  return `${ratio}% · ${count}/${totalCount} · ${totalCount}/${windowSize}`
+  return `${ratio}% · ${count}/${totalCount}`
 }
 
 const loadList = async () => {
