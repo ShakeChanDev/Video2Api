@@ -555,10 +555,13 @@ class SoraJobsMixin:
                     )
                 if not watermark_url:
                     raise IXBrowserServiceError("去水印未返回链接")
+                watermark_url_text = str(watermark_url).strip()
+                if self._is_sora_share_like_url(watermark_url_text):
+                    raise IXBrowserServiceError("解析服务返回分享链接，非去水印地址")
                 return {
                     "share_url": normalized_share_url,
                     "share_id": share_id,
-                    "watermark_url": str(watermark_url),
+                    "watermark_url": watermark_url_text,
                     "parse_method": parse_method,
                 }
             except Exception as exc:  # noqa: BLE001
@@ -622,6 +625,12 @@ class SoraJobsMixin:
         from app.services.ixbrowser.sora_job_runner import SoraJobRunner  # noqa: WPS433
 
         return SoraJobRunner.extract_share_id_from_url(url)
+
+    @staticmethod
+    def _is_sora_share_like_url(url: str) -> bool:
+        from app.services.ixbrowser.sora_job_runner import SoraJobRunner  # noqa: WPS433
+
+        return SoraJobRunner.is_sora_share_like_url(url)
 
     def _build_third_party_watermark_url(self, publish_url: str) -> str:
         return self._sora_job_runner.build_third_party_watermark_url(publish_url)
@@ -737,4 +746,3 @@ class SoraJobsMixin:
             updated_at=str(row.get("updated_at") or ""),
             operator_username=row.get("operator_username"),
         )
-

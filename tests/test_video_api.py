@@ -224,6 +224,57 @@ def test_get_video_by_prefixed_id_success(monkeypatch, client):
     assert data["progress_message"] == "正在发布视频"
 
 
+def test_get_video_running_watermark_does_not_expose_publish_url(monkeypatch, client):
+    settings.video_api_bearer_token = "video-token"
+
+    def _fake_get(job_id: int, **_kwargs):
+        assert job_id == 107
+        return _mock_job(
+            job_id=107,
+            status="running",
+            phase="watermark",
+            progress_pct=90,
+            publish_url="https://sora.chatgpt.com/p/s_12345678",
+            watermark_url=None,
+            watermark_status="running",
+        )
+
+    monkeypatch.setattr(ixbrowser_service, "get_sora_job", _fake_get, raising=True)
+
+    resp = client.get("/v1/videos/video_107", headers=_auth("video-token"))
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["status"] == "running"
+    assert data["progress_message"] == "正在去水印"
+    assert data["video_url"] is None
+
+
+def test_get_video_watermark_fallback_maps_to_failed_and_no_video_url(monkeypatch, client):
+    settings.video_api_bearer_token = "video-token"
+
+    def _fake_get(job_id: int, **_kwargs):
+        assert job_id == 107
+        return _mock_job(
+            job_id=107,
+            status="completed",
+            phase="done",
+            progress_pct=100,
+            publish_url="https://sora.chatgpt.com/p/s_12345678",
+            watermark_url="https://sora.chatgpt.com/p/s_12345678",
+            watermark_status="fallback",
+            watermark_error="解析服务返回分享链接，非去水印地址",
+        )
+
+    monkeypatch.setattr(ixbrowser_service, "get_sora_job", _fake_get, raising=True)
+
+    resp = client.get("/v1/videos/video_107", headers=_auth("video-token"))
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["status"] == "failed"
+    assert data["progress_message"] == "失败: 解析服务返回分享链接，非去水印地址"
+    assert data["video_url"] is None
+
+
 def test_get_video_failed_status_maps_progress_message(monkeypatch, client):
     settings.video_api_bearer_token = "video-token"
 

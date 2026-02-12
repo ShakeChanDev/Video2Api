@@ -5,6 +5,7 @@
 - Node.js 20+（CI 使用 Node 20，本地更高版本通常也可）
 - npm
 - 可选：Playwright 浏览器（仅本地 e2e/真实浏览器自动化需要）
+- Sora 额度说明（非付费）：见 `docs/sora-quota.md`
 
 ## 快速开始（推荐）
 一键命令在仓库根目录执行：
@@ -90,6 +91,22 @@ pytest -m e2e
 ```bash
 python -m playwright install
 ```
+
+### Playwright 反检测配置
+- `PLAYWRIGHT_STEALTH_ENABLED`：是否启用反检测增强（默认 `True`）。
+- `PLAYWRIGHT_STEALTH_PLUGIN_ENABLED`：是否启用 `playwright-stealth` 插件（默认 `True`）。插件不可用时会自动降级到内置脚本。
+- `PLAYWRIGHT_UA_MODE`：UA 策略。
+  - `create_only`（默认）：仅创建任务阶段使用移动 UA。
+  - `always_mobile`：所有阶段都使用移动 UA。
+  - `native`：不强制覆盖 UA（尽量使用指纹浏览器原生配置）。
+- `PLAYWRIGHT_RESOURCE_BLOCKING_MODE`：资源拦截策略。
+  - `light`（默认）：仅拦截 `media`。
+  - `legacy`：拦截 `image/media/font`（历史兼容）。
+  - `off`：关闭资源拦截。
+
+建议：
+- 若线上稳定性下降，优先回退 `PLAYWRIGHT_UA_MODE=native` 或 `PLAYWRIGHT_RESOURCE_BLOCKING_MODE=legacy/off`。
+- 若第三方依赖异常，可设置 `PLAYWRIGHT_STEALTH_PLUGIN_ENABLED=False`，保留内置反检测脚本。
 
 ## 日志 V2（统一事件模型）
 - 新日志统一写入 `event_logs`（`api/audit/task/system`），旧表 `audit_logs`、`sora_job_events` 保留但不再作为日志中心主数据源。

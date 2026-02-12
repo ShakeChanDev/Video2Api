@@ -78,7 +78,7 @@ class SoraGenerationWorkflow:
                 context = browser.contexts[0] if browser.contexts else await browser.new_context()
                 page = context.pages[0] if context.pages else await context.new_page()
 
-                await self._prepare_sora_page(page, profile_id)
+                await self._prepare_sora_page(page, profile_id, stage="create")
                 await page.goto("https://sora.chatgpt.com/drafts", wait_until="domcontentloaded", timeout=40_000)
                 await page.wait_for_timeout(1200)
 
@@ -514,7 +514,7 @@ class SoraGenerationWorkflow:
                 context = browser.contexts[0] if browser.contexts else await browser.new_context()
                 page = context.pages[0] if context.pages else await context.new_page()
 
-                await self._prepare_sora_page(page, profile_id)
+                await self._prepare_sora_page(page, profile_id, stage="create")
                 await page.goto("https://sora.chatgpt.com/drafts", wait_until="domcontentloaded", timeout=40_000)
                 await page.wait_for_timeout(1500)
 

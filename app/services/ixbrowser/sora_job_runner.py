@@ -347,6 +347,8 @@ class SoraJobRunner:
             return True
         if "任务执行超时" in lowered:
             return False
+        if "解析服务返回分享链接" in lowered:
+            return False
         return "去水印功能已关闭" not in lowered
 
     @staticmethod
@@ -419,7 +421,10 @@ class SoraJobRunner:
                     )
                 if not watermark_url:
                     raise self._service_error("去水印未返回链接")
-                return watermark_url
+                watermark_url_text = str(watermark_url).strip()
+                if self.is_sora_share_like_url(watermark_url_text):
+                    raise self._service_error("解析服务返回分享链接，非去水印地址")
+                return watermark_url_text
             except Exception as exc:  # noqa: BLE001
                 last_error = str(exc)
                 self._db.update_sora_job(job_id, {"watermark_error": last_error})
@@ -457,6 +462,25 @@ class SoraJobRunner:
         if match:
             return match.group(1)
         return None
+
+    @classmethod
+    def is_sora_share_like_url(cls, url: str) -> bool:
+        text = str(url or "").strip()
+        if not text:
+            return False
+        if re.fullmatch(r"s_[a-zA-Z0-9_]+", text):
+            return True
+        if text.startswith("/p/"):
+            return cls.extract_share_id_from_url(text) is not None
+        try:
+            parsed = urlparse(text)
+        except Exception:  # noqa: BLE001
+            return False
+        host = str(parsed.netloc or "").strip().lower()
+        path = str(parsed.path or "").strip()
+        if parsed.scheme in {"http", "https"} and host in {"sora.chatgpt.com", "www.sora.chatgpt.com"} and path.startswith("/p/"):
+            return cls.extract_share_id_from_url(path) is not None
+        return False
 
     def build_third_party_watermark_url(self, publish_url: str) -> str:
         share_id = self.extract_share_id_from_url(publish_url)

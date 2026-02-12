@@ -126,18 +126,6 @@
             </div>
           </template>
         </el-table-column>
-        <el-table-column label="代理" width="220">
-          <template #default="{ row }">
-            <div class="proxy-cell">
-              <span v-if="row.proxy_ip && row.proxy_port" class="proxy-main">
-                <span class="mono">{{ row.proxy_ip }}:{{ row.proxy_port }}</span>
-                <span v-if="row.proxy_type" class="proxy-type">{{ String(row.proxy_type).toUpperCase() }}</span>
-              </span>
-              <span v-else class="proxy-empty">-</span>
-              <span v-if="row.real_ip" class="proxy-real">出口 {{ row.real_ip }}</span>
-            </div>
-          </template>
-        </el-table-column>
         <el-table-column label="状态" min-width="240">
           <template #default="{ row }">
             <div class="status-cell">
@@ -1441,39 +1429,6 @@ onUnmounted(() => {
   padding: 12px;
   font-size: 12px;
   color: #8a93a5;
-}
-
-.proxy-cell {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  line-height: 1.35;
-}
-
-.proxy-main {
-  display: flex;
-  gap: 8px;
-  align-items: center;
-}
-
-.proxy-type {
-  font-size: 10px;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
-  color: rgba(71, 85, 105, 0.9);
-  padding: 2px 8px;
-  border-radius: 999px;
-  border: 1px solid rgba(148, 163, 184, 0.28);
-  background: rgba(255, 255, 255, 0.7);
-}
-
-.proxy-real {
-  font-size: 12px;
-  color: #64748b;
-}
-
-.proxy-empty {
-  color: rgba(148, 163, 184, 1);
 }
 
 .w-140 {

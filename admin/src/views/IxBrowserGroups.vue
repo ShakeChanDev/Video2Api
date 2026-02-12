@@ -84,8 +84,8 @@
             <div class="window-card">
               <div class="window-title">
                 <span class="window-id">ID {{ row.profile_id }}</span>
+                <div class="window-account" :title="row.account || '未识别账号'">{{ row.account || '未识别账号' }}</div>
               </div>
-              <div class="window-account">{{ row.account || '未识别账号' }}</div>
               <div class="window-proxy">
                 <span class="proxy-label">代理</span>
                 <span class="proxy-value">{{ formatProxy(row) }}</span>
@@ -970,6 +970,7 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   gap: 10px;
+  min-width: 0;
 }
 
 .window-id {
@@ -978,11 +979,18 @@ onBeforeUnmount(() => {
   padding: 2px 6px;
   border-radius: 999px;
   background: rgba(15, 23, 42, 0.08);
+  flex-shrink: 0;
 }
 
 .window-account {
-  font-size: 12px;
-  color: var(--muted);
+  flex: 1;
+  min-width: 0;
+  font-size: 14px;
+  font-weight: 700;
+  color: rgba(15, 23, 42, 0.88);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .window-proxy {

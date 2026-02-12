@@ -182,10 +182,29 @@ def _map_model_to_duration_and_ratio(model: Any) -> Tuple[str, str]:
     return duration, ratio
 
 
+def _is_sora_share_like_url(value: Any) -> bool:
+    text = str(value or "").strip()
+    if not text:
+        return False
+    if re.fullmatch(r"s_[a-zA-Z0-9_]+", text):
+        return True
+    if text.startswith("/p/"):
+        return True
+    matched = re.match(r"^https?://([^/]+)(/[^?#]*)", text)
+    if not matched:
+        return False
+    host = str(matched.group(1) or "").strip().lower()
+    path = str(matched.group(2) or "").strip()
+    return host in {"sora.chatgpt.com", "www.sora.chatgpt.com"} and path.startswith("/p/")
+
+
 def _build_video_detail_response(job: Any) -> VideoDetailResponse:
     job_id = int(_read_attr(job, "job_id", 0) or 0)
     raw_status = _read_attr(job, "status")
+    watermark_status = str(_read_attr(job, "watermark_status") or "").strip().lower()
     status = _map_status(raw_status)
+    if watermark_status in {"failed", "fallback"}:
+        status = "failed"
     progress = _map_progress(_read_attr(job, "progress_pct"), status)
     progress_message = _map_progress_message(
         status=status,
@@ -196,9 +215,11 @@ def _build_video_detail_response(job: Any) -> VideoDetailResponse:
     )
     created_at = _to_iso_datetime_text(_read_attr(job, "created_at")) or ""
     completed_at = _to_iso_datetime_text(_read_attr(job, "finished_at"))
-    watermark_url = _read_attr(job, "watermark_url")
-    publish_url = _read_attr(job, "publish_url")
-    video_url = str(watermark_url or publish_url or "") or None
+    watermark_url = str(_read_attr(job, "watermark_url") or "").strip()
+    video_url = None
+    has_valid_watermark = bool(watermark_url) and not _is_sora_share_like_url(watermark_url)
+    if has_valid_watermark and (watermark_status == "completed" or (not watermark_status and status == "completed")):
+        video_url = watermark_url
 
     return VideoDetailResponse(
         id=f"video_{job_id}",

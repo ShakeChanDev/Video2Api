@@ -1537,6 +1537,31 @@ async def test_parse_sora_watermark_link_custom_success_and_normalizes_path(monk
 
 
 @pytest.mark.asyncio
+async def test_parse_sora_watermark_link_custom_rejects_share_url_result(monkeypatch):
+    service = IXBrowserService()
+    monkeypatch.setattr(
+        "app.services.ixbrowser_service.sqlite_db.get_watermark_free_config",
+        lambda: {
+            "enabled": True,
+            "parse_method": "custom",
+            "custom_parse_url": "http://127.0.0.1:18080",
+            "custom_parse_token": "abc",
+            "custom_parse_path": "/get-sora-link",
+            "retry_max": 0,
+        },
+    )
+
+    async def _fake_parse(*, publish_url, parse_url, parse_path, parse_token):
+        del publish_url, parse_url, parse_path, parse_token
+        return "https://sora.chatgpt.com/p/s_12345678"
+
+    monkeypatch.setattr(service, "_call_custom_watermark_parse", _fake_parse)
+
+    with pytest.raises(IXBrowserServiceError, match="解析服务返回分享链接，非去水印地址"):
+        await service.parse_sora_watermark_link("https://sora.chatgpt.com/p/s_12345678")
+
+
+@pytest.mark.asyncio
 async def test_parse_sora_watermark_link_rejects_invalid_share_url():
     service = IXBrowserService()
     with pytest.raises(IXBrowserServiceError, match="无效的 Sora 分享链接"):
@@ -2356,6 +2381,137 @@ async def test_poll_sora_task_via_proxy_api_failed_draft_stops_long_wait(monkeyp
 
 
 @pytest.mark.asyncio
+async def test_prepare_sora_page_applies_mobile_ua_on_create_stage(monkeypatch):
+    service = IXBrowserService()
+    called = {"ua": 0}
+
+    async def _fake_apply_ua(_page, _ua):
+        called["ua"] += 1
+
+    async def _fake_apply_blocking(_page):
+        return None
+
+    async def _fake_attach_realtime(_page, _profile_id, _group_title):
+        return None
+
+    async def _fake_attach_cf(_page, _profile_id):
+        return None
+
+    monkeypatch.setattr("app.services.ixbrowser.browser_prep.settings.playwright_ua_mode", "create_only")
+    monkeypatch.setattr("app.services.ixbrowser.browser_prep.settings.playwright_stealth_enabled", False)
+    monkeypatch.setattr(service, "_apply_ua_override", _fake_apply_ua, raising=True)
+    monkeypatch.setattr(service, "_apply_request_blocking", _fake_apply_blocking, raising=True)
+    monkeypatch.setattr(service, "_attach_realtime_quota_listener", _fake_attach_realtime, raising=True)
+    monkeypatch.setattr(service, "_attach_cf_nav_listener", _fake_attach_cf, raising=True)
+
+    await service._prepare_sora_page(SimpleNamespace(), 9, stage="create")  # noqa: SLF001
+
+    assert called["ua"] == 1
+
+
+@pytest.mark.asyncio
+async def test_prepare_sora_page_skips_mobile_ua_on_default_stage(monkeypatch):
+    service = IXBrowserService()
+    called = {"ua": 0}
+
+    async def _fake_apply_ua(_page, _ua):
+        called["ua"] += 1
+
+    async def _fake_apply_blocking(_page):
+        return None
+
+    async def _fake_attach_realtime(_page, _profile_id, _group_title):
+        return None
+
+    async def _fake_attach_cf(_page, _profile_id):
+        return None
+
+    monkeypatch.setattr("app.services.ixbrowser.browser_prep.settings.playwright_ua_mode", "create_only")
+    monkeypatch.setattr("app.services.ixbrowser.browser_prep.settings.playwright_stealth_enabled", False)
+    monkeypatch.setattr(service, "_apply_ua_override", _fake_apply_ua, raising=True)
+    monkeypatch.setattr(service, "_apply_request_blocking", _fake_apply_blocking, raising=True)
+    monkeypatch.setattr(service, "_attach_realtime_quota_listener", _fake_attach_realtime, raising=True)
+    monkeypatch.setattr(service, "_attach_cf_nav_listener", _fake_attach_cf, raising=True)
+
+    await service._prepare_sora_page(SimpleNamespace(), 9, stage="default")  # noqa: SLF001
+
+    assert called["ua"] == 0
+
+
+@pytest.mark.asyncio
+async def test_apply_request_blocking_light_mode_only_blocks_media(monkeypatch):
+    service = IXBrowserService()
+
+    class _FakeRoute:
+        def __init__(self):
+            self.aborted = False
+            self.continued = False
+
+        async def abort(self):
+            self.aborted = True
+
+        async def continue_(self):
+            self.continued = True
+
+    class _FakeRequest:
+        def __init__(self, resource_type: str):
+            self.resource_type = resource_type
+
+    class _FakePage:
+        def __init__(self):
+            self.handler = None
+            self.unroute_calls = []
+
+        async def unroute(self, pattern):
+            self.unroute_calls.append(str(pattern))
+
+        async def route(self, _pattern, handler):
+            self.handler = handler
+
+    monkeypatch.setattr("app.services.ixbrowser.browser_prep.settings.playwright_resource_blocking_mode", "light")
+
+    page = _FakePage()
+    await service._apply_request_blocking(page)  # noqa: SLF001
+
+    assert page.handler is not None
+    media_route = _FakeRoute()
+    await page.handler(media_route, _FakeRequest("media"))
+    assert media_route.aborted is True
+    assert media_route.continued is False
+
+    image_route = _FakeRoute()
+    await page.handler(image_route, _FakeRequest("image"))
+    assert image_route.aborted is False
+    assert image_route.continued is True
+
+
+@pytest.mark.asyncio
+async def test_apply_stealth_plugin_failure_keeps_fallback_scripts(monkeypatch):
+    service = IXBrowserService()
+
+    class _BrokenStealth:
+        async def apply_stealth_async(self, _page):
+            raise RuntimeError("boom")
+
+    class _FakePage:
+        def __init__(self):
+            self.scripts = []
+
+        async def add_init_script(self, script):
+            self.scripts.append(str(script))
+
+    monkeypatch.setattr("app.services.ixbrowser.browser_prep.settings.playwright_stealth_enabled", True)
+    monkeypatch.setattr("app.services.ixbrowser.browser_prep.settings.playwright_stealth_plugin_enabled", True)
+    monkeypatch.setattr("app.services.ixbrowser.browser_prep.Stealth", _BrokenStealth)
+
+    page = _FakePage()
+    plugin_applied = await service._apply_stealth(page, stage="create")  # noqa: SLF001
+
+    assert plugin_applied is False
+    assert len(page.scripts) >= 2
+
+
+@pytest.mark.asyncio
 async def test_run_sora_submit_and_progress_not_finished_by_pending_missing(monkeypatch):
     service = IXBrowserService()
     workflow = service._sora_generation_workflow  # noqa: SLF001
@@ -2423,11 +2579,17 @@ async def test_run_sora_submit_and_progress_not_finished_by_pending_missing(monk
     async def _fake_sleep(*_args, **_kwargs):
         return None
 
+    prepare_stages = []
+
+    async def _fake_prepare_page(_page, _profile_id, stage="default"):
+        prepare_stages.append(str(stage))
+
     service._deps.playwright_factory = lambda: _FakePlaywrightContext()  # noqa: SLF001
     monkeypatch.setattr("app.services.ixbrowser.sora_generation_workflow.asyncio.sleep", _fake_sleep)
     monkeypatch.setattr(workflow, "_open_profile_with_retry", _fake_open_profile, raising=True)
     monkeypatch.setattr(workflow, "_close_profile", _fake_close_profile, raising=True)
     monkeypatch.setattr(workflow, "_is_sora_job_canceled", lambda _job_id: False, raising=True)
+    monkeypatch.setattr(service, "_prepare_sora_page", _fake_prepare_page, raising=True)
     monkeypatch.setattr(publish_workflow, "_get_device_id_from_context", _fake_device_id, raising=True)
     monkeypatch.setattr(publish_workflow, "_submit_video_request_from_page", _fake_submit, raising=True)
     monkeypatch.setattr(publish_workflow, "poll_sora_task_via_proxy_api", _fake_proxy_poll, raising=True)
@@ -2445,6 +2607,96 @@ async def test_run_sora_submit_and_progress_not_finished_by_pending_missing(monk
     assert task_id == "task_1"
     assert generation_id == "gen_1"
     assert submit_kwargs.get("image_url") == "https://example.com/submit.png"
+    assert prepare_stages and prepare_stages[0] == "create"
+
+
+@pytest.mark.asyncio
+async def test_submit_and_monitor_sora_video_prepare_uses_create_stage(monkeypatch):
+    service = IXBrowserService()
+    workflow = service._sora_generation_workflow  # noqa: SLF001
+    publish_workflow = service._sora_publish_workflow  # noqa: SLF001
+
+    class _FakePage:
+        async def goto(self, *_args, **_kwargs):
+            return None
+
+        async def wait_for_timeout(self, *_args, **_kwargs):
+            return None
+
+        def on(self, *_args, **_kwargs):
+            return None
+
+    class _FakeContext:
+        def __init__(self):
+            self.pages = [_FakePage()]
+
+        async def cookies(self, *_args, **_kwargs):
+            return []
+
+    class _FakeBrowser:
+        def __init__(self):
+            self.contexts = [_FakeContext()]
+
+        async def close(self):
+            return None
+
+    class _FakeChromium:
+        async def connect_over_cdp(self, *_args, **_kwargs):
+            return _FakeBrowser()
+
+    class _FakePlaywright:
+        def __init__(self):
+            self.chromium = _FakeChromium()
+
+    class _FakePlaywrightContext:
+        async def __aenter__(self):
+            return _FakePlaywright()
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+    async def _fake_open_profile(*_args, **_kwargs):
+        return {"ws": "ws://127.0.0.1/mock"}
+
+    async def _fake_close_profile(*_args, **_kwargs):
+        return True
+
+    async def _fake_submit(*_args, **_kwargs):
+        return {"task_id": "task_1", "task_url": None, "access_token": "token_1", "error": None}
+
+    async def _fake_proxy_poll(**_kwargs):
+        return {"state": "failed", "error": "mock failed", "progress": 0}
+
+    prepare_stages = []
+
+    async def _fake_prepare_page(_page, _profile_id, stage="default"):
+        prepare_stages.append(str(stage))
+
+    service._deps.playwright_factory = lambda: _FakePlaywrightContext()  # noqa: SLF001
+    monkeypatch.setattr(workflow, "_open_profile_with_retry", _fake_open_profile, raising=True)
+    monkeypatch.setattr(workflow, "_close_profile", _fake_close_profile, raising=True)
+    monkeypatch.setattr(service, "_prepare_sora_page", _fake_prepare_page, raising=True)
+    monkeypatch.setattr(
+        "app.services.ixbrowser.sora_generation_workflow.sqlite_db.update_ixbrowser_generate_job",
+        lambda *_args, **_kwargs: True,
+    )
+    monkeypatch.setattr(publish_workflow, "_submit_video_request_from_page", _fake_submit, raising=True)
+    monkeypatch.setattr(publish_workflow, "poll_sora_task_via_proxy_api", _fake_proxy_poll, raising=True)
+
+    result = await workflow.submit_and_monitor_sora_video(
+        profile_id=1,
+        prompt="test prompt",
+        duration="10s",
+        aspect_ratio="landscape",
+        max_submit_attempts=1,
+        timeout_seconds=120,
+        poll_interval_seconds=1,
+        job_id=123,
+        created_after="2026-02-09 10:00:00",
+    )
+
+    assert result["status"] == "failed"
+    assert prepare_stages and prepare_stages[0] == "create"
 
 
 @pytest.mark.asyncio

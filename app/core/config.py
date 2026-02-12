@@ -10,6 +10,10 @@ class Settings(BaseSettings):
     port: int = 8001
 
     ixbrowser_api_base: str = "http://127.0.0.1:53200"
+    playwright_stealth_enabled: bool = True
+    playwright_stealth_plugin_enabled: bool = True
+    playwright_ua_mode: str = "create_only"
+    playwright_resource_blocking_mode: str = "light"
 
     secret_key: str = "video2api-secret-key"
     algorithm: str = "HS256"
