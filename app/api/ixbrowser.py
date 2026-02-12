@@ -17,6 +17,8 @@ from app.models.ixbrowser import (
     IXBrowserGroup,
     IXBrowserGroupWindows,
     IXBrowserOpenProfileResponse,
+    IXBrowserRandomSwitchProxyRequest,
+    IXBrowserRandomSwitchProxyResponse,
     IXBrowserSilentRefreshCreateResponse,
     IXBrowserSilentRefreshJob,
     IXBrowserScanRequest,
@@ -93,10 +95,15 @@ async def open_ixbrowser_profile_window(
     profile_id: int,
     request: Request,
     group_title: str = Query("Sora", description="分组名称"),
+    target_url: Optional[str] = Query(None, description="打开后导航地址"),
     current_user: dict = Depends(get_current_active_user),
 ):
     try:
-        result = await ixbrowser_service.open_profile_window(profile_id=profile_id, group_title=group_title)
+        result = await ixbrowser_service.open_profile_window(
+            profile_id=profile_id,
+            group_title=group_title,
+            target_url=target_url,
+        )
         if request:
             log_audit(
                 request=request,
@@ -106,7 +113,7 @@ async def open_ixbrowser_profile_window(
                 message="打开窗口",
                 resource_type="profile",
                 resource_id=str(profile_id),
-                extra={"group_title": group_title, "window_name": result.window_name},
+                extra={"group_title": group_title, "window_name": result.window_name, "target_url": target_url},
             )
         return result
     except Exception as exc:  # noqa: BLE001
@@ -120,7 +127,57 @@ async def open_ixbrowser_profile_window(
                 message=str(exc),
                 resource_type="profile",
                 resource_id=str(profile_id),
-                extra={"group_title": group_title},
+                extra={"group_title": group_title, "target_url": target_url},
+            )
+        raise
+
+
+@router.post("/profiles/proxies/random-switch", response_model=IXBrowserRandomSwitchProxyResponse)
+async def random_switch_ixbrowser_profile_proxies(
+    payload: IXBrowserRandomSwitchProxyRequest,
+    request: Request,
+    group_title: str = Query("Sora", description="分组名称"),
+    current_user: dict = Depends(get_current_active_user),
+):
+    try:
+        result = await ixbrowser_service.random_switch_profile_proxies(
+            group_title=group_title,
+            profile_ids=payload.profile_ids,
+            max_concurrency=3,
+        )
+        if request:
+            log_audit(
+                request=request,
+                current_user=current_user,
+                action="ixbrowser.proxy.random_switch",
+                status="success",
+                message="批量随机切换代理",
+                resource_type="group",
+                resource_id=group_title,
+                extra={
+                    "group_title": group_title,
+                    "requested_profile_count": len(payload.profile_ids or []),
+                    "total": int(result.total or 0),
+                    "success_count": int(result.success_count or 0),
+                    "failed_count": int(result.failed_count or 0),
+                },
+            )
+        return result
+    except Exception as exc:  # noqa: BLE001
+        if request:
+            log_audit(
+                request=request,
+                current_user=current_user,
+                action="ixbrowser.proxy.random_switch",
+                status="failed",
+                level="WARN",
+                message=str(exc),
+                resource_type="group",
+                resource_id=group_title,
+                extra={
+                    "group_title": group_title,
+                    "requested_profile_count": len(payload.profile_ids or []),
+                },
             )
         raise
 

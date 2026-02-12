@@ -85,6 +85,7 @@ class IXBrowserService(
     request_timeout_ms = 10_000
     ixbrowser_busy_retry_max = 6
     ixbrowser_busy_retry_delay_seconds = 1.2
+    ixbrowser_write_max_concurrency = 3
     sora_blocked_resource_types = {"image", "media", "font"}
     sora_job_max_concurrency = 2
     heavy_load_retry_max_attempts = 4
@@ -166,12 +167,28 @@ class IXBrowserService(
         self,
         profile_id: int,
         group_title: str = "Sora",
+        target_url: Optional[str] = None,
     ) -> IXBrowserOpenProfileResponse:
         window = await self._get_window_from_group(profile_id, group_title)
         if not window:
             raise IXBrowserNotFoundError(f"未找到分组 {group_title} 下窗口：{profile_id}")
         open_data_raw = await self._open_profile_with_retry(profile_id, max_attempts=2)
         open_data = self._normalize_opened_profile_data(open_data_raw)
+        target = str(target_url or "").strip()
+        if target:
+            try:
+                await self._navigate_opened_profile_to_url(
+                    profile_id=int(profile_id),
+                    open_data=open_data,
+                    target_url=target,
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "打开窗口后导航目标页面失败（忽略） | profile_id=%s | target_url=%s | error=%s",
+                    int(profile_id),
+                    target,
+                    str(exc),
+                )
         return IXBrowserOpenProfileResponse(
             profile_id=int(profile_id),
             group_title=str(group_title),
@@ -194,10 +211,36 @@ class IXBrowserService(
         )
         return normalized.endswith(read_suffixes)
 
+    @staticmethod
+    def _summarize_exception(exc: Exception) -> str:
+        exc_name = exc.__class__.__name__
+        message = str(exc).strip()
+        request = getattr(exc, "request", None)
+        request_hint = ""
+        if request is not None:
+            method = str(getattr(request, "method", "") or "").strip().upper()
+            req_url = str(getattr(request, "url", "") or "").strip()
+            if method and req_url:
+                request_hint = f" [{method} {req_url}]"
+            elif req_url:
+                request_hint = f" [{req_url}]"
+        if message:
+            return f"{exc_name}: {message}{request_hint}"
+        return f"{exc_name}{request_hint}"
+
+    @staticmethod
+    def _resolve_request_timeout_seconds(path: str, request_timeout_ms: int) -> float:
+        base = max(1.0, float(request_timeout_ms) / 1000.0)
+        normalized = str(path or "").strip().lower()
+        if normalized.endswith("/profile-open"):
+            # 打开窗口常受本机资源/云备份状态影响，给更宽松超时避免误判失败。
+            return max(base, 20.0)
+        return base
+
     async def _post(self, path: str, payload: dict) -> dict:
         base = settings.ixbrowser_api_base.rstrip("/")
         url = f"{base}{path}"
-        timeout = httpx.Timeout(max(1.0, float(self.request_timeout_ms) / 1000.0))
+        timeout = httpx.Timeout(self._resolve_request_timeout_seconds(path, self.request_timeout_ms))
 
         if self._is_ixbrowser_read_path(path):
             if self._ixbrowser_read_semaphore is None:
@@ -205,7 +248,7 @@ class IXBrowserService(
             semaphore = self._ixbrowser_read_semaphore
         else:
             if self._ixbrowser_write_semaphore is None:
-                self._ixbrowser_write_semaphore = asyncio.Semaphore(1)
+                self._ixbrowser_write_semaphore = asyncio.Semaphore(max(1, int(self.ixbrowser_write_max_concurrency)))
             semaphore = self._ixbrowser_write_semaphore
 
         async with semaphore:
@@ -225,7 +268,8 @@ class IXBrowserService(
                     logger.error("ixBrowser HTTP error: %s %s", status, body)
                     raise IXBrowserConnectionError(f"ixBrowser 接口 HTTP 异常：{status}") from exc
                 except Exception as exc:  # noqa: BLE001
-                    raise IXBrowserConnectionError(f"调用 ixBrowser 失败：{exc}") from exc
+                    detail = self._summarize_exception(exc)
+                    raise IXBrowserConnectionError(f"调用 ixBrowser 失败：{detail}") from exc
 
                 if not isinstance(result, dict):
                     raise IXBrowserConnectionError("ixBrowser 返回格式异常：响应不是 JSON 对象")

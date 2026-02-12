@@ -14,6 +14,40 @@ logger = logging.getLogger(__name__)
 
 
 class ProfilesMixin:
+    async def _navigate_opened_profile_to_url(
+        self,
+        *,
+        profile_id: int,
+        open_data: dict,
+        target_url: str,
+    ) -> None:
+        target = str(target_url or "").strip()
+        if not target:
+            return
+
+        ws_endpoint = open_data.get("ws") if isinstance(open_data, dict) else None
+        if not ws_endpoint:
+            debugging_address = open_data.get("debugging_address") if isinstance(open_data, dict) else None
+            if debugging_address:
+                ws_endpoint = f"http://{debugging_address}"
+
+        if not ws_endpoint:
+            raise IXBrowserConnectionError("打开窗口成功，但未返回调试地址（ws/debugging_address）")
+
+        browser = None
+        try:
+            async with self.playwright_factory() as playwright:
+                browser = await playwright.chromium.connect_over_cdp(ws_endpoint, timeout=20_000)
+                context = browser.contexts[0] if browser.contexts else await browser.new_context()
+                page = context.pages[0] if context.pages else await context.new_page()
+                await page.goto(target, wait_until="domcontentloaded", timeout=40_000)
+        finally:
+            if browser:
+                try:
+                    await browser.close()
+                except Exception:  # noqa: BLE001
+                    pass
+
     def _is_profile_already_open_error(self, code: Any, message: Any) -> bool:
         code_int: Optional[int] = None
         try:

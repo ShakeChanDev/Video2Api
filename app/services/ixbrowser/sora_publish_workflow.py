@@ -25,6 +25,7 @@ logger = logging.getLogger(__name__)
 
 class SoraPublishWorkflow:
     DRAFT_RETRY_BACKOFF_SECONDS: Tuple[int, ...] = (1, 2, 3, 10, 60)
+    CREATE_TASK_SENTINEL_FLOWS: Tuple[str, ...] = ("sora_2_create_task", "sora_2_create_task__auto")
 
     def __init__(self, service) -> None:
         self._service = service
@@ -39,6 +40,34 @@ class SoraPublishWorkflow:
 
     def _connection_error(self, message: str) -> Exception:
         return self._connection_error_cls(message)
+
+    @staticmethod
+    def _build_create_task_payload_base(prompt: str, aspect_ratio: str, n_frames: int) -> Dict[str, Any]:
+        try:
+            n_frames_int = int(n_frames)
+        except (TypeError, ValueError):
+            n_frames_int = 300
+        return {
+            "kind": "video",
+            "prompt": str(prompt),
+            "title": None,
+            "orientation": str(aspect_ratio),
+            "size": "small",
+            "n_frames": n_frames_int,
+            "inpaint_items": [],
+            "remix_target_id": None,
+            "project_config": None,
+            "trim_config": None,
+            "metadata": None,
+            "cameo_ids": None,
+            "cameo_replacements": None,
+            "model": "sy_8",
+            "style_id": None,
+            "audio_caption": None,
+            "audio_transcript": None,
+            "video_caption": None,
+            "storyboard_id": None,
+        }
 
     async def sora_fetch_json_via_page(
         self,
@@ -211,6 +240,7 @@ class SoraPublishWorkflow:
                     created_after=created_after,
                     generation_id=draft_generation,
                     max_attempts=5,
+                    profile_id=profile_id,
                 )
                 if api_publish and api_publish.get("publish_url"):
                     await self._maybe_auto_delete_published_post(page, api_publish, generation_id=draft_generation)
@@ -401,6 +431,7 @@ class SoraPublishWorkflow:
             created_after=created_after,
             generation_id=draft_generation,
             max_attempts=5,
+            profile_id=profile_id,
         )
         if api_publish.get("publish_url"):
             await self._maybe_auto_delete_published_post(page, api_publish, generation_id=draft_generation)
@@ -976,7 +1007,11 @@ class SoraPublishWorkflow:
                   const sessionText = await sessionResp.text();
                   let sessionJson = null;
                   try { sessionJson = JSON.parse(sessionText); } catch (e) {}
-                  const accessToken = sessionJson?.accessToken || null;
+                  const accessToken = sessionJson?.accessToken
+                    || sessionJson?.access_token
+                    || sessionJson?.user?.accessToken
+                    || sessionJson?.user?.access_token
+                    || null;
                   if (accessToken) headers["Authorization"] = `Bearer ${accessToken}`;
                 } catch (e) {}
                 const norm = (v) => (v || '').toString().trim().toLowerCase();
@@ -1133,7 +1168,11 @@ class SoraPublishWorkflow:
                       const sessionText = await sessionResp.text();
                       let sessionJson = null;
                       try { sessionJson = JSON.parse(sessionText); } catch (e) {}
-                      const accessToken = sessionJson?.accessToken || null;
+                      const accessToken = sessionJson?.accessToken
+                        || sessionJson?.access_token
+                        || sessionJson?.user?.accessToken
+                        || sessionJson?.user?.access_token
+                        || null;
                       if (accessToken) headers["Authorization"] = `Bearer ${accessToken}`;
                     } catch (e) {}
 
@@ -1448,7 +1487,7 @@ class SoraPublishWorkflow:
             retries=2,
         )
         if int(session_result.get("status") or 0) == 200 and isinstance(session_result.get("json"), dict):
-            token = session_result["json"].get("accessToken")
+            token = self._service._extract_access_token(session_result.get("json"))  # noqa: SLF001
             if isinstance(token, str) and token.strip():
                 headers["Authorization"] = f"Bearer {token.strip()}"
 
@@ -1595,7 +1634,11 @@ class SoraPublishWorkflow:
                 const sessionText = await sessionResp.text();
                 let sessionJson = null;
                 try { sessionJson = JSON.parse(sessionText); } catch (e) {}
-                const accessToken = sessionJson?.accessToken || null;
+                const accessToken = sessionJson?.accessToken
+                  || sessionJson?.access_token
+                  || sessionJson?.user?.accessToken
+                  || sessionJson?.user?.access_token
+                  || null;
                 if (accessToken) headers["Authorization"] = `Bearer ${accessToken}`;
               } catch (e) {}
 
@@ -1685,7 +1728,11 @@ class SoraPublishWorkflow:
                 const sessionText = await sessionResp.text();
                 let sessionJson = null;
                 try { sessionJson = JSON.parse(sessionText); } catch (e) {}
-                const accessToken = sessionJson?.accessToken || null;
+                const accessToken = sessionJson?.accessToken
+                  || sessionJson?.access_token
+                  || sessionJson?.user?.accessToken
+                  || sessionJson?.user?.access_token
+                  || null;
                 if (accessToken) headers["Authorization"] = `Bearer ${accessToken}`;
               } catch (e) {}
 
@@ -1749,7 +1796,11 @@ class SoraPublishWorkflow:
                   const sessionText = await sessionResp.text();
                   let sessionJson = null;
                   try { sessionJson = JSON.parse(sessionText); } catch (e) {}
-                  const accessToken = sessionJson?.accessToken || null;
+                  const accessToken = sessionJson?.accessToken
+                    || sessionJson?.access_token
+                    || sessionJson?.user?.accessToken
+                    || sessionJson?.user?.access_token
+                    || null;
                   if (accessToken) headers["Authorization"] = `Bearer ${accessToken}`;
                 } catch (e) {}
 
@@ -2562,9 +2613,12 @@ class SoraPublishWorkflow:
                 return fallback
             return {"task_id": None, "task_url": None, "access_token": None, "error": "页面未加载 SentinelSDK，无法提交生成请求"}
 
+        create_payload_base = self._build_create_task_payload_base(prompt=prompt, aspect_ratio=aspect_ratio, n_frames=n_frames)
+        create_task_flows = list(self.CREATE_TASK_SENTINEL_FLOWS)
+
         data = await page.evaluate(
             """
-            async ({prompt, aspectRatio, nFrames, deviceId, imageBase64, imageMime, imageFilename}) => {
+            async ({prompt, aspectRatio, nFrames, deviceId, imageBase64, imageMime, imageFilename, createTaskFlows, createPayloadBase}) => {
               const err = (message) => ({ task_id: null, task_url: null, access_token: null, error: message });
               try {
                 const decodeBase64 = (value) => {
@@ -2641,11 +2695,37 @@ class SoraPublishWorkflow:
                 const sessionText = await sessionResp.text();
                 let sessionJson = null;
                 try { sessionJson = JSON.parse(sessionText); } catch (e) {}
-                const accessToken = sessionJson?.accessToken || null;
+                const accessToken = sessionJson?.accessToken
+                  || sessionJson?.access_token
+                  || sessionJson?.user?.accessToken
+                  || sessionJson?.user?.access_token
+                  || null;
                 if (!accessToken) return err("session 中未找到 accessToken");
 
-                const sentinelRaw = await window.SentinelSDK.token("sora_2_create_task__auto", deviceId);
-                if (!sentinelRaw) return err("获取 Sentinel token 失败");
+                const sentinelFlows = Array.isArray(createTaskFlows)
+                  ? createTaskFlows
+                      .map((item) => (typeof item === "string" ? item.trim() : ""))
+                      .filter(Boolean)
+                  : [];
+                if (!sentinelFlows.length) sentinelFlows.push("sora_2_create_task__auto");
+                let sentinelRaw = null;
+                let sentinelFlow = null;
+                let lastSentinelError = "";
+                for (const flow of sentinelFlows) {
+                  try {
+                    const candidate = await window.SentinelSDK.token(flow, deviceId);
+                    if (!candidate) continue;
+                    sentinelRaw = candidate;
+                    sentinelFlow = flow;
+                    break;
+                  } catch (e) {
+                    lastSentinelError = String(e);
+                  }
+                }
+                if (!sentinelRaw) {
+                  const suffix = lastSentinelError ? `: ${lastSentinelError}` : "";
+                  return err(`获取 Sentinel token 失败${suffix}`);
+                }
 
                 let sentinelObj = sentinelRaw;
                 if (typeof sentinelRaw === "string") {
@@ -2660,7 +2740,9 @@ class SoraPublishWorkflow:
                 if (imageBase64 && !uploadResult?.upload_id) {
                   return err(uploadResult?.error || "图片上传失败");
                 }
+                const payloadBase = (createPayloadBase && typeof createPayloadBase === "object") ? createPayloadBase : {};
                 const payload = {
+                  ...payloadBase,
                   kind: "video",
                   prompt,
                   orientation: aspectRatio,
@@ -2694,6 +2776,7 @@ class SoraPublishWorkflow:
                   task_id: taskId,
                   task_url: null,
                   access_token: accessToken,
+                  sentinel_flow: sentinelFlow,
                   error: null
                 };
               } catch (e) {
@@ -2709,6 +2792,8 @@ class SoraPublishWorkflow:
                 "imageBase64": image_payload.get("base64") if isinstance(image_payload, dict) else None,
                 "imageMime": image_payload.get("content_type") if isinstance(image_payload, dict) else None,
                 "imageFilename": image_payload.get("filename") if isinstance(image_payload, dict) else None,
+                "createTaskFlows": create_task_flows,
+                "createPayloadBase": create_payload_base,
             }
         )
         if not isinstance(data, dict):
@@ -2717,6 +2802,7 @@ class SoraPublishWorkflow:
             "task_id": data.get("task_id"),
             "task_url": data.get("task_url"),
             "access_token": data.get("access_token"),
+            "sentinel_flow": data.get("sentinel_flow"),
             "error": data.get("error"),
         }
 
@@ -2732,7 +2818,11 @@ class SoraPublishWorkflow:
                 const text = await resp.text();
                 let json = null;
                 try { json = JSON.parse(text); } catch (e) {}
-                return json?.accessToken || null;
+                return json?.accessToken
+                  || json?.access_token
+                  || json?.user?.accessToken
+                  || json?.user?.access_token
+                  || null;
               } catch (e) {
                 return null;
               }
@@ -2743,7 +2833,11 @@ class SoraPublishWorkflow:
             return data.strip()
         return None
 
-    async def _get_device_id_from_context(self, context) -> str:
+    async def _get_device_id_from_context(self, context, profile_id: Optional[int] = None) -> str:
+        try:
+            pid = int(profile_id) if profile_id is not None else 0
+        except Exception:  # noqa: BLE001
+            pid = 0
         try:
             cookies = await context.cookies("https://sora.chatgpt.com")
         except Exception:  # noqa: BLE001
@@ -2752,7 +2846,14 @@ class SoraPublishWorkflow:
             (cookie.get("value") for cookie in cookies if cookie.get("name") == "oai-did" and cookie.get("value")),
             None
         )
-        return device_id or str(uuid4())
+        if isinstance(device_id, str) and device_id.strip():
+            resolved = device_id.strip()
+            if pid > 0:
+                self._oai_did_by_profile[pid] = resolved
+            return resolved
+        if pid > 0:
+            return self._get_or_create_oai_did(pid)
+        return str(uuid4())
 
     async def _publish_sora_post_from_page(
         self,
@@ -2811,7 +2912,11 @@ class SoraPublishWorkflow:
                   const sessionText = await sessionResp.text();
                   let sessionJson = null;
                   try { sessionJson = JSON.parse(sessionText); } catch (e) {}
-                  accessToken = sessionJson?.accessToken || null;
+                  accessToken = sessionJson?.accessToken
+                    || sessionJson?.access_token
+                    || sessionJson?.user?.accessToken
+                    || sessionJson?.user?.access_token
+                    || null;
                 } catch (e) {}
 
                 const payload = {
@@ -2931,6 +3036,7 @@ class SoraPublishWorkflow:
         created_after: Optional[str] = None,
         generation_id: Optional[str] = None,
         max_attempts: int = 5,
+        profile_id: Optional[int] = None,
     ) -> Dict[str, Optional[str]]:
         """发布接口退避重试。
 
@@ -2972,7 +3078,10 @@ class SoraPublishWorkflow:
                 except Exception:  # noqa: BLE001
                     context = None
 
-            device_id = await self._get_device_id_from_context(context)
+            if profile_id is None:
+                device_id = await self._get_device_id_from_context(context)
+            else:
+                device_id = await self._get_device_id_from_context(context, profile_id=profile_id)
             try:
                 data = await self._publish_sora_post_from_page(
                     page=page,
@@ -3081,7 +3190,11 @@ class SoraPublishWorkflow:
                 const sessionText = await sessionResp.text();
                 let sessionJson = null;
                 try { sessionJson = JSON.parse(sessionText); } catch (e) {}
-                const accessToken = sessionJson?.accessToken || null;
+                const accessToken = sessionJson?.accessToken
+                  || sessionJson?.access_token
+                  || sessionJson?.user?.accessToken
+                  || sessionJson?.user?.access_token
+                  || null;
                 if (accessToken) headers["Authorization"] = `Bearer ${accessToken}`;
               } catch (e) {}
 

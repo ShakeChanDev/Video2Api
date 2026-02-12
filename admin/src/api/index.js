@@ -90,9 +90,29 @@ export const batchCheckProxies = async (data) => {
   return response.data
 }
 
-export const openIxBrowserProfileWindow = async (profileId, groupTitle = 'Sora') => {
+export const openIxBrowserProfileWindow = async (
+  profileId,
+  groupTitle = 'Sora',
+  targetUrl = 'https://sora.chatgpt.com/drafts'
+) => {
+  const params = { group_title: groupTitle }
+  const normalizedTargetUrl = String(targetUrl || '').trim()
+  if (normalizedTargetUrl) {
+    params.target_url = normalizedTargetUrl
+  }
   const response = await api.post(`/ixbrowser/profiles/${profileId}/open`, null, {
-    params: { group_title: groupTitle }
+    params
+  })
+  return response.data
+}
+
+export const randomSwitchProfileProxies = async (profileIds, groupTitle = 'Sora') => {
+  const payload = {
+    profile_ids: Array.isArray(profileIds) ? profileIds : []
+  }
+  const response = await api.post('/ixbrowser/profiles/proxies/random-switch', payload, {
+    params: { group_title: groupTitle },
+    timeout: 180000
   })
   return response.data
 }

@@ -3,6 +3,7 @@ import base64
 import json
 from types import SimpleNamespace
 
+import httpx
 import pytest
 
 from app.models.ixbrowser import (
@@ -14,7 +15,13 @@ from app.models.ixbrowser import (
     SoraAccountWeight,
     SoraJobRequest,
 )
-from app.services.ixbrowser_service import IXBrowserAPIError, IXBrowserNotFoundError, IXBrowserService, IXBrowserServiceError
+from app.services.ixbrowser_service import (
+    IXBrowserAPIError,
+    IXBrowserConnectionError,
+    IXBrowserNotFoundError,
+    IXBrowserService,
+    IXBrowserServiceError,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -54,6 +61,42 @@ def _build_access_token(plan_type: str) -> str:
     raw = json.dumps(payload, separators=(",", ":")).encode("utf-8")
     encoded = base64.urlsafe_b64encode(raw).decode("utf-8").rstrip("=")
     return f"header.{encoded}.signature"
+
+
+def test_resolve_request_timeout_seconds_profile_open_has_floor():
+    assert IXBrowserService._resolve_request_timeout_seconds("/api/v2/profile-open", 10_000) == 20.0
+    assert IXBrowserService._resolve_request_timeout_seconds("/api/v2/group-list", 10_000) == 10.0
+    assert IXBrowserService._resolve_request_timeout_seconds("/api/v2/profile-open", 35_000) == 35.0
+
+
+@pytest.mark.asyncio
+async def test_post_surfaces_timeout_type_when_message_empty(monkeypatch):
+    service = IXBrowserService()
+
+    class _FakeTimeoutClient:
+        def __init__(self, *args, **kwargs):
+            del args, kwargs
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            del exc_type, exc, tb
+            return False
+
+        async def post(self, url, json):
+            request = httpx.Request("POST", url, json=json)
+            raise httpx.ReadTimeout("", request=request)
+
+    monkeypatch.setattr("app.services.ixbrowser_service.httpx.AsyncClient", _FakeTimeoutClient)
+
+    with pytest.raises(IXBrowserConnectionError) as exc_info:
+        await service._post("/api/v2/profile-open", {"profile_id": 35})
+
+    message = str(exc_info.value)
+    assert "调用 ixBrowser 失败：ReadTimeout" in message
+    assert "POST" in message
+    assert "/api/v2/profile-open" in message
 
 
 @pytest.mark.asyncio
@@ -589,6 +632,69 @@ async def test_open_profile_window_returns_normalized_open_data():
 
 
 @pytest.mark.asyncio
+async def test_open_profile_window_navigates_target_url_when_provided():
+    service = IXBrowserService()
+    captured = {}
+
+    async def _fake_get_window_from_group(profile_id, _group_title):
+        return IXBrowserWindow(profile_id=profile_id, name=f"win-{profile_id}")
+
+    async def _fake_open_profile_with_retry(_profile_id, max_attempts=3):
+        del max_attempts
+        return {"debugPort": 9222}
+
+    async def _fake_navigate_opened_profile_to_url(*, profile_id, open_data, target_url):
+        captured["profile_id"] = profile_id
+        captured["open_data"] = dict(open_data or {})
+        captured["target_url"] = target_url
+
+    service._get_window_from_group = _fake_get_window_from_group
+    service._open_profile_with_retry = _fake_open_profile_with_retry
+    service._navigate_opened_profile_to_url = _fake_navigate_opened_profile_to_url
+
+    result = await service.open_profile_window(
+        profile_id=223,
+        group_title="Sora",
+        target_url=" https://sora.chatgpt.com/drafts ",
+    )
+
+    assert result.profile_id == 223
+    assert result.debugging_address == "127.0.0.1:9222"
+    assert captured["profile_id"] == 223
+    assert captured["target_url"] == "https://sora.chatgpt.com/drafts"
+    assert captured["open_data"]["debugging_address"] == "127.0.0.1:9222"
+
+
+@pytest.mark.asyncio
+async def test_open_profile_window_ignores_navigation_error():
+    service = IXBrowserService()
+
+    async def _fake_get_window_from_group(profile_id, _group_title):
+        return IXBrowserWindow(profile_id=profile_id, name=f"win-{profile_id}")
+
+    async def _fake_open_profile_with_retry(_profile_id, max_attempts=3):
+        del max_attempts
+        return {"debugPort": 9222}
+
+    async def _fake_navigate_opened_profile_to_url(*, profile_id, open_data, target_url):
+        del profile_id, open_data, target_url
+        raise RuntimeError("navigate failed")
+
+    service._get_window_from_group = _fake_get_window_from_group
+    service._open_profile_with_retry = _fake_open_profile_with_retry
+    service._navigate_opened_profile_to_url = _fake_navigate_opened_profile_to_url
+
+    result = await service.open_profile_window(
+        profile_id=224,
+        group_title="Sora",
+        target_url="https://sora.chatgpt.com/drafts",
+    )
+
+    assert result.profile_id == 224
+    assert result.debugging_address == "127.0.0.1:9222"
+
+
+@pytest.mark.asyncio
 async def test_open_profile_with_retry_prefers_opened_profile():
     service = IXBrowserService()
     open_calls = {"count": 0}
@@ -915,6 +1021,16 @@ def test_extract_account_plan_from_access_token():
     assert plus == "plus"
     assert free == "free"
     assert unknown is None
+
+
+def test_extract_access_token_supports_snake_case():
+    service = IXBrowserService()
+
+    direct = service._extract_access_token({"access_token": "token_direct"})
+    nested = service._extract_access_token({"user": {"access_token": "token_nested"}})
+
+    assert direct == "token_direct"
+    assert nested == "token_nested"
 
 
 @pytest.mark.asyncio
@@ -1834,6 +1950,165 @@ async def test_publish_sora_post_with_backoff_retries_invalid_request():
     assert result["publish_url"] == "https://sora.chatgpt.com/p/s_12345678"
 
 
+def test_build_create_task_payload_base_contains_nullable_fields():
+    service = IXBrowserService()
+    publish_workflow = service._sora_publish_workflow  # noqa: SLF001
+
+    payload = publish_workflow._build_create_task_payload_base(  # noqa: SLF001
+        prompt="create prompt",
+        aspect_ratio="portrait",
+        n_frames=450,
+    )
+
+    assert payload["kind"] == "video"
+    assert payload["prompt"] == "create prompt"
+    assert payload["orientation"] == "portrait"
+    assert payload["size"] == "small"
+    assert payload["n_frames"] == 450
+    assert payload["model"] == "sy_8"
+    assert payload["inpaint_items"] == []
+    for key in (
+        "title",
+        "remix_target_id",
+        "project_config",
+        "trim_config",
+        "metadata",
+        "cameo_ids",
+        "cameo_replacements",
+        "style_id",
+        "audio_caption",
+        "audio_transcript",
+        "video_caption",
+        "storyboard_id",
+    ):
+        assert key in payload
+        assert payload[key] is None
+
+
+@pytest.mark.asyncio
+async def test_submit_video_request_from_page_passes_sentinel_flows_and_payload_base():
+    service = IXBrowserService()
+    publish_workflow = service._sora_publish_workflow  # noqa: SLF001
+
+    captured = {"script": None, "arg": None}
+
+    class _FakePage:
+        async def evaluate(self, script, arg=None):
+            if isinstance(script, str) and "typeof window.SentinelSDK" in script:
+                return True
+            captured["script"] = script
+            captured["arg"] = arg
+            return {
+                "task_id": "task_1",
+                "task_url": None,
+                "access_token": "token_1",
+                "sentinel_flow": "sora_2_create_task",
+                "error": None,
+            }
+
+        async def wait_for_timeout(self, *_args, **_kwargs):
+            return None
+
+    result = await publish_workflow._submit_video_request_from_page(  # noqa: SLF001
+        page=_FakePage(),
+        prompt="test prompt",
+        aspect_ratio="portrait",
+        n_frames=450,
+        device_id="did_x",
+    )
+
+    assert result["task_id"] == "task_1"
+    assert result["access_token"] == "token_1"
+    assert result["sentinel_flow"] == "sora_2_create_task"
+    assert "for (const flow of sentinelFlows)" in str(captured["script"] or "")
+    assert "sessionJson?.access_token" in str(captured["script"] or "")
+    arg = captured["arg"] or {}
+    assert arg.get("createTaskFlows") == ["sora_2_create_task", "sora_2_create_task__auto"]
+    payload_base = arg.get("createPayloadBase") or {}
+    assert payload_base.get("prompt") == "test prompt"
+    assert payload_base.get("orientation") == "portrait"
+    assert payload_base.get("n_frames") == 450
+    assert payload_base.get("model") == "sy_8"
+    assert payload_base.get("title") is None
+    assert payload_base.get("metadata") is None
+    assert payload_base.get("inpaint_items") == []
+
+
+@pytest.mark.asyncio
+async def test_get_device_id_from_context_profile_reuses_runtime_cache():
+    service = IXBrowserService()
+    publish_workflow = service._sora_publish_workflow  # noqa: SLF001
+
+    class _FakeContext:
+        async def cookies(self, *_args, **_kwargs):
+            return []
+
+    first = await publish_workflow._get_device_id_from_context(_FakeContext(), profile_id=12)  # noqa: SLF001
+    second = await publish_workflow._get_device_id_from_context(_FakeContext(), profile_id=12)  # noqa: SLF001
+
+    assert isinstance(first, str) and first
+    assert first == second
+    assert service._oai_did_by_profile.get(12) == first  # noqa: SLF001
+
+
+@pytest.mark.asyncio
+async def test_get_device_id_from_context_cookie_takes_precedence_and_syncs_cache():
+    service = IXBrowserService()
+    publish_workflow = service._sora_publish_workflow  # noqa: SLF001
+
+    class _FakeContext:
+        async def cookies(self, *_args, **_kwargs):
+            return [{"name": "oai-did", "value": "did_cookie"}]
+
+    did = await publish_workflow._get_device_id_from_context(_FakeContext(), profile_id=21)  # noqa: SLF001
+    assert did == "did_cookie"
+    assert service._oai_did_by_profile.get(21) == "did_cookie"  # noqa: SLF001
+
+
+@pytest.mark.asyncio
+async def test_publish_sora_post_with_backoff_passes_profile_id_to_device_resolver(monkeypatch):
+    service = IXBrowserService()
+    publish_workflow = service._sora_publish_workflow  # noqa: SLF001
+
+    class _DummyContext:
+        pass
+
+    class _DummyPage:
+        def __init__(self):
+            self.context = _DummyContext()
+            self.url = "https://sora.chatgpt.com/d/gen_test"
+
+        async def wait_for_timeout(self, _ms):
+            return None
+
+        async def reload(self, **_kwargs):
+            return None
+
+    seen_profile_ids = []
+
+    async def _fake_get_device_id(_context, profile_id=None):
+        seen_profile_ids.append(profile_id)
+        return "did_x"
+
+    async def _fake_publish_sora_post_from_page(*_args, **_kwargs):
+        return {"publish_url": "https://sora.chatgpt.com/p/s_87654321", "error": None}
+
+    monkeypatch.setattr(publish_workflow, "_get_device_id_from_context", _fake_get_device_id, raising=True)
+    monkeypatch.setattr(publish_workflow, "_publish_sora_post_from_page", _fake_publish_sora_post_from_page, raising=True)
+
+    result = await publish_workflow._publish_sora_post_with_backoff(  # noqa: SLF001
+        _DummyPage(),
+        task_id="task_x",
+        prompt="prompt_x",
+        generation_id="gen_x",
+        max_attempts=1,
+        profile_id=99,
+    )
+
+    assert seen_profile_ids == [99]
+    assert result["publish_url"] == "https://sora.chatgpt.com/p/s_87654321"
+
+
 def test_parse_publish_result_payload_supports_post_and_error_codes():
     service = IXBrowserService()
     publish_workflow = service._sora_publish_workflow  # noqa: SLF001
@@ -2048,6 +2323,65 @@ async def test_fetch_draft_item_by_task_id_via_context_does_not_use_context_requ
     assert isinstance(item, dict)
     assert item.get("generation_id") == "gen_abc"
     assert page.goto_calls  # 非 Sora 域时会先导航到 drafts
+
+
+@pytest.mark.asyncio
+async def test_fetch_draft_item_by_task_id_via_context_accepts_session_access_token_snake_case(monkeypatch):
+    service = IXBrowserService()
+    publish_workflow = service._sora_publish_workflow  # noqa: SLF001
+
+    class _FakePage:
+        def __init__(self):
+            self.url = "https://sora.chatgpt.com/drafts"
+
+        async def goto(self, _url, **_kwargs):
+            return None
+
+        async def wait_for_timeout(self, _ms):
+            return None
+
+    class _FakeContext:
+        def __init__(self, page):
+            self.pages = [page]
+
+        async def new_page(self):
+            return self.pages[0]
+
+    page = _FakePage()
+    context = _FakeContext(page)
+    seen_headers = {"drafts": None}
+
+    async def _fake_fetch(page_obj, url, **kwargs):
+        del page_obj
+        if "api/auth/session" in str(url):
+            return {
+                "status": 200,
+                "raw": "{\"access_token\":\"snake_t\"}",
+                "json": {"access_token": "snake_t"},
+                "error": None,
+                "is_cf": False,
+            }
+        seen_headers["drafts"] = kwargs.get("headers")
+        return {
+            "status": 200,
+            "raw": "{\"items\":[{\"id\":\"task_123\",\"generation_id\":\"gen_abc\"}]}",
+            "json": {"items": [{"id": "task_123", "generation_id": "gen_abc"}]},
+            "error": None,
+            "is_cf": False,
+        }
+
+    monkeypatch.setattr(publish_workflow, "_sora_fetch_json_via_page", _fake_fetch, raising=True)
+
+    item = await publish_workflow._fetch_draft_item_by_task_id_via_context(
+        context=context,
+        task_id="task_123",
+        limit=15,
+        max_pages=1,
+    )
+
+    assert isinstance(item, dict)
+    assert item.get("generation_id") == "gen_abc"
+    assert (seen_headers["drafts"] or {}).get("Authorization") == "Bearer snake_t"
 
 
 @pytest.mark.asyncio

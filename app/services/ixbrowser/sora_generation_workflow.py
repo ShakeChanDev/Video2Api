@@ -6,7 +6,6 @@ import logging
 import time
 from datetime import datetime
 from typing import Any, Dict, Optional, Tuple
-from uuid import uuid4
 
 from app.db.sqlite import sqlite_db
 
@@ -82,7 +81,10 @@ class SoraGenerationWorkflow:
                 await page.goto("https://sora.chatgpt.com/drafts", wait_until="domcontentloaded", timeout=40_000)
                 await page.wait_for_timeout(1200)
 
-                device_id = await self._service._sora_publish_workflow._get_device_id_from_context(context)
+                device_id = await self._service._sora_publish_workflow._get_device_id_from_context(
+                    context,
+                    profile_id=profile_id,
+                )
                 last_submit_error: Optional[str] = None
                 for attempt in range(1, 3):
                     submit_attempts = attempt
@@ -518,11 +520,10 @@ class SoraGenerationWorkflow:
                 await page.goto("https://sora.chatgpt.com/drafts", wait_until="domcontentloaded", timeout=40_000)
                 await page.wait_for_timeout(1500)
 
-                cookies = await context.cookies("https://sora.chatgpt.com")
-                device_id = next(
-                    (cookie.get("value") for cookie in cookies if cookie.get("name") == "oai-did" and cookie.get("value")),
-                    None
-                ) or str(uuid4())
+                device_id = await self._service._sora_publish_workflow._get_device_id_from_context(
+                    context,
+                    profile_id=profile_id,
+                )
 
                 last_submit_error: Optional[str] = None
                 for attempt in range(1, max_submit_attempts + 1):

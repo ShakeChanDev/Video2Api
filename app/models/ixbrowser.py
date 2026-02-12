@@ -88,6 +88,45 @@ class IXBrowserScanRequest(BaseModel):
     profile_ids: List[int] = Field(default_factory=list)
 
 
+class IXBrowserRandomSwitchProxyRequest(BaseModel):
+    profile_ids: List[int] = Field(default_factory=list)
+
+    @field_validator("profile_ids")
+    @classmethod
+    def validate_profile_ids(cls, value: List[int]) -> List[int]:
+        ids: List[int] = []
+        seen = set()
+        for raw in value or []:
+            try:
+                pid = int(raw)
+            except Exception:
+                continue
+            if pid <= 0 or pid in seen:
+                continue
+            seen.add(pid)
+            ids.append(pid)
+        if not ids:
+            raise ValueError("profile_ids 不能为空")
+        return ids
+
+
+class IXBrowserRandomSwitchProxyItem(BaseModel):
+    profile_id: int
+    window_name: Optional[str] = None
+    old_proxy: Optional[str] = None
+    new_proxy: Optional[str] = None
+    ok: bool = False
+    message: Optional[str] = None
+
+
+class IXBrowserRandomSwitchProxyResponse(BaseModel):
+    group_title: str
+    total: int
+    success_count: int
+    failed_count: int
+    results: List[IXBrowserRandomSwitchProxyItem] = Field(default_factory=list)
+
+
 class IXBrowserScanRunSummary(BaseModel):
     run_id: int
     group_id: int

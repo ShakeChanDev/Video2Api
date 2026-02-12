@@ -32,6 +32,15 @@
         <el-button size="large" type="warning" :loading="scanLoading" :disabled="actionLockedBySilentRefresh" @click="scanNow">
           扫描账号与次数
         </el-button>
+        <el-button
+          size="large"
+          type="danger"
+          :loading="randomSwitchLoading"
+          :disabled="actionLockedBySilentRefresh || scanLoading || !selectedProfileIds.length"
+          @click="randomSwitchSelectedProxies"
+        >
+          批量随机切换代理
+        </el-button>
         <el-button size="large" type="primary" :loading="silentRefreshStarting" :disabled="actionLockedBySilentRefresh || scanLoading" @click="startSilentRefresh">
           {{ silentRefreshButtonText }}
         </el-button>
@@ -216,7 +225,7 @@
 
 <script setup>
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { formatRelativeTimeZh } from '../utils/relativeTime'
 import {
   buildIxBrowserSilentRefreshStreamUrl,
@@ -226,6 +235,7 @@ import {
   getLatestIxBrowserSoraSessionAccounts,
   getSoraAccountWeights,
   openIxBrowserProfileWindow,
+  randomSwitchProfileProxies,
   scanIxBrowserSoraSessionAccounts,
   getSystemSettings
 } from '../api'
@@ -233,6 +243,7 @@ import {
 const latestLoading = ref(false)
 const scanLoading = ref(false)
 const weightsLoading = ref(false)
+const randomSwitchLoading = ref(false)
 const realtimeStatus = ref('disconnected')
 let realtimeSource = null
 let relativeTimeTimer = null
@@ -694,6 +705,62 @@ const startSilentRefresh = async () => {
 const refreshAll = async () => {
   await loadLatest()
   await loadWeights()
+}
+
+const randomSwitchSelectedProxies = async () => {
+  if (!selectedGroupTitle.value) {
+    ElMessage.warning('请先选择分组')
+    return
+  }
+  const ids = Array.from(new Set(
+    (selectedProfileIds.value || [])
+      .map((id) => Number(id))
+      .filter((id) => Number.isFinite(id) && id > 0)
+  ))
+  if (!ids.length) {
+    ElMessage.warning('请先勾选窗口')
+    return
+  }
+  if (actionLockedBySilentRefresh.value || scanLoading.value || randomSwitchLoading.value) return
+
+  try {
+    await ElMessageBox.confirm(
+      `将对已勾选的 ${ids.length} 个窗口随机切换代理。执行期间会先关闭窗口，是否继续？`,
+      '批量随机切换代理',
+      {
+        confirmButtonText: '开始切换',
+        cancelButtonText: '取消',
+        type: 'warning',
+        closeOnClickModal: false
+      }
+    )
+  } catch {
+    return
+  }
+
+  randomSwitchLoading.value = true
+  try {
+    const result = await randomSwitchProfileProxies(ids, selectedGroupTitle.value)
+    const successCount = Number(result?.success_count || 0)
+    const failedCount = Number(result?.failed_count || 0)
+    const failedRows = (Array.isArray(result?.results) ? result.results : [])
+      .filter((item) => !item?.ok)
+      .slice(0, 3)
+      .map((item) => `#${item?.profile_id || '-'} ${shorten(item?.message || '失败', 28)}`)
+      .join('；')
+    if (failedCount > 0) {
+      const suffix = failedRows ? `；${failedRows}` : ''
+      ElMessage.warning(`切换完成：成功 ${successCount}，失败 ${failedCount}${suffix}`)
+    } else {
+      ElMessage.success(`切换完成：成功 ${successCount}，失败 ${failedCount}`)
+    }
+    await loadGroups()
+    await loadLatest()
+  } catch (error) {
+    ElMessage.error(error?.response?.data?.detail || '批量随机切换代理失败')
+  } finally {
+    randomSwitchLoading.value = false
+  }
 }
 
 const handleSelectionChange = (rows) => {

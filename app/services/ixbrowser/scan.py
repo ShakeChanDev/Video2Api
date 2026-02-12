@@ -1392,9 +1392,21 @@ class ScanMixin:
     def _extract_access_token(self, session_obj: Optional[dict]) -> Optional[str]:
         if not isinstance(session_obj, dict):
             return None
-        token = session_obj.get("accessToken")
-        if isinstance(token, str) and token.strip():
-            return token.strip()
+        candidates: List[Any] = [
+            session_obj.get("accessToken"),
+            session_obj.get("access_token"),
+        ]
+        user = session_obj.get("user")
+        if isinstance(user, dict):
+            candidates.extend(
+                [
+                    user.get("accessToken"),
+                    user.get("access_token"),
+                ]
+            )
+        for token in candidates:
+            if isinstance(token, str) and token.strip():
+                return token.strip()
         return None
 
     def _extract_account(self, session_obj: Optional[dict]) -> Optional[str]:
