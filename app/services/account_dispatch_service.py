@@ -13,6 +13,7 @@ from app.models.settings import (
     AccountDispatchIgnoreRule,
     AccountDispatchSettings,
 )
+from app.services.ixbrowser.error_patterns import is_sora_overload_error
 
 
 def _clamp(value: float, lower: float, upper: float) -> float:
@@ -69,6 +70,19 @@ class AccountDispatchService:
         fail_events = sqlite_db.list_sora_fail_events_since(safe_group, lookback_since_str)
         active_jobs = sqlite_db.count_sora_active_jobs_by_profile(safe_group)
         pending_submits = sqlite_db.count_sora_pending_submits_by_profile(safe_group)
+        completion_recent_window = 30
+        profile_ids: List[int] = []
+        for window in windows:
+            try:
+                profile_id = int(window.profile_id)
+            except Exception:
+                continue
+            if profile_id > 0:
+                profile_ids.append(profile_id)
+        completion_recent_map = self._build_completion_recent_map(
+            profile_ids=profile_ids,
+            window=completion_recent_window,
+        )
 
         success_count_map: Dict[int, int] = defaultdict(int)
         for row in recent_jobs:
@@ -219,6 +233,10 @@ class AccountDispatchService:
                     score_quantity=round(quantity_score, 2),
                     score_quality=round(quality_score, 2),
                     success_count=int(success_count_map.get(profile_id, 0)),
+                    completion_recent_window=int(completion_recent_map.get(profile_id, {}).get("window") or completion_recent_window),
+                    completion_recent_total=int(completion_recent_map.get(profile_id, {}).get("total") or 0),
+                    completion_recent_success_count=int(completion_recent_map.get(profile_id, {}).get("success_count") or 0),
+                    completion_recent_heat=str(completion_recent_map.get(profile_id, {}).get("heat") or ("-" * completion_recent_window)),
                     fail_count_non_ignored=int(quality_meta["fail_count_non_ignored"]),
                     ignored_error_count=int(quality_meta["ignored_error_count"]),
                     last_non_ignored_error=quality_meta["last_non_ignored_error"],
@@ -428,6 +446,71 @@ class AccountDispatchService:
                 for key in ("quota_remaining_count", "quota_total_count", "quota_reset_at", "quota_source"):
                     if row.get(key) is not None:
                         base_row[key] = row.get(key)
+        return result
+
+    def _build_completion_recent_map(self, *, profile_ids: List[int], window: int = 30) -> Dict[int, dict]:
+        normalized_ids: List[int] = []
+        for profile_id in profile_ids:
+            try:
+                pid = int(profile_id)
+            except Exception:
+                continue
+            if pid > 0:
+                normalized_ids.append(pid)
+        normalized_ids = sorted(set(normalized_ids))
+        safe_window = min(max(int(window), 1), 200)
+        if not normalized_ids:
+            return {}
+
+        try:
+            rows = sqlite_db.list_sora_jobs_recent_by_profiles(normalized_ids, window=safe_window)
+        except Exception:
+            rows = []
+
+        grouped: Dict[int, List[dict]] = defaultdict(list)
+        for row in rows:
+            try:
+                pid = int(row.get("profile_id") or 0)
+            except Exception:
+                continue
+            if pid <= 0:
+                continue
+            grouped[pid].append(row)
+
+        result: Dict[int, dict] = {}
+        for pid in normalized_ids:
+            recent_rows = grouped.get(pid, [])
+            newest_to_oldest: List[str] = []
+            success_count = 0
+            for row in recent_rows:
+                status = str(row.get("status") or "").strip().lower()
+                error = str(row.get("error") or "").strip()
+                if status == "completed":
+                    newest_to_oldest.append("G")
+                    success_count += 1
+                    continue
+                if status in {"queued", "running"}:
+                    newest_to_oldest.append("B")
+                    continue
+                if status == "failed":
+                    newest_to_oldest.append("R" if is_sora_overload_error(error) else "Y")
+                    continue
+                if status == "canceled":
+                    newest_to_oldest.append("N")
+                    continue
+                newest_to_oldest.append("-")
+
+            oldest_to_newest = list(reversed(newest_to_oldest))
+            if len(oldest_to_newest) < safe_window:
+                heat_chars = (["-"] * (safe_window - len(oldest_to_newest))) + oldest_to_newest
+            else:
+                heat_chars = oldest_to_newest[-safe_window:]
+            result[pid] = {
+                "window": safe_window,
+                "total": min(len(newest_to_oldest), safe_window),
+                "success_count": int(success_count),
+                "heat": "".join(heat_chars),
+            }
         return result
 
     def _calc_quantity_score(self, *, quota_remaining: Optional[int], settings: AccountDispatchSettings) -> float:

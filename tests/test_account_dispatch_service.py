@@ -11,6 +11,14 @@ from app.services.account_dispatch_service import AccountDispatchService
 pytestmark = pytest.mark.unit
 
 
+@pytest.fixture(autouse=True)
+def _stub_recent_completion_rows(monkeypatch):
+    monkeypatch.setattr(
+        "app.services.account_dispatch_service.sqlite_db.list_sora_jobs_recent_by_profiles",
+        lambda *_args, **_kwargs: [],
+    )
+
+
 @pytest.mark.asyncio
 async def test_account_weights_ignore_rules_do_not_penalize(monkeypatch):
     service = AccountDispatchService()
@@ -264,3 +272,49 @@ async def test_account_weights_low_quota_blocked_when_reset_far(monkeypatch):
     assert weights
     assert weights[0].quota_remaining_count == 1
     assert weights[0].selectable is False
+
+
+@pytest.mark.asyncio
+async def test_account_weights_completion_recent_heat(monkeypatch):
+    service = AccountDispatchService()
+    settings = AccountDispatchSettings(quota_cap=30, min_quota_remaining=1)
+    monkeypatch.setattr(service, "_load_settings", lambda: settings)
+
+    async def _fake_list_windows(_group_title):
+        return [IXBrowserWindow(profile_id=1, name="win-1")]
+
+    monkeypatch.setattr(service, "_list_group_windows", _fake_list_windows)
+    monkeypatch.setattr(
+        service,
+        "_load_latest_scan_map",
+        lambda _group_title: {
+            1: {"quota_remaining_count": 8, "quota_total_count": 30, "account": "a@example.com", "account_plan": "plus"},
+        },
+    )
+    monkeypatch.setattr("app.services.account_dispatch_service.sqlite_db.list_sora_jobs_since", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr("app.services.account_dispatch_service.sqlite_db.list_sora_fail_events_since", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr("app.services.account_dispatch_service.sqlite_db.count_sora_active_jobs_by_profile", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr("app.services.account_dispatch_service.sqlite_db.count_sora_pending_submits_by_profile", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(
+        "app.services.account_dispatch_service.sqlite_db.list_sora_jobs_recent_by_profiles",
+        lambda profile_ids, window=30: [
+            {"profile_id": 1, "id": 107, "status": "failed", "phase": "submit", "error": "under heavy load"},
+            {"profile_id": 1, "id": 106, "status": "failed", "phase": "submit", "error": "timeout"},
+            {"profile_id": 1, "id": 105, "status": "canceled", "phase": "queue", "error": ""},
+            {"profile_id": 1, "id": 104, "status": "running", "phase": "progress", "error": ""},
+            {"profile_id": 1, "id": 103, "status": "queued", "phase": "queue", "error": ""},
+            {"profile_id": 1, "id": 102, "status": "completed", "phase": "done", "error": ""},
+            {"profile_id": 1, "id": 101, "status": "completed", "phase": "done", "error": ""},
+        ],
+    )
+
+    weights = await service.list_account_weights(group_title="Sora", limit=10)
+    assert len(weights) == 1
+    item = weights[0]
+    assert int(item.profile_id) == 1
+    assert int(item.completion_recent_window) == 30
+    assert int(item.completion_recent_total) == 7
+    assert int(item.completion_recent_success_count) == 2
+    assert isinstance(item.completion_recent_heat, str)
+    assert len(item.completion_recent_heat) == 30
+    assert item.completion_recent_heat.endswith("GGBBNYR")

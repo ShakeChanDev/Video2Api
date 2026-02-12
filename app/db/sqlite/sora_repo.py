@@ -258,6 +258,50 @@ class SQLiteSoraRepo:
         conn.close()
         return [dict(row) for row in rows]
 
+    def list_sora_jobs_recent_by_profiles(self, profile_ids: List[int], window: int = 30) -> List[Dict[str, Any]]:
+        normalized_set = set()
+        for pid_raw in profile_ids:
+            try:
+                pid = int(pid_raw)
+            except Exception:
+                continue
+            if pid > 0:
+                normalized_set.add(pid)
+        normalized_ids = sorted(normalized_set)
+        if not normalized_ids:
+            return []
+        safe_window = min(max(int(window), 1), 200)
+        placeholders = ",".join("?" for _ in normalized_ids)
+
+        conn = self._get_conn()
+        cursor = conn.cursor()
+        cursor.execute(
+            f'''
+            WITH ranked AS (
+                SELECT
+                    profile_id,
+                    id,
+                    status,
+                    phase,
+                    error,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY profile_id
+                        ORDER BY id DESC
+                    ) AS rn
+                FROM sora_jobs
+                WHERE profile_id IN ({placeholders})
+            )
+            SELECT profile_id, id, status, phase, error
+            FROM ranked
+            WHERE rn <= ?
+            ORDER BY profile_id ASC, id DESC
+            ''',
+            [*normalized_ids, safe_window],
+        )
+        rows = cursor.fetchall()
+        conn.close()
+        return [dict(row) for row in rows]
+
     def list_sora_jobs_since(self, group_title: str, since_at: str) -> List[Dict[str, Any]]:
         conn = self._get_conn()
         cursor = conn.cursor()

@@ -287,6 +287,10 @@ class SoraAccountWeight(BaseModel):
     score_quantity: float = 0
     score_quality: float = 0
     success_count: int = 0
+    completion_recent_window: int = 30
+    completion_recent_total: int = 0
+    completion_recent_success_count: int = 0
+    completion_recent_heat: str = ""
     fail_count_non_ignored: int = 0
     ignored_error_count: int = 0
     last_non_ignored_error: Optional[str] = None

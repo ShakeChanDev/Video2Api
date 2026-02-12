@@ -8,6 +8,7 @@ import time
 from typing import Any, List, Optional, Tuple
 
 from app.services.ixbrowser.errors import IXBrowserAPIError, IXBrowserConnectionError, IXBrowserServiceError
+from app.services.ixbrowser.error_patterns import is_sora_overload_error
 
 logger = logging.getLogger(__name__)
 
@@ -175,11 +176,7 @@ class ProfilesMixin:
         return "execution context was destroyed" in message
 
     def _is_sora_overload_error(self, text: str) -> bool:
-        message = str(text or "").strip()
-        if not message:
-            return False
-        lower = message.lower()
-        return "heavy load" in lower or "under heavy load" in lower or "heavy_load" in lower
+        return is_sora_overload_error(text)
 
 
     async def _open_profile(self, profile_id: int, restart_if_opened: bool = False, headless: bool = False) -> dict:
@@ -421,4 +418,3 @@ class ProfilesMixin:
                 return True
             raise
         return True
-

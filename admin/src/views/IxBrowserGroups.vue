@@ -83,14 +83,12 @@
           <template #default="{ row }">
             <div class="window-card">
               <div class="window-title">
-                <span class="window-name">{{ row.window_name || '-' }}</span>
                 <span class="window-id">ID {{ row.profile_id }}</span>
               </div>
               <div class="window-account">{{ row.account || '未识别账号' }}</div>
               <div class="window-proxy">
                 <span class="proxy-label">代理</span>
                 <span class="proxy-value">{{ formatProxy(row) }}</span>
-                <span v-if="row.real_ip" class="proxy-real">real_ip {{ row.real_ip }}</span>
               </div>
             </div>
           </template>
@@ -109,6 +107,24 @@
         <el-table-column label="套餐" width="118" align="center">
           <template #default="{ row }">
             <span v-if="isPlusPlan(row)" class="plan-badge">Plus</span>
+          </template>
+        </el-table-column>
+        <el-table-column :label="`完成情况(近${completionRecentWindow}次)`" width="210" align="center">
+          <template #default="{ row }">
+            <div class="completion-heat-cell">
+              <div class="completion-heat-grid" :style="{ '--completion-window': String(completionRecentWindow) }">
+                <span
+                  v-for="(dot, dotIndex) in getCompletionDots(row)"
+                  :key="`${row.profile_id || 'unknown'}-${dotIndex}`"
+                  :class="['completion-heat-dot', getCompletionDotClass(dot)]"
+                  :title="getCompletionDotTitle(dot)"
+                />
+              </div>
+              <span v-if="Number(row.completion_recent_total || 0) > 0" class="completion-heat-stat">
+                {{ formatCompletionStat(row) }}
+              </span>
+              <span v-else class="error-text error-empty">-</span>
+            </div>
           </template>
         </el-table-column>
         <el-table-column label="总分" width="100" align="center">
@@ -241,6 +257,7 @@ const silentRefreshState = ref(null)
 const silentRefreshStarting = ref(false)
 const silentRefreshJobId = ref(null)
 const silentRefreshWarned = ref(false)
+const completionRecentWindow = 30
 
 const parseScanTime = (value) => {
   if (!value) return 0
@@ -352,6 +369,50 @@ const formatScore = (value) => {
   const num = Number(value)
   if (!Number.isFinite(num)) return '-'
   return num.toFixed(1)
+}
+
+const formatPercent = (value) => {
+  const num = Number(value || 0)
+  if (!Number.isFinite(num)) return '0'
+  const fixed = num.toFixed(1)
+  return fixed.endsWith('.0') ? fixed.slice(0, -2) : fixed
+}
+
+const formatCompletionStat = (row) => {
+  const successCount = Number(row?.completion_recent_success_count || 0)
+  const totalCount = Number(row?.completion_recent_total || 0)
+  if (!Number.isFinite(totalCount) || totalCount <= 0) return '-'
+  return `${successCount}/${totalCount}(${formatPercent((successCount * 100) / totalCount)}%)`
+}
+
+const getCompletionDots = (row) => {
+  const windowSize = Math.max(1, Number(completionRecentWindow || 30))
+  const heatText = String(row?.completion_recent_heat || '').toUpperCase()
+  const chars = heatText
+    .split('')
+    .filter((char) => char === 'G' || char === 'B' || char === 'Y' || char === 'R' || char === 'N' || char === '-')
+    .slice(-windowSize)
+  if (chars.length < windowSize) {
+    return [...Array(windowSize - chars.length).fill('-'), ...chars]
+  }
+  return chars
+}
+
+const getCompletionDotClass = (dot) => {
+  if (dot === 'G') return 'completion-heat-dot--success'
+  if (dot === 'B') return 'completion-heat-dot--running'
+  if (dot === 'Y') return 'completion-heat-dot--warn'
+  if (dot === 'R') return 'completion-heat-dot--danger'
+  return 'completion-heat-dot--neutral'
+}
+
+const getCompletionDotTitle = (dot) => {
+  if (dot === 'G') return '成功'
+  if (dot === 'B') return '进行中'
+  if (dot === 'Y') return '失败（非 heavy）'
+  if (dot === 'R') return '失败（heavy）'
+  if (dot === 'N') return '已取消'
+  return '无记录'
 }
 
 const formatProxy = (row) => {
@@ -911,12 +972,6 @@ onBeforeUnmount(() => {
   gap: 10px;
 }
 
-.window-name {
-  font-size: 14px;
-  font-weight: 700;
-  color: var(--ink);
-}
-
 .window-id {
   font-size: 11px;
   color: var(--muted);
@@ -957,9 +1012,52 @@ onBeforeUnmount(() => {
   font-weight: 700;
 }
 
-.proxy-real {
-  color: rgba(71, 85, 105, 0.82);
-  font-size: 11px;
+.completion-heat-cell {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+}
+
+.completion-heat-grid {
+  --completion-window: 30;
+  display: grid;
+  grid-template-columns: repeat(var(--completion-window), 5px);
+  gap: 2px;
+  justify-content: center;
+}
+
+.completion-heat-dot {
+  width: 5px;
+  height: 14px;
+  border-radius: 2px;
+}
+
+.completion-heat-dot--success {
+  background: #22c55e;
+}
+
+.completion-heat-dot--running {
+  background: #3b82f6;
+}
+
+.completion-heat-dot--warn {
+  background: #f59e0b;
+}
+
+.completion-heat-dot--danger {
+  background: #ef4444;
+}
+
+.completion-heat-dot--neutral {
+  background: #dbe4ee;
+}
+
+.completion-heat-stat {
+  font-size: 12px;
+  color: rgba(71, 85, 105, 0.92);
+  font-weight: 600;
+  line-height: 1;
 }
 
 .quota-card {
