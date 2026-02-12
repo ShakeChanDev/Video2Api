@@ -84,6 +84,15 @@
                     <el-option label="portrait" value="portrait" />
                   </el-select>
                 </el-form-item>
+                <el-form-item label="创建视频提交优先级">
+                  <div class="field-row">
+                    <el-select v-model="systemForm.sora.submit_priority" style="width: 100%">
+                      <el-option label="服务器请求优先" value="server_request_first" />
+                      <el-option label="页面 Playwright 操作优先" value="playwright_action_first" />
+                    </el-select>
+                    <div class="inline-tip">仅作用创建视频 submit 阶段；按配置严格首选，不自动回退。</div>
+                  </div>
+                </el-form-item>
 
                 <el-divider content-position="left">账号权重调度与自动恢复</el-divider>
 
@@ -513,6 +522,7 @@ const defaultSystemForm = {
     default_group_title: 'Sora',
     default_duration: '10s',
     default_aspect_ratio: 'landscape',
+    submit_priority: 'playwright_action_first',
     account_dispatch: {
       enabled: true,
       auto_scan_enabled: true,

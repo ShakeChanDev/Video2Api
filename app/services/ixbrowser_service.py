@@ -87,6 +87,7 @@ class IXBrowserService(
     ixbrowser_busy_retry_delay_seconds = 1.2
     ixbrowser_write_max_concurrency = 3
     sora_blocked_resource_types = {"image", "media", "font"}
+    sora_submit_priority = "playwright_action_first"
     sora_job_max_concurrency = 2
     heavy_load_retry_max_attempts = 4
 

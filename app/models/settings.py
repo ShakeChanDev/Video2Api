@@ -26,7 +26,16 @@ class SoraSettings(BaseModel):
     default_group_title: str = "Sora"
     default_duration: str = "10s"
     default_aspect_ratio: str = "landscape"
+    submit_priority: str = "playwright_action_first"
     account_dispatch: "AccountDispatchSettings" = Field(default_factory=lambda: AccountDispatchSettings())
+
+    @field_validator("submit_priority")
+    @classmethod
+    def normalize_submit_priority(cls, value: str) -> str:
+        text = str(value or "").strip().lower()
+        if text not in {"playwright_action_first", "server_request_first"}:
+            raise ValueError("submit_priority must be playwright_action_first/server_request_first")
+        return text
 
 
 class AccountDispatchIgnoreRule(BaseModel):

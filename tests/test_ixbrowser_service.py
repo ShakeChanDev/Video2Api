@@ -2035,6 +2035,76 @@ async def test_submit_video_request_from_page_passes_sentinel_flows_and_payload_
 
 
 @pytest.mark.asyncio
+async def test_submit_video_request_from_page_server_first_strict_does_not_fallback_ui(monkeypatch):
+    service = IXBrowserService()
+    publish_workflow = service._sora_publish_workflow  # noqa: SLF001
+    ui_calls = {"count": 0}
+
+    async def _fake_submit_via_ui(**_kwargs):
+        ui_calls["count"] += 1
+        return {"task_id": "task_ui", "task_url": None, "access_token": "token_ui", "error": None}
+
+    monkeypatch.setattr(publish_workflow, "_submit_video_request_via_ui", _fake_submit_via_ui, raising=True)
+
+    class _FakePage:
+        async def evaluate(self, script, _arg=None):
+            if isinstance(script, str) and "typeof window.SentinelSDK" in script:
+                return False
+            return None
+
+        async def wait_for_timeout(self, *_args, **_kwargs):
+            return None
+
+    result = await publish_workflow._submit_video_request_from_page(  # noqa: SLF001
+        page=_FakePage(),
+        prompt="test prompt",
+        aspect_ratio="portrait",
+        n_frames=450,
+        device_id="did_x",
+        submit_priority="server_request_first",
+        strict_priority=True,
+    )
+
+    assert ui_calls["count"] == 0
+    assert result["task_id"] is None
+    assert "SentinelSDK" in str(result.get("error") or "")
+
+
+@pytest.mark.asyncio
+async def test_submit_video_request_from_page_playwright_first_strict_skips_server_request(monkeypatch):
+    service = IXBrowserService()
+    publish_workflow = service._sora_publish_workflow  # noqa: SLF001
+    ui_calls = {"count": 0}
+
+    async def _fake_submit_via_ui(**_kwargs):
+        ui_calls["count"] += 1
+        return {"task_id": "task_ui", "task_url": None, "access_token": "token_ui", "error": None}
+
+    monkeypatch.setattr(publish_workflow, "_submit_video_request_via_ui", _fake_submit_via_ui, raising=True)
+
+    class _FakePage:
+        async def evaluate(self, *_args, **_kwargs):
+            raise AssertionError("playwright_action_first 时不应进入服务器请求提交流程")
+
+        async def wait_for_timeout(self, *_args, **_kwargs):
+            raise AssertionError("playwright_action_first 时不应触发 SentinelSDK 等待")
+
+    result = await publish_workflow._submit_video_request_from_page(  # noqa: SLF001
+        page=_FakePage(),
+        prompt="test prompt",
+        aspect_ratio="portrait",
+        n_frames=450,
+        device_id="did_x",
+        submit_priority="playwright_action_first",
+        strict_priority=True,
+    )
+
+    assert ui_calls["count"] == 1
+    assert result["task_id"] == "task_ui"
+    assert result["access_token"] == "token_ui"
+
+
+@pytest.mark.asyncio
 async def test_get_device_id_from_context_profile_reuses_runtime_cache():
     service = IXBrowserService()
     publish_workflow = service._sora_publish_workflow  # noqa: SLF001
@@ -2941,6 +3011,8 @@ async def test_run_sora_submit_and_progress_not_finished_by_pending_missing(monk
     assert task_id == "task_1"
     assert generation_id == "gen_1"
     assert submit_kwargs.get("image_url") == "https://example.com/submit.png"
+    assert submit_kwargs.get("submit_priority") == "playwright_action_first"
+    assert submit_kwargs.get("strict_priority") is True
     assert prepare_stages and prepare_stages[0] == "create"
 
 
@@ -2995,7 +3067,10 @@ async def test_submit_and_monitor_sora_video_prepare_uses_create_stage(monkeypat
     async def _fake_close_profile(*_args, **_kwargs):
         return True
 
+    submit_kwargs = {}
+
     async def _fake_submit(*_args, **_kwargs):
+        submit_kwargs.update(dict(_kwargs))
         return {"task_id": "task_1", "task_url": None, "access_token": "token_1", "error": None}
 
     async def _fake_proxy_poll(**_kwargs):
@@ -3030,6 +3105,8 @@ async def test_submit_and_monitor_sora_video_prepare_uses_create_stage(monkeypat
     )
 
     assert result["status"] == "failed"
+    assert submit_kwargs.get("submit_priority") == "playwright_action_first"
+    assert submit_kwargs.get("strict_priority") is True
     assert prepare_stages and prepare_stages[0] == "create"
 
 

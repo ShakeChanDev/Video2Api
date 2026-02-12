@@ -116,6 +116,7 @@ def default_system_settings(mask_sensitive: bool = False) -> SystemSettings:
             "default_group_title": "Sora",
             "default_duration": "10s",
             "default_aspect_ratio": "landscape",
+            "submit_priority": str(getattr(service_cls, "sora_submit_priority", "playwright_action_first")),
         },
         "scan": {
             "history_limit": service_cls.scan_history_limit,
@@ -257,6 +258,7 @@ def apply_runtime_settings(settings_data: Optional[SystemSettings] = None) -> No
     ixbrowser_service.draft_manual_poll_interval_seconds = data.sora.draft_manual_poll_interval_minutes * 60
     ixbrowser_service.heavy_load_retry_max_attempts = data.sora.heavy_load_retry_max_attempts
     ixbrowser_service.sora_blocked_resource_types = set(data.sora.blocked_resource_types or [])
+    ixbrowser_service.sora_submit_priority = data.sora.submit_priority
     ixbrowser_service.scan_history_limit = data.scan.history_limit
 
     # Account dispatch / recovery scheduler is runtime-configurable.

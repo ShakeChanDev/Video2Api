@@ -70,6 +70,10 @@ class SoraGenerationWorkflow:
         access_token: Optional[str] = None
         last_progress = 0
         last_draft_fetch_at = 0.0
+        submit_priority = str(getattr(self._service, "sora_submit_priority", "playwright_action_first") or "").strip().lower()
+        if submit_priority not in {"playwright_action_first", "server_request_first"}:
+            submit_priority = "playwright_action_first"
+        strict_submit_priority = True
 
         async with self.playwright_factory() as playwright:
             browser = await playwright.chromium.connect_over_cdp(ws_endpoint, timeout=20_000)
@@ -85,6 +89,12 @@ class SoraGenerationWorkflow:
                     context,
                     profile_id=profile_id,
                 )
+                logger.info(
+                    "创建视频提交策略 | profile_id=%s | priority=%s | strict=%s",
+                    int(profile_id),
+                    submit_priority,
+                    strict_submit_priority,
+                )
                 last_submit_error: Optional[str] = None
                 for attempt in range(1, 3):
                     submit_attempts = attempt
@@ -95,6 +105,8 @@ class SoraGenerationWorkflow:
                         aspect_ratio=aspect_ratio,
                         n_frames=n_frames,
                         device_id=device_id,
+                        submit_priority=submit_priority,
+                        strict_priority=strict_submit_priority,
                     )
                     task_id = submit_data.get("task_id")
                     access_token = submit_data.get("access_token")
@@ -509,6 +521,10 @@ class SoraGenerationWorkflow:
         task_id: Optional[str] = None
         task_url: Optional[str] = None
         access_token: Optional[str] = None
+        submit_priority = str(getattr(self._service, "sora_submit_priority", "playwright_action_first") or "").strip().lower()
+        if submit_priority not in {"playwright_action_first", "server_request_first"}:
+            submit_priority = "playwright_action_first"
+        strict_submit_priority = True
 
         try:
             async with self.playwright_factory() as playwright:
@@ -524,6 +540,12 @@ class SoraGenerationWorkflow:
                     context,
                     profile_id=profile_id,
                 )
+                logger.info(
+                    "创建视频提交策略 | profile_id=%s | priority=%s | strict=%s",
+                    int(profile_id),
+                    submit_priority,
+                    strict_submit_priority,
+                )
 
                 last_submit_error: Optional[str] = None
                 for attempt in range(1, max_submit_attempts + 1):
@@ -535,6 +557,8 @@ class SoraGenerationWorkflow:
                         aspect_ratio=aspect_ratio,
                         n_frames=n_frames,
                         device_id=device_id,
+                        submit_priority=submit_priority,
+                        strict_priority=strict_submit_priority,
                     )
                     task_id = submit_data.get("task_id")
                     task_url = submit_data.get("task_url")

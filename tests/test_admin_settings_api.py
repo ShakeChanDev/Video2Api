@@ -44,15 +44,18 @@ def test_admin_system_settings_get_and_put(client):
     assert isinstance(payload.get("data"), dict)
     assert isinstance(payload.get("defaults"), dict)
     assert isinstance(payload.get("requires_restart"), list)
+    assert payload["data"]["sora"]["submit_priority"] == "playwright_action_first"
 
     put_data = payload["data"]
     put_data["ixbrowser"]["request_timeout_ms"] = 15000
+    put_data["sora"]["submit_priority"] = "server_request_first"
     put_data.setdefault("video_api", {})["bearer_token"] = "video-api-token"
 
     put_resp = client.put("/api/v1/admin/settings/system", json=put_data)
     assert put_resp.status_code == 200
     updated = put_resp.json()
     assert int(updated["data"]["ixbrowser"]["request_timeout_ms"]) == 15000
+    assert updated["data"]["sora"]["submit_priority"] == "server_request_first"
     assert updated["data"]["video_api"]["bearer_token"] == "video-api-token"
 
 
@@ -75,6 +78,13 @@ def test_admin_scan_scheduler_put_validation_and_get(client):
     get_resp = client.get("/api/v1/admin/settings/scheduler/scan")
     assert get_resp.status_code == 200
     assert get_resp.json()["data"]["times"] == "09:00,13:30"
+
+
+def test_admin_system_settings_put_submit_priority_invalid(client):
+    payload = client.get("/api/v1/admin/settings/system").json()["data"]
+    payload["sora"]["submit_priority"] = "xxx"
+    resp = client.put("/api/v1/admin/settings/system", json=payload)
+    assert resp.status_code == 422
 
 
 def test_admin_watermark_settings_get_and_put(client):

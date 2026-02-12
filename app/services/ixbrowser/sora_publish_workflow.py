@@ -2573,7 +2573,14 @@ class SoraPublishWorkflow:
             "error": None,
         }
 
-    async def _submit_video_request_from_page(
+    @staticmethod
+    def _normalize_submit_priority(value: Optional[str], *, default: str = "server_request_first") -> str:
+        text = str(value or "").strip().lower()
+        if text in {"playwright_action_first", "server_request_first"}:
+            return text
+        return str(default or "server_request_first").strip().lower() or "server_request_first"
+
+    async def _submit_video_request_via_server_request(
         self,
         page,
         prompt: str,
@@ -2581,6 +2588,8 @@ class SoraPublishWorkflow:
         n_frames: int,
         device_id: str,
         image_url: Optional[str] = None,
+        *,
+        allow_ui_fallback: bool = True,
     ) -> Dict[str, Optional[str]]:
         normalized_image_url = str(image_url or "").strip() or None
         image_payload: Optional[Dict[str, Any]] = None
@@ -2602,15 +2611,16 @@ class SoraPublishWorkflow:
                 break
             await page.wait_for_timeout(1000)
         if not ready:
-            fallback = await self._submit_video_request_via_ui(
-                page=page,
-                prompt=prompt,
-                aspect_ratio=aspect_ratio,
-                n_frames=n_frames,
-                image_payload=image_payload,
-            )
-            if fallback.get("task_id") or fallback.get("error"):
-                return fallback
+            if allow_ui_fallback:
+                fallback = await self._submit_video_request_via_ui(
+                    page=page,
+                    prompt=prompt,
+                    aspect_ratio=aspect_ratio,
+                    n_frames=n_frames,
+                    image_payload=image_payload,
+                )
+                if fallback.get("task_id") or fallback.get("error"):
+                    return fallback
             return {"task_id": None, "task_url": None, "access_token": None, "error": "页面未加载 SentinelSDK，无法提交生成请求"}
 
         create_payload_base = self._build_create_task_payload_base(prompt=prompt, aspect_ratio=aspect_ratio, n_frames=n_frames)
@@ -2805,6 +2815,44 @@ class SoraPublishWorkflow:
             "sentinel_flow": data.get("sentinel_flow"),
             "error": data.get("error"),
         }
+
+    async def _submit_video_request_from_page(
+        self,
+        page,
+        prompt: str,
+        aspect_ratio: str,
+        n_frames: int,
+        device_id: str,
+        image_url: Optional[str] = None,
+        submit_priority: str = "server_request_first",
+        strict_priority: bool = False,
+    ) -> Dict[str, Optional[str]]:
+        priority = self._normalize_submit_priority(submit_priority, default="server_request_first")
+        if priority == "playwright_action_first":
+            normalized_image_url = str(image_url or "").strip() or None
+            image_payload: Optional[Dict[str, Any]] = None
+            if normalized_image_url:
+                try:
+                    image_payload = await self._download_submit_image(normalized_image_url)
+                except Exception as exc:  # noqa: BLE001
+                    return {"task_id": None, "task_url": None, "access_token": None, "error": str(exc)}
+            return await self._submit_video_request_via_ui(
+                page=page,
+                prompt=prompt,
+                aspect_ratio=aspect_ratio,
+                n_frames=n_frames,
+                image_payload=image_payload,
+            )
+
+        return await self._submit_video_request_via_server_request(
+            page=page,
+            prompt=prompt,
+            aspect_ratio=aspect_ratio,
+            n_frames=n_frames,
+            device_id=device_id,
+            image_url=image_url,
+            allow_ui_fallback=not bool(strict_priority),
+        )
 
     async def _get_access_token_from_page(self, page) -> Optional[str]:
         data = await page.evaluate(
