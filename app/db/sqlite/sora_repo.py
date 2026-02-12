@@ -448,29 +448,35 @@ class SQLiteSoraRepo:
         conn.close()
         return success
 
-    def requeue_stale_sora_jobs(self) -> int:
+    def fail_stale_running_sora_jobs(self) -> int:
         now = self._now_str()
+        reason = "worker interrupted/recovered stale running job"
         conn = self._get_conn()
         cursor = conn.cursor()
         cursor.execute(
             '''
             UPDATE sora_jobs
-            SET status = 'queued',
-                phase = CASE WHEN phase IS NULL OR TRIM(phase) = '' THEN 'queue' ELSE phase END,
+            SET status = 'failed',
+                error = ?,
+                finished_at = ?,
                 lease_owner = NULL,
                 lease_until = NULL,
                 heartbeat_at = NULL,
-                run_last_error = COALESCE(run_last_error, 'worker lease expired')
+                run_last_error = ?,
+                updated_at = ?
             WHERE status = 'running'
-              AND lease_until IS NOT NULL
-              AND lease_until < ?
+              AND (lease_until IS NULL OR lease_until < ?)
             ''',
-            (now,),
+            (reason, now, reason, now, now),
         )
         count = int(cursor.rowcount or 0)
         conn.commit()
         conn.close()
         return count
+
+    def requeue_stale_sora_jobs(self) -> int:
+        # 兼容旧调用方：原“回队”行为已调整为“失败收敛”。
+        return self.fail_stale_running_sora_jobs()
 
     def claim_next_sora_nurture_batch(self, owner: str, lease_seconds: int = 180) -> Optional[Dict[str, Any]]:
         safe_owner = str(owner or "").strip() or "unknown"
@@ -620,4 +626,3 @@ class SQLiteSoraRepo:
         conn.commit()
         conn.close()
         return count
-

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from datetime import datetime
 from typing import Dict, Optional
 from uuid import uuid4
 
@@ -15,6 +16,8 @@ logger = logging.getLogger(__name__)
 
 
 class WorkerRunner:
+    STALE_RUNNING_REASON = "worker interrupted/recovered stale running job"
+
     def __init__(self) -> None:
         self.owner = f"worker-{uuid4().hex[:8]}"
         self._stop_event = asyncio.Event()
@@ -42,15 +45,15 @@ class WorkerRunner:
             self._stop_event.clear()
             self._started = True
             try:
-                sora_cnt = sqlite_db.requeue_stale_sora_jobs()
+                sora_failed_cnt = sqlite_db.fail_stale_running_sora_jobs()
                 nurture_cnt = sqlite_db.requeue_stale_sora_nurture_batches()
                 self._log_event(
                     action="worker.start",
                     event="start",
                     status="success",
                     level="INFO",
-                    message=f"Worker 启动，恢复任务 sora={sora_cnt} nurture={nurture_cnt}",
-                    metadata={"owner": self.owner, "sora_requeued": sora_cnt, "nurture_requeued": nurture_cnt},
+                    message=f"Worker 启动，恢复任务 sora_failed={sora_failed_cnt} nurture={nurture_cnt}",
+                    metadata={"owner": self.owner, "sora_failed_recovered": sora_failed_cnt, "nurture_requeued": nurture_cnt},
                 )
             except Exception:  # noqa: BLE001
                 logger.exception("Worker 启动恢复失败")
@@ -168,6 +171,32 @@ class WorkerRunner:
         )
         try:
             await ixbrowser_service.run_sora_job(job_id)
+        except asyncio.CancelledError:
+            row = sqlite_db.get_sora_job(job_id) or {}
+            status = str(row.get("status") or "").strip().lower()
+            if status not in {"completed", "failed", "canceled"}:
+                now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                phase = str(row.get("phase") or "submit")
+                sqlite_db.update_sora_job(
+                    job_id,
+                    {
+                        "status": "failed",
+                        "phase": phase,
+                        "error": self.STALE_RUNNING_REASON,
+                        "run_last_error": self.STALE_RUNNING_REASON,
+                        "finished_at": now,
+                    },
+                )
+                sqlite_db.create_sora_job_event(job_id, phase, "fail", self.STALE_RUNNING_REASON)
+            self._log_event(
+                action="worker.sora.run",
+                event="canceled",
+                status="failed",
+                level="WARN",
+                message="Sora 任务执行被取消，已标记失败",
+                metadata={"owner": self.owner, "job_id": int(job_id)},
+            )
+            raise
         except Exception as exc:  # noqa: BLE001
             sqlite_db.update_sora_job(job_id, {"run_last_error": str(exc)})
             self._log_event(

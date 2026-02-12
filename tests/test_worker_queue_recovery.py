@@ -24,7 +24,7 @@ def temp_db(tmp_path):
             sqlite_db._init_db()
 
 
-def test_sora_job_claim_heartbeat_and_requeue(temp_db):
+def test_sora_job_claim_heartbeat_and_fail_recovery(temp_db):
     del temp_db
     job_id = sqlite_db.create_sora_job(
         {
@@ -50,7 +50,7 @@ def test_sora_job_claim_heartbeat_and_requeue(temp_db):
 
     assert sqlite_db.heartbeat_sora_job_lease(job_id=job_id, owner="worker-a", lease_seconds=30) is True
 
-    # 模拟运行中任务租约过期 -> 回队
+    # 模拟运行中任务租约过期 -> 失败收敛
     sqlite_db.update_sora_job(
         job_id,
         {
@@ -59,14 +59,51 @@ def test_sora_job_claim_heartbeat_and_requeue(temp_db):
             "lease_until": "2000-01-01 00:00:00",
         },
     )
-    requeued = sqlite_db.requeue_stale_sora_jobs()
-    assert requeued == 1
+    job_id_no_lease = sqlite_db.create_sora_job(
+        {
+            "profile_id": 2,
+            "window_name": "win-2",
+            "group_title": "Sora",
+            "prompt": "hello-2",
+            "duration": "10s",
+            "aspect_ratio": "landscape",
+            "status": "running",
+            "phase": "submit",
+            "started_at": "2026-02-01 10:00:00",
+        }
+    )
+    sqlite_db.update_sora_job(
+        job_id_no_lease,
+        {
+            "status": "running",
+            "lease_owner": None,
+            "lease_until": None,
+            "heartbeat_at": None,
+        },
+    )
+
+    recovered = sqlite_db.fail_stale_running_sora_jobs()
+    assert recovered == 2
 
     row = sqlite_db.get_sora_job(job_id)
     assert row
-    assert row["status"] == "queued"
+    assert row["status"] == "failed"
     assert row["lease_owner"] is None
     assert row["lease_until"] is None
+    assert row["heartbeat_at"] is None
+    assert row["error"] == "worker interrupted/recovered stale running job"
+    assert row["run_last_error"] == "worker interrupted/recovered stale running job"
+    assert row["finished_at"] is not None
+
+    row2 = sqlite_db.get_sora_job(job_id_no_lease)
+    assert row2
+    assert row2["status"] == "failed"
+    assert row2["lease_owner"] is None
+    assert row2["lease_until"] is None
+    assert row2["heartbeat_at"] is None
+    assert row2["error"] == "worker interrupted/recovered stale running job"
+    assert row2["run_last_error"] == "worker interrupted/recovered stale running job"
+    assert row2["finished_at"] is not None
 
 
 def test_nurture_batch_claim_and_requeue(temp_db):
