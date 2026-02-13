@@ -135,14 +135,6 @@ class IXBrowserService(
         """对外公开的实时订阅注销入口（避免外部依赖私有方法）。"""
         return self._unregister_realtime_subscriber(queue)
 
-    def select_iphone_user_agent(self, profile_id: int) -> str:
-        """对外公开 UA 选择（供 e2e/业务复用）。"""
-        return self._select_iphone_user_agent(profile_id)
-
-    async def apply_ua_override(self, page, user_agent: str) -> None:
-        """对外公开 UA 覆盖（供 e2e/业务复用）。"""
-        return await self._apply_ua_override(page, user_agent)
-
     async def apply_request_blocking(self, page) -> None:
         """对外公开请求拦截（供 e2e/业务复用）。"""
         return await self._apply_request_blocking(page)

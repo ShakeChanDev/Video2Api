@@ -53,37 +53,5 @@ BASE_STEALTH_SCRIPT = r"""
 })();
 """
 
-
-MOBILE_CREATE_STAGE_SCRIPT = r"""
-(() => {
-  const defineGetter = (obj, key, value) => {
-    try {
-      Object.defineProperty(obj, key, {
-        configurable: true,
-        get: () => value
-      });
-    } catch (e) {}
-  };
-
-  defineGetter(Navigator.prototype, "platform", "iPhone");
-  defineGetter(Navigator.prototype, "maxTouchPoints", 5);
-  defineGetter(Navigator.prototype, "hardwareConcurrency", 8);
-
-  try {
-    if (!("ontouchstart" in window)) {
-      Object.defineProperty(window, "ontouchstart", {
-        configurable: true,
-        value: null
-      });
-    }
-  } catch (e) {}
-})();
-"""
-
-
-def get_stealth_init_scripts(stage: str = "default") -> List[str]:
-    scripts: List[str] = [BASE_STEALTH_SCRIPT]
-    if str(stage or "").strip().lower() == "create":
-        scripts.append(MOBILE_CREATE_STAGE_SCRIPT)
-    return scripts
-
+def get_stealth_init_scripts() -> List[str]:
+    return [BASE_STEALTH_SCRIPT]

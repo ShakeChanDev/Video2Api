@@ -288,8 +288,6 @@ async def test_sora_nurture_e2e_post_like_and_follow():
             # 使用新页面避免复用旧 tab 遗留的 route/状态导致 Explore 入口加载异常
             page = await context.new_page()
 
-            ua = ixbrowser_service.select_iphone_user_agent(profile_id)
-            await ixbrowser_service.apply_ua_override(page, ua)
             try:
                 await page.unroute("**/*")
             except Exception:

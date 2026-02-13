@@ -16,7 +16,6 @@ class Settings(BaseSettings):
     ixbrowser_api_base: str = "http://127.0.0.1:53200"
     playwright_stealth_enabled: bool = True
     playwright_stealth_plugin_enabled: bool = True
-    playwright_ua_mode: str = "create_only"
     playwright_resource_blocking_mode: str = "light"
 
     secret_key: str = "video2api-secret-key"
@@ -40,7 +39,8 @@ class Settings(BaseSettings):
     audit_log_retention_days: int = 3
     audit_log_cleanup_interval_sec: int = 3600
 
-    model_config = SettingsConfigDict(env_file=".env")
+    # 忽略遗留/多余环境变量（例如旧版本的 PLAYWRIGHT_UA_MODE），避免启动失败。
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
 
 settings = Settings()

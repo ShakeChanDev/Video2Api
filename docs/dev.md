@@ -99,17 +99,14 @@ python -m playwright install
 ### Playwright 反检测配置
 - `PLAYWRIGHT_STEALTH_ENABLED`：是否启用反检测增强（默认 `True`）。
 - `PLAYWRIGHT_STEALTH_PLUGIN_ENABLED`：是否启用 `playwright-stealth` 插件（默认 `True`）。插件不可用时会自动降级到内置脚本。
-- `PLAYWRIGHT_UA_MODE`：UA 策略。
-  - `create_only`（默认）：仅创建任务阶段使用移动 UA。
-  - `always_mobile`：所有阶段都使用移动 UA。
-  - `native`：不强制覆盖 UA（尽量使用指纹浏览器原生配置）。
+- UA/指纹：Playwright 侧不再强制覆盖 UA（避免与指纹浏览器 Profile 配置不一致）。如需调整 UA，请在 ixBrowser Profile 中修改。
 - `PLAYWRIGHT_RESOURCE_BLOCKING_MODE`：资源拦截策略。
   - `light`（默认）：仅拦截 `media`。
   - `legacy`：拦截 `image/media/font`（历史兼容）。
   - `off`：关闭资源拦截。
 
 建议：
-- 若线上稳定性下降，优先回退 `PLAYWRIGHT_UA_MODE=native` 或 `PLAYWRIGHT_RESOURCE_BLOCKING_MODE=legacy/off`。
+- 若线上稳定性下降，优先回退 `PLAYWRIGHT_RESOURCE_BLOCKING_MODE=legacy/off`。
 - 若第三方依赖异常，可设置 `PLAYWRIGHT_STEALTH_PLUGIN_ENABLED=False`，保留内置反检测脚本。
 
 ## 日志 V2（统一事件模型）

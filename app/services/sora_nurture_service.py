@@ -680,8 +680,6 @@ class SoraNurtureService:
                 pass
 
     async def _prepare_page(self, page, profile_id: int) -> None:
-        user_agent = self._ix._select_iphone_user_agent(profile_id)  # noqa: SLF001
-        await self._ix._apply_ua_override(page, user_agent)  # noqa: SLF001
         try:
             await page.unroute("**/*")
         except Exception:  # noqa: BLE001
