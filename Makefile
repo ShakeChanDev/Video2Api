@@ -3,6 +3,7 @@
 .PHONY: help \
 	backend-install playwright-install init-admin backend-dev \
 	reset-user-password \
+	state-backup state-restore \
 	test-unit test-e2e \
 	selftest-ui selftest-heavy-load selftest-nurture \
 	admin-install admin-dev admin-build
@@ -21,6 +22,8 @@ help:
 	@echo "  playwright-install  安装 Playwright 浏览器 (仅本地/e2e)"
 	@echo "  init-admin          初始化默认管理员 (Admin/Admin)"
 	@echo "  reset-user-password 重置后台用户密码（适用于忘记密码）"
+	@echo "  state-backup        备份部署状态（.env + SQLite -> data/backups/*.tgz）"
+	@echo "  state-restore       恢复部署状态（从 tgz 写回 .env + SQLite）"
 	@echo "  backend-dev         启动后端 (uvicorn, dev 模式)"
 	@echo ""
 	@echo "前端 (admin/):"
@@ -48,6 +51,14 @@ init-admin:
 
 reset-user-password:
 	$(PY) scripts/reset_user_password.py
+
+state-backup:
+	$(PY) scripts/state_backup.py
+
+# 用法示例：
+#   make state-restore ARGS="--backup /path/to/video2api-state-xxx.tgz --restore-env --force-env --force-db"
+state-restore:
+	$(PY) scripts/state_restore.py $(ARGS)
 
 backend-dev:
 	$(PY) -m uvicorn app.main:app --host $(HOST) --port $(PORT) --reload

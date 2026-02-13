@@ -1,5 +1,7 @@
 # Video2Api 开发指南
 
+部署/迁移（把管理员账号/系统设置/token 迁到新服务器）：见 `docs/deploy.md`。
+
 ## 环境要求
 - Python 3.11+
 - Node.js 20+（CI 使用 Node 20，本地更高版本通常也可）
