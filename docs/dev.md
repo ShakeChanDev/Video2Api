@@ -29,6 +29,29 @@ python -m pip install -r requirements.txt
 2. 配置环境变量
 - 复制 `.env.example` 为 `.env` 并按需修改
 
+### 部署免手填（bootstrap，可选）
+为了让新服务器部署后不再手动录入“管理员账号/密码、去水印解析配置”，可以在 `.env` 中配置以下变量：
+
+- 管理员自举：
+  - `BOOTSTRAP_ADMIN_USERNAME`：可选，默认 `Admin`
+  - `BOOTSTRAP_ADMIN_PASSWORD`：必填；为空则不启用自举
+  - 行为：当 `BOOTSTRAP_ADMIN_PASSWORD` 非空时，服务每次启动都会确保该用户存在；若已存在则会把密码重置为 `.env` 指定值（便于部署一致性）。
+- 去水印自举（custom 解析服务）：
+  - `BOOTSTRAP_WATERMARK_CUSTOM_PARSE_URL/TOKEN/PATH`：任一非空则写入数据库 `watermark_free_config(id=1)`；仅覆盖你提供的非空字段。
+  - `BOOTSTRAP_WATERMARK_CUSTOM_PARSE_PATH` 会自动补全前导 `/`。
+- 对外视频接口 Token：
+  - `VIDEO_API_BEARER_TOKEN`：本来就支持从 `.env` 读取，无需写入数据库。
+
+示例（不要提交真实 token/密码）：
+```bash
+BOOTSTRAP_ADMIN_USERNAME=Admin
+BOOTSTRAP_ADMIN_PASSWORD=ChangeMe123!
+BOOTSTRAP_WATERMARK_CUSTOM_PARSE_URL=http://127.0.0.1:18080
+BOOTSTRAP_WATERMARK_CUSTOM_PARSE_TOKEN=your-token-here
+BOOTSTRAP_WATERMARK_CUSTOM_PARSE_PATH=/get-sora-link
+VIDEO_API_BEARER_TOKEN=your-video-api-token
+```
+
 3. 初始化默认管理员
 ```bash
 python scripts/init_admin.py

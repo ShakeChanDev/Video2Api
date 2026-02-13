@@ -1,4 +1,6 @@
 """应用配置"""
+from typing import Optional
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -22,6 +24,13 @@ class Settings(BaseSettings):
     algorithm: str = "HS256"
     access_token_expire_minutes: int = 60 * 24 * 7
     video_api_bearer_token: str = ""
+
+    # Bootstrap (deploy convenience; keep secrets out of git)
+    bootstrap_admin_username: str = "Admin"
+    bootstrap_admin_password: Optional[str] = None
+    bootstrap_watermark_custom_parse_url: Optional[str] = None
+    bootstrap_watermark_custom_parse_token: Optional[str] = None
+    bootstrap_watermark_custom_parse_path: Optional[str] = None
 
     log_level: str = "INFO"
     log_file: str = "logs/app.log"
