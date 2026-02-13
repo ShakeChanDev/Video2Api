@@ -41,6 +41,8 @@ python -m uvicorn app.main:app --host 0.0.0.0 --port 8001 --reload
 
 说明：
 - `.env` 中的 `PORT` 需要与你的启动参数保持一致（或直接用 `make backend-dev PORT=xxxx` 统一）。
+- SQLite 默认使用 `data/video2api.db`，可通过 `SQLITE_DB_PATH` 指定路径。
+- 当 SQLite schema 版本与代码不一致时，默认会自动重建数据库（不保留历史数据）；如需禁用自动重建，设置 `SQLITE_RESET_ON_SCHEMA_MISMATCH=False` 并手动处理数据库文件。
 
 ### 对外视频接口（`/v1/videos`）
 - 该接口用于第三方系统直接创建/查询视频任务，底层复用现有 Sora 任务内核。
