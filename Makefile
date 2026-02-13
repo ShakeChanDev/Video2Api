@@ -2,6 +2,7 @@
 
 .PHONY: help \
 	backend-install playwright-install init-admin backend-dev \
+	reset-user-password \
 	test-unit test-e2e \
 	selftest-ui selftest-heavy-load selftest-nurture \
 	admin-install admin-dev admin-build
@@ -19,6 +20,7 @@ help:
 	@echo "  backend-install     安装 Python 依赖 (requirements.txt)"
 	@echo "  playwright-install  安装 Playwright 浏览器 (仅本地/e2e)"
 	@echo "  init-admin          初始化默认管理员 (Admin/Admin)"
+	@echo "  reset-user-password 重置后台用户密码（适用于忘记密码）"
 	@echo "  backend-dev         启动后端 (uvicorn, dev 模式)"
 	@echo ""
 	@echo "前端 (admin/):"
@@ -43,6 +45,9 @@ playwright-install:
 
 init-admin:
 	$(PY) scripts/init_admin.py
+
+reset-user-password:
+	$(PY) scripts/reset_user_password.py
 
 backend-dev:
 	$(PY) -m uvicorn app.main:app --host $(HOST) --port $(PORT) --reload
