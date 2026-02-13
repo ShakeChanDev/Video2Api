@@ -11,8 +11,72 @@ from uuid import uuid4
 
 import httpx
 
+from app.db.sqlite import sqlite_db
+
+SORA_REQUEST_LOG_WITHIN_DAYS = 7
+SORA_REQUEST_LOG_KEEP_LATEST = 100
+SORA_REQUEST_LOG_MAX_BODY_BYTES = 1 * 1024 * 1024
+
 
 class SoraApiMixin:
+    @staticmethod
+    def _safe_bytes_len(text: Optional[str]) -> int:
+        if not isinstance(text, str):
+            return 0
+        try:
+            return len(text.encode("utf-8"))
+        except Exception:  # noqa: BLE001
+            return len(text)
+
+    @classmethod
+    def _truncate_text_by_bytes(cls, text: Optional[str], max_bytes: int) -> tuple[Optional[str], bool]:
+        if not isinstance(text, str) or not text:
+            return text, False
+        if max_bytes <= 0:
+            return "", True
+        try:
+            raw = text.encode("utf-8")
+        except Exception:  # noqa: BLE001
+            raw = None
+        if raw is None:
+            return text[: max(0, int(max_bytes))], True
+        if len(raw) <= max_bytes:
+            return text, False
+        truncated = raw[:max_bytes]
+        try:
+            return truncated.decode("utf-8", errors="replace"), True
+        except Exception:  # noqa: BLE001
+            return text[: max(0, int(max_bytes))], True
+
+    @staticmethod
+    def _header_get(headers: Dict[str, Any], key: str) -> Optional[str]:
+        if not isinstance(headers, dict):
+            return None
+        target = str(key or "").strip().lower()
+        if not target:
+            return None
+        for k, v in headers.items():
+            if str(k or "").strip().lower() == target:
+                if v is None:
+                    return None
+                return str(v)
+        return None
+
+    @staticmethod
+    def _is_obviously_binary_content_type(content_type: Optional[str]) -> bool:
+        ct = str(content_type or "").split(";")[0].strip().lower()
+        if not ct:
+            return False
+        if ct.startswith(("text/", "application/json")) or ct.endswith(("+json", "+xml")):
+            return False
+        if ct.startswith(("image/", "audio/", "video/", "font/")):
+            return True
+        if ct in {"application/octet-stream", "application/pdf"}:
+            return True
+        if "zip" in ct or "gzip" in ct:
+            return True
+        return False
+
     async def _request_sora_api_via_page(
         self,
         page,
@@ -310,6 +374,27 @@ class SoraApiMixin:
                     resp = await session.get(endpoint, **kwargs)
 
                 status_code = int(resp.status_code)
+                response_headers: Dict[str, Any] = {}
+                try:
+                    response_headers = dict(getattr(resp, "headers", {}) or {})
+                except Exception:  # noqa: BLE001
+                    response_headers = {}
+                response_content_type = self._header_get(response_headers, "content-type")
+                response_content_length = None
+                resp_cl_raw = self._header_get(response_headers, "content-length")
+                if resp_cl_raw is not None:
+                    try:
+                        response_content_length = int(resp_cl_raw)
+                    except Exception:  # noqa: BLE001
+                        response_content_length = None
+                if response_content_length is None:
+                    try:
+                        content = getattr(resp, "content", None)
+                        if isinstance(content, (bytes, bytearray)):
+                            response_content_length = int(len(content))
+                    except Exception:  # noqa: BLE001
+                        response_content_length = None
+
                 raw_text = resp.text if isinstance(resp.text, str) else None
                 parsed = None
                 try:
@@ -318,8 +403,8 @@ class SoraApiMixin:
                     parsed = None
                 if not isinstance(parsed, (dict, list)):
                     parsed = None
-                if raw_text and len(raw_text) > 20_000:
-                    raw_text = raw_text[:20_000]
+                if raw_text and self._safe_bytes_len(raw_text) > int(SORA_REQUEST_LOG_MAX_BODY_BYTES * 2):
+                    raw_text, _ = self._truncate_text_by_bytes(raw_text, int(SORA_REQUEST_LOG_MAX_BODY_BYTES * 2))
                 is_cf = self._is_sora_cf_challenge(status_code, raw_text)
                 last_result = {
                     "status": status_code,
@@ -327,9 +412,21 @@ class SoraApiMixin:
                     "json": parsed,
                     "error": None,
                     "is_cf": bool(is_cf),
+                    "response_headers": response_headers,
+                    "response_content_type": response_content_type,
+                    "response_content_length": response_content_length,
                 }
             except Exception as exc:  # noqa: BLE001
-                last_result = {"status": None, "raw": None, "json": None, "error": str(exc), "is_cf": False}
+                last_result = {
+                    "status": None,
+                    "raw": None,
+                    "json": None,
+                    "error": str(exc),
+                    "is_cf": False,
+                    "response_headers": None,
+                    "response_content_type": None,
+                    "response_content_length": None,
+                }
 
             should_retry = False
             if attempt < retries_int:
@@ -459,6 +556,83 @@ class SoraApiMixin:
             is_cf=is_cf,
             assume_proxy_chain=True,
         )
+
+        # 记录为窗口维度的最近请求（用于 UI 查看 headers/body）
+        try:
+            response_headers = result.get("response_headers") if isinstance(result.get("response_headers"), dict) else {}
+            response_content_type = (
+                result.get("response_content_type")
+                if isinstance(result.get("response_content_type"), str)
+                else self._header_get(response_headers, "content-type")
+            )
+            response_content_length = result.get("response_content_length")
+            try:
+                response_content_length = int(response_content_length) if response_content_length is not None else None
+            except Exception:  # noqa: BLE001
+                response_content_length = None
+
+            response_body_text = None
+            response_body_truncated = False
+            response_body_omitted = False
+            response_body_omit_reason = None
+
+            if response_content_length is not None and response_content_length > int(SORA_REQUEST_LOG_MAX_BODY_BYTES):
+                response_body_omitted = True
+                response_body_omit_reason = "too_large"
+            elif self._is_obviously_binary_content_type(response_content_type):
+                response_body_omitted = True
+                response_body_omit_reason = "binary"
+            elif isinstance(raw_text, str):
+                response_body_text, response_body_truncated = self._truncate_text_by_bytes(
+                    raw_text, int(SORA_REQUEST_LOG_MAX_BODY_BYTES)
+                )
+            else:
+                response_body_omitted = True
+                response_body_omit_reason = "unavailable"
+
+            status_code = int(status) if isinstance(status, int) else None
+            status_text = "success" if status_code is not None and status_code < 400 and not error else "failed"
+
+            metadata = {
+                "capture_source": "curl_cffi",
+                "request_headers": headers,
+                "request_body_text": None,
+                "request_body_truncated": False,
+                "response_headers": response_headers,
+                "response_body_text": response_body_text,
+                "response_body_truncated": bool(response_body_truncated),
+                "response_body_omitted": bool(response_body_omitted),
+                "response_body_omit_reason": response_body_omit_reason,
+                "response_content_type": response_content_type,
+                "response_content_length": response_content_length,
+            }
+
+            def _write_log() -> None:
+                sqlite_db.create_event_log(
+                    source="sora",
+                    action="sora.request",
+                    event="request",
+                    status=status_text,
+                    level="ERROR" if status_text == "failed" else "INFO",
+                    message=None,
+                    method="GET",
+                    path=endpoint,
+                    status_code=status_code,
+                    resource_type="profile",
+                    resource_id=str(int(profile_id)),
+                    metadata=metadata,
+                    mask_mode="off",
+                )
+                sqlite_db.cleanup_sora_request_logs(
+                    int(profile_id),
+                    keep_latest=int(SORA_REQUEST_LOG_KEEP_LATEST),
+                    within_days=int(SORA_REQUEST_LOG_WITHIN_DAYS),
+                )
+
+            await asyncio.to_thread(_write_log)
+        except Exception:  # noqa: BLE001
+            pass
+
         return {
             "status": int(status) if isinstance(status, int) else status,
             "raw": raw_text,

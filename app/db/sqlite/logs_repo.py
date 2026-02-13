@@ -288,6 +288,23 @@ class SQLiteLogsRepo:
             "next_cursor": next_cursor,
         }
 
+    def get_event_log_by_id(self, log_id: int) -> Optional[Dict[str, Any]]:
+        try:
+            target_id = int(log_id)
+        except Exception:  # noqa: BLE001
+            return None
+        if target_id <= 0:
+            return None
+
+        conn = self._get_conn()
+        cursor_obj = conn.cursor()
+        cursor_obj.execute("SELECT * FROM event_logs WHERE id = ? LIMIT 1", (target_id,))
+        row = cursor_obj.fetchone()
+        conn.close()
+        if not row:
+            return None
+        return self._decode_event_log_row(dict(row))
+
     def list_event_logs_since(
         self,
         *,
@@ -543,6 +560,85 @@ class SQLiteLogsRepo:
             conn.commit()
         conn.close()
         return deleted
+
+    def cleanup_sora_request_logs(self, profile_id: int, keep_latest: int = 100, within_days: int = 7) -> None:
+        """清理指定窗口的 Sora 请求日志（source=sora, action=sora.request）。
+
+        规则：
+        - 仅保留 `within_days` 天内的数据；
+        - 仅保留最新 `keep_latest` 条。
+        """
+        try:
+            pid = int(profile_id)
+        except Exception:  # noqa: BLE001
+            return
+        if pid <= 0:
+            return
+
+        try:
+            keep_latest_int = int(keep_latest)
+        except Exception:  # noqa: BLE001
+            keep_latest_int = 100
+        keep_latest_int = max(keep_latest_int, 0)
+
+        try:
+            within_days_int = int(within_days)
+        except Exception:  # noqa: BLE001
+            within_days_int = 7
+        within_days_int = max(within_days_int, 0)
+
+        resource_id = str(pid)
+        conn = self._get_conn()
+        cursor_obj = conn.cursor()
+        try:
+            if within_days_int > 0:
+                cutoff = datetime.now() - timedelta(days=int(within_days_int))
+                cutoff_str = cutoff.strftime("%Y-%m-%d %H:%M:%S")
+                cursor_obj.execute(
+                    """
+                    DELETE FROM event_logs
+                    WHERE source = ? AND action = ? AND resource_type = ? AND resource_id = ?
+                      AND created_at < ?
+                    """,
+                    ("sora", "sora.request", "profile", resource_id, cutoff_str),
+                )
+
+            if keep_latest_int <= 0:
+                cursor_obj.execute(
+                    """
+                    DELETE FROM event_logs
+                    WHERE source = ? AND action = ? AND resource_type = ? AND resource_id = ?
+                    """,
+                    ("sora", "sora.request", "profile", resource_id),
+                )
+            else:
+                # 找到第 keep_latest 条的 id（按 id DESC），删掉更老的数据。
+                cursor_obj.execute(
+                    """
+                    SELECT id
+                    FROM event_logs
+                    WHERE source = ? AND action = ? AND resource_type = ? AND resource_id = ?
+                    ORDER BY id DESC
+                    LIMIT 1 OFFSET ?
+                    """,
+                    ("sora", "sora.request", "profile", resource_id, keep_latest_int - 1),
+                )
+                row = cursor_obj.fetchone()
+                if row:
+                    boundary_id = int(row["id"] or 0)
+                    if boundary_id > 0:
+                        cursor_obj.execute(
+                            """
+                            DELETE FROM event_logs
+                            WHERE source = ? AND action = ? AND resource_type = ? AND resource_id = ?
+                              AND id < ?
+                            """,
+                            ("sora", "sora.request", "profile", resource_id, boundary_id),
+                        )
+
+            conn.commit()
+        finally:
+            conn.close()
 
     def create_sora_job_event(self, job_id: int, phase: str, event: str, message: Optional[str] = None) -> int:
         row = self.get_sora_job(int(job_id)) or {}

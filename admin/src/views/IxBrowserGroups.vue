@@ -217,27 +217,74 @@
       </el-empty>
     </el-card>
 
-    <el-dialog v-model="sessionDialogVisible" title="Session / Quota 详情" width="900px">
-      <pre class="session-preview">{{ currentSessionText }}</pre>
+    <el-dialog v-model="sessionDialogVisible" title="窗口详情" width="980px">
+      <el-tabs v-model="sessionDialogTab">
+        <el-tab-pane label="Session / Quota" name="session">
+          <pre class="session-preview">{{ currentSessionText }}</pre>
+        </el-tab-pane>
+        <el-tab-pane label="最近请求" name="requests">
+          <div class="sora-requests">
+            <div class="sora-requests-toolbar">
+              <el-button
+                size="small"
+                @click="reloadSoraRequests"
+                :loading="soraRequestsLoading"
+                :disabled="!currentSessionProfileId"
+              >
+                刷新
+              </el-button>
+            </div>
+
+            <el-table
+              :data="soraRequests"
+              class="card-table"
+              height="240"
+              v-loading="soraRequestsLoading"
+              empty-text="暂无请求日志"
+              @row-click="selectSoraRequest"
+            >
+              <el-table-column prop="created_at" label="时间" width="170" />
+              <el-table-column prop="method" label="方法" width="86" align="center" />
+              <el-table-column label="URL" min-width="360">
+                <template #default="{ row }">
+                  <span :title="row.path || ''">{{ shorten(row.path || '-', 96) }}</span>
+                </template>
+              </el-table-column>
+              <el-table-column prop="status_code" label="状态码" width="100" align="center" />
+              <el-table-column label="来源" width="160" align="center">
+                <template #default="{ row }">
+                  <span>{{ row?.metadata?.capture_source || '-' }}</span>
+                </template>
+              </el-table-column>
+            </el-table>
+
+            <div class="sora-requests-detail" v-loading="soraRequestDetailLoading">
+              <pre class="session-preview">{{ soraRequestDetailText }}</pre>
+            </div>
+          </div>
+        </el-tab-pane>
+      </el-tabs>
     </el-dialog>
   </div>
 </template>
 
 <script setup>
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+  import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { formatRelativeTimeZh } from '../utils/relativeTime'
-import {
-  buildIxBrowserSilentRefreshStreamUrl,
-  createIxBrowserSilentRefreshJob,
-  getIxBrowserSilentRefreshJob,
-  getIxBrowserGroupWindows,
-  getLatestIxBrowserSoraSessionAccounts,
-  getSoraAccountWeights,
-  openIxBrowserProfileWindow,
-  randomSwitchProfileProxies,
-  scanIxBrowserSoraSessionAccounts,
-  getSystemSettings
+  import {
+    buildIxBrowserSilentRefreshStreamUrl,
+    createIxBrowserSilentRefreshJob,
+    getIxBrowserSilentRefreshJob,
+    getIxBrowserGroupWindows,
+    getLatestIxBrowserSoraSessionAccounts,
+    getSoraRequestLogDetail,
+    listProfileSoraRequests,
+    getSoraAccountWeights,
+    openIxBrowserProfileWindow,
+    randomSwitchProfileProxies,
+    scanIxBrowserSoraSessionAccounts,
+    getSystemSettings
 } from '../api'
 
 const latestLoading = ref(false)
@@ -260,7 +307,14 @@ const systemSettings = ref(null)
 const weightsData = ref([])
 
 const sessionDialogVisible = ref(false)
+const sessionDialogTab = ref('session')
 const currentSessionText = ref('')
+const currentSessionProfileId = ref(null)
+const soraRequestsLoading = ref(false)
+const soraRequests = ref([])
+const selectedSoraRequestId = ref(null)
+const soraRequestDetailLoading = ref(false)
+const soraRequestDetailText = ref('点击上方某条请求查看详情')
 const openingProfileIds = ref({})
 const scanTableRef = ref(null)
 const selectedProfileIds = ref([])
@@ -833,6 +887,12 @@ const openWindow = async (row) => {
 }
 
 const viewSession = (row) => {
+  sessionDialogTab.value = 'session'
+  const pid = Number(row?.profile_id)
+  currentSessionProfileId.value = Number.isFinite(pid) && pid > 0 ? pid : null
+  soraRequests.value = []
+  selectedSoraRequestId.value = null
+  soraRequestDetailText.value = '点击上方某条请求查看详情'
   const payload = {
     account: row.account || null,
     account_plan: row.account_plan || null,
@@ -852,6 +912,36 @@ const viewSession = (row) => {
   }
   currentSessionText.value = JSON.stringify(payload, null, 2)
   sessionDialogVisible.value = true
+}
+
+const reloadSoraRequests = async () => {
+  const pid = Number(currentSessionProfileId.value)
+  if (!Number.isFinite(pid) || pid <= 0) return
+  soraRequestsLoading.value = true
+  try {
+    const data = await listProfileSoraRequests(pid)
+    soraRequests.value = Array.isArray(data?.items) ? data.items : []
+  } catch (error) {
+    ElMessage.error(error?.response?.data?.detail || '加载最近请求失败')
+  } finally {
+    soraRequestsLoading.value = false
+  }
+}
+
+const selectSoraRequest = async (row) => {
+  const logId = Number(row?.id)
+  if (!Number.isFinite(logId) || logId <= 0) return
+  if (selectedSoraRequestId.value === logId) return
+  selectedSoraRequestId.value = logId
+  soraRequestDetailLoading.value = true
+  try {
+    const data = await getSoraRequestLogDetail(logId)
+    soraRequestDetailText.value = JSON.stringify(data, null, 2)
+  } catch (error) {
+    ElMessage.error(error?.response?.data?.detail || '加载请求详情失败')
+  } finally {
+    soraRequestDetailLoading.value = false
+  }
 }
 
 const getRowClass = ({ row }) => {
@@ -908,6 +998,14 @@ const saveCache = (groupTitle, data) => {
   } catch {
   }
 }
+
+watch(sessionDialogTab, async (tab) => {
+  if (tab !== 'requests') return
+  if (!sessionDialogVisible.value) return
+  if (soraRequestsLoading.value) return
+  if (Array.isArray(soraRequests.value) && soraRequests.value.length) return
+  await reloadSoraRequests()
+})
 
 onMounted(async () => {
   nowTick.value = Date.now()
@@ -1025,6 +1123,21 @@ onBeforeUnmount(() => {
   color: #e2e8f0;
   padding: 12px;
   border-radius: 8px;
+}
+
+.sora-requests {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.sora-requests-toolbar {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.sora-requests-detail {
+  min-height: 200px;
 }
 
 .window-card {

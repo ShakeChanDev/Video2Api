@@ -6,8 +6,10 @@ import asyncio
 import logging
 import time
 from typing import Any, Dict, Optional, Set
+from urllib.parse import urlparse
 
 from app.core.config import settings
+from app.db.sqlite import sqlite_db
 from app.services.ixbrowser.stealth_scripts import get_stealth_init_scripts
 from app.services.task_runtime import spawn
 
@@ -30,6 +32,12 @@ PLAYWRIGHT_BLOCKING_MODE_ALLOWED = {
     PLAYWRIGHT_BLOCKING_MODE_LEGACY,
     PLAYWRIGHT_BLOCKING_MODE_OFF,
 }
+
+SORA_REQUEST_LOG_WITHIN_DAYS = 7
+SORA_REQUEST_LOG_KEEP_LATEST = 100
+SORA_REQUEST_LOG_MAX_BODY_BYTES = 1 * 1024 * 1024
+SORA_REQUEST_LOG_ALLOWED_HOSTS = {"sora.chatgpt.com", "www.sora.chatgpt.com"}
+SORA_REQUEST_LOG_RESOURCE_TYPES = {"xhr", "fetch"}
 
 IPHONE_OS_VERSIONS = [
     "16_0",
@@ -73,6 +81,78 @@ IPHONE_UA_POOL = [
 
 
 class BrowserPrepMixin:
+    @staticmethod
+    def _safe_bytes_len(text: Optional[str]) -> int:
+        if not isinstance(text, str):
+            return 0
+        try:
+            return len(text.encode("utf-8"))
+        except Exception:  # noqa: BLE001
+            return len(text)
+
+    @classmethod
+    def _truncate_text_by_bytes(cls, text: Optional[str], max_bytes: int) -> tuple[Optional[str], bool]:
+        if not isinstance(text, str) or not text:
+            return text, False
+        if max_bytes <= 0:
+            return "", True
+
+        try:
+            raw = text.encode("utf-8")
+        except Exception:  # noqa: BLE001
+            raw = None
+        if raw is None:
+            return text[: max(0, int(max_bytes))], True
+        if len(raw) <= max_bytes:
+            return text, False
+        truncated = raw[:max_bytes]
+        try:
+            return truncated.decode("utf-8", errors="replace"), True
+        except Exception:  # noqa: BLE001
+            return text[: max(0, int(max_bytes))], True
+
+    @staticmethod
+    def _header_get(headers: Dict[str, Any], key: str) -> Optional[str]:
+        if not isinstance(headers, dict):
+            return None
+        target = str(key or "").strip().lower()
+        if not target:
+            return None
+        for k, v in headers.items():
+            if str(k or "").strip().lower() == target:
+                if v is None:
+                    return None
+                return str(v)
+        return None
+
+    @classmethod
+    def _looks_textual_body(cls, body_text: Optional[str], content_type: Optional[str]) -> bool:
+        if not isinstance(body_text, str) or not body_text.strip():
+            return False
+        ct = str(content_type or "").split(";")[0].strip().lower()
+        if ct.startswith("text/"):
+            return True
+        if ct in {"application/json", "application/x-www-form-urlencoded"} or ct.endswith("+json"):
+            return True
+        # 兜底：看起来像 JSON/文本就存
+        candidate = body_text.lstrip()
+        return candidate.startswith(("{", "[", "\"")) or candidate[:64].isascii()
+
+    @staticmethod
+    def _is_obviously_binary_content_type(content_type: Optional[str]) -> bool:
+        ct = str(content_type or "").split(";")[0].strip().lower()
+        if not ct:
+            return False
+        if ct.startswith(("text/", "application/json")) or ct.endswith(("+json", "+xml")):
+            return False
+        if ct.startswith(("image/", "audio/", "video/", "font/")):
+            return True
+        if ct in {"application/octet-stream", "application/pdf"}:
+            return True
+        if "zip" in ct or "gzip" in ct:
+            return True
+        return False
+
     def _normalize_playwright_blocking_mode(self) -> str:
         mode = str(getattr(settings, "playwright_resource_blocking_mode", "") or "").strip().lower()
         if mode not in PLAYWRIGHT_BLOCKING_MODE_ALLOWED:
@@ -279,6 +359,152 @@ class BrowserPrepMixin:
         except Exception:  # noqa: BLE001
             return
 
+    async def _attach_sora_request_log_listener(self, page, profile_id: int) -> None:
+        """监听 Sora 主站 xhr/fetch 请求，落库到 event_logs 供 UI 查看。"""
+        try:
+            if bool(getattr(page, "_sora_req_logger_attached", False)):
+                return
+        except Exception:  # noqa: BLE001
+            return
+
+        try:
+            setattr(page, "_sora_req_logger_attached", True)
+        except Exception:  # noqa: BLE001
+            # 监听器状态写不进去时，为避免重复注册，直接放弃挂载。
+            return
+
+        async def _handle_response(response) -> None:
+            try:
+                req = getattr(response, "request", None)
+                if req is None:
+                    return
+
+                try:
+                    resource_type = str(getattr(req, "resource_type", "") or "").strip().lower()
+                except Exception:  # noqa: BLE001
+                    resource_type = ""
+                if resource_type not in SORA_REQUEST_LOG_RESOURCE_TYPES:
+                    return
+
+                url = str(getattr(req, "url", "") or "").strip()
+                if not url:
+                    return
+                host = ""
+                try:
+                    host = str(urlparse(url).hostname or "").strip().lower()
+                except Exception:  # noqa: BLE001
+                    host = ""
+                if host not in SORA_REQUEST_LOG_ALLOWED_HOSTS:
+                    return
+
+                method = str(getattr(req, "method", "") or "").strip().upper() or None
+                request_headers = dict(getattr(req, "headers", {}) or {})
+                req_ct = self._header_get(request_headers, "content-type")
+                req_body_raw = getattr(req, "post_data", None)
+                request_body_text = str(req_body_raw) if isinstance(req_body_raw, str) else None
+                request_body_truncated = False
+                if self._looks_textual_body(request_body_text, req_ct):
+                    request_body_text, request_body_truncated = self._truncate_text_by_bytes(
+                        request_body_text, int(SORA_REQUEST_LOG_MAX_BODY_BYTES)
+                    )
+                else:
+                    request_body_text = None
+                    request_body_truncated = False
+
+                response_headers = dict(getattr(response, "headers", {}) or {})
+                resp_ct = self._header_get(response_headers, "content-type")
+                resp_cl_raw = self._header_get(response_headers, "content-length")
+                resp_cl = None
+                if resp_cl_raw is not None:
+                    try:
+                        resp_cl = int(resp_cl_raw)
+                    except Exception:  # noqa: BLE001
+                        resp_cl = None
+
+                status_code = None
+                try:
+                    status_code = int(getattr(response, "status", None))
+                except Exception:  # noqa: BLE001
+                    status_code = None
+
+                response_body_text = None
+                response_body_truncated = False
+                response_body_omitted = False
+                response_body_omit_reason = None
+
+                if resp_cl is not None and resp_cl > int(SORA_REQUEST_LOG_MAX_BODY_BYTES):
+                    response_body_omitted = True
+                    response_body_omit_reason = "too_large"
+                elif self._is_obviously_binary_content_type(resp_ct):
+                    response_body_omitted = True
+                    response_body_omit_reason = "binary"
+                else:
+                    try:
+                        text = await response.text()
+                        response_body_text, response_body_truncated = self._truncate_text_by_bytes(
+                            text, int(SORA_REQUEST_LOG_MAX_BODY_BYTES)
+                        )
+                    except Exception:  # noqa: BLE001
+                        response_body_omitted = True
+                        response_body_omit_reason = "error"
+
+                status = None
+                if status_code is not None:
+                    status = "failed" if int(status_code) >= 400 else "success"
+
+                metadata = {
+                    "capture_source": "playwright_listener",
+                    "request_headers": request_headers,
+                    "request_body_text": request_body_text,
+                    "request_body_truncated": bool(request_body_truncated),
+                    "response_headers": response_headers,
+                    "response_body_text": response_body_text,
+                    "response_body_truncated": bool(response_body_truncated),
+                    "response_body_omitted": bool(response_body_omitted),
+                    "response_body_omit_reason": response_body_omit_reason,
+                    "response_content_type": resp_ct,
+                    "response_content_length": resp_cl,
+                }
+
+                def _write_log() -> None:
+                    sqlite_db.create_event_log(
+                        source="sora",
+                        action="sora.request",
+                        event="request",
+                        status=status,
+                        level="ERROR" if status == "failed" else "INFO",
+                        message=None,
+                        method=method,
+                        path=url,
+                        status_code=status_code,
+                        resource_type="profile",
+                        resource_id=str(int(profile_id)),
+                        metadata=metadata,
+                        mask_mode="off",
+                    )
+                    sqlite_db.cleanup_sora_request_logs(
+                        int(profile_id),
+                        keep_latest=int(SORA_REQUEST_LOG_KEEP_LATEST),
+                        within_days=int(SORA_REQUEST_LOG_WITHIN_DAYS),
+                    )
+
+                await asyncio.to_thread(_write_log)
+            except Exception:  # noqa: BLE001
+                return
+
+        def _on_response(response) -> None:
+            # 监听器回调必须尽快返回：仅做轻量过滤 + spawn 后台任务
+            spawn(
+                _handle_response(response),
+                task_name="ixbrowser.sora_request.capture",
+                metadata={"profile_id": int(profile_id)},
+            )
+
+        try:
+            page.on("response", _on_response)
+        except Exception:  # noqa: BLE001
+            return
+
     async def _prepare_sora_page(self, page, profile_id: int) -> None:
         blocking_mode = self._normalize_playwright_blocking_mode()
         stealth_plugin_applied = await self._apply_stealth(page)
@@ -286,6 +512,7 @@ class BrowserPrepMixin:
         await self._apply_request_blocking(page)
         await self._attach_realtime_quota_listener(page, profile_id, "Sora")
         await self._attach_cf_nav_listener(page, profile_id)
+        await self._attach_sora_request_log_listener(page, profile_id)
         logger.info(
             "Playwright 页面准备完成 | profile_id=%s | stealth_plugin_applied=%s | blocking_mode=%s",
             int(profile_id),

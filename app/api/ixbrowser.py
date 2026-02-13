@@ -1,15 +1,19 @@
 """ixBrowser 业务接口"""
+from __future__ import annotations
+
 import asyncio
 import time
+from datetime import datetime, timedelta
 from typing import List, Optional
 
-from fastapi import APIRouter, Body, Depends, Query, Request
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 
 from app.core.audit import log_audit
 from app.core.auth import get_current_active_user
 from app.core.sse import format_sse_event
 from app.core.stream_auth import require_user_from_query_token
+from app.db.sqlite import sqlite_db
 from app.models.ixbrowser import (
     IXBrowserGenerateJob,
     IXBrowserGenerateJobCreateResponse,
@@ -25,6 +29,7 @@ from app.models.ixbrowser import (
     IXBrowserScanRunSummary,
     IXBrowserSessionScanResponse,
 )
+from app.models.logs import LogEventItem, LogEventListResponse
 from app.services.ixbrowser_service import (
     ixbrowser_service,
 )
@@ -130,6 +135,61 @@ async def open_ixbrowser_profile_window(
                 extra={"group_title": group_title, "target_url": target_url},
             )
         raise
+
+
+@router.get("/profiles/{profile_id}/sora-requests", response_model=LogEventListResponse)
+async def list_profile_sora_request_logs(
+    profile_id: int,
+    current_user: dict = Depends(get_current_active_user),
+):
+    del current_user
+    try:
+        pid = int(profile_id)
+    except Exception:  # noqa: BLE001
+        pid = 0
+    if pid <= 0:
+        return LogEventListResponse(items=[], has_more=False, next_cursor=None)
+
+    cutoff = datetime.now() - timedelta(days=7)
+    cutoff_str = cutoff.strftime("%Y-%m-%d %H:%M:%S")
+    result = sqlite_db.list_event_logs(
+        source="sora",
+        action="sora.request",
+        resource_type="profile",
+        resource_id=str(pid),
+        start_at=cutoff_str,
+        limit=100,
+    )
+
+    # 列表仅返回轻量摘要，避免一次性下发大 body/cookie。
+    for item in result.get("items") or []:
+        md = item.get("metadata")
+        if not isinstance(md, dict):
+            continue
+        summary = dict(md)
+        for key in ("request_headers", "request_body_text", "response_headers", "response_body_text"):
+            summary.pop(key, None)
+        item["metadata"] = summary
+
+    return LogEventListResponse.model_validate(result)
+
+
+@router.get("/sora-requests/{log_id}", response_model=LogEventItem)
+async def get_sora_request_log_detail(
+    log_id: int,
+    current_user: dict = Depends(get_current_active_user),
+):
+    del current_user
+    row = sqlite_db.get_event_log_by_id(int(log_id))
+    if not row:
+        raise HTTPException(status_code=404, detail="Not Found")
+    if (
+        str(row.get("source") or "").strip().lower() != "sora"
+        or str(row.get("action") or "").strip() != "sora.request"
+        or str(row.get("resource_type") or "").strip() != "profile"
+    ):
+        raise HTTPException(status_code=404, detail="Not Found")
+    return LogEventItem.model_validate(row)
 
 
 @router.post("/profiles/proxies/random-switch", response_model=IXBrowserRandomSwitchProxyResponse)

@@ -133,6 +133,16 @@ export const getLatestIxBrowserSoraSessionAccounts = async (groupTitle = 'Sora',
   return response.data
 }
 
+export const listProfileSoraRequests = async (profileId) => {
+  const response = await api.get(`/ixbrowser/profiles/${profileId}/sora-requests`)
+  return response.data
+}
+
+export const getSoraRequestLogDetail = async (logId) => {
+  const response = await api.get(`/ixbrowser/sora-requests/${logId}`)
+  return response.data
+}
+
 export const getIxBrowserSoraSessionScanHistory = async (groupTitle = 'Sora', limit = 10) => {
   const response = await api.get('/ixbrowser/sora-session-accounts/history', {
     params: { group_title: groupTitle, limit }
