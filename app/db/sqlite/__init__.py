@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+from app.core.config import settings
 from app.db.sqlite.connection import SQLiteConnectionMixin
 from app.db.sqlite.ixbrowser_repo import SQLiteIXBrowserRepo
 from app.db.sqlite.locks_repo import SQLiteLocksRepo
@@ -32,7 +33,7 @@ class SQLiteDB(
     SQLiteProxyRepo,
 ):
     _instance = None
-    _db_path = "data/video2api.db"
+    _db_path = settings.sqlite_db_path
 
     def __new__(cls):
         if cls._instance is None:

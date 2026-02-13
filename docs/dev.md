@@ -41,6 +41,8 @@ python -m uvicorn app.main:app --host 0.0.0.0 --port 8001 --reload
 
 说明：
 - `.env` 中的 `PORT` 需要与你的启动参数保持一致（或直接用 `make backend-dev PORT=xxxx` 统一）。
+- SQLite 默认使用 `data/video2api.db`，可通过 `SQLITE_DB_PATH` 指定路径。
+- 当 SQLite schema 版本与代码不一致时，默认会自动重建数据库（不保留历史数据）；如需禁用自动重建，设置 `SQLITE_RESET_ON_SCHEMA_MISMATCH=False` 并手动处理数据库文件。
 
 ### 对外视频接口（`/v1/videos`）
 - 该接口用于第三方系统直接创建/查询视频任务，底层复用现有 Sora 任务内核。
@@ -57,6 +59,8 @@ python -m uvicorn app.main:app --host 0.0.0.0 --port 8001 --reload
 - `app/services/ixbrowser/sora_job_runner.py`：Sora 任务阶段状态机与去水印收尾。
 - `app/services/ixbrowser/sora_publish_workflow.py`：Sora 发布链路（发布、草稿检索、页面请求/轮询、发布链接捕获）。
 - `app/services/ixbrowser/sora_generation_workflow.py`：Sora 生成链路（提交、进度轮询、genid 获取、兼容生成任务发布）。
+- ixBrowser Local API 速查：`docs/ixbrowser-local-api.md`
+- AdsPower Local API 速查（参考/对照）：`docs/adspower-local-api.md`
 
 ## 前端开发（admin/）
 1. 安装依赖

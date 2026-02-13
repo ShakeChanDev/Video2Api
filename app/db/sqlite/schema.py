@@ -1,18 +1,100 @@
-"""SQLite schema 初始化与轻量迁移。"""
+"""SQLite schema 初始化。
+
+维护策略（适合本项目的本地 SQLite 持久化场景）：
+- 使用 `PRAGMA user_version` 记录 schema 版本（整数）。
+- 当版本与代码期望不一致时，允许直接删除并重建所有表（不保留历史数据）。
+
+说明：
+- 重建行为可通过环境变量 `SQLITE_RESET_ON_SCHEMA_MISMATCH`（对应 settings 字段）
+  显式关闭；关闭后若发生版本不一致将抛出异常，提示手动清理数据库文件。
+"""
 
 from __future__ import annotations
 
 import sqlite3
 from datetime import datetime
 
+from app.core.config import settings
+
+SCHEMA_VERSION = 1
+
 
 class SQLiteSchemaMixin:
-    def _init_db(self):
+    def _init_db(self) -> None:
         conn = self._get_conn()
         cursor = conn.cursor()
+        try:
+            current_version = self._get_user_version(cursor)
+            if current_version != SCHEMA_VERSION:
+                self._handle_schema_mismatch(cursor, current_version=current_version, expected_version=SCHEMA_VERSION)
+            else:
+                # 正常路径仍做一次轻量兜底：关键配置表的 seed 行确保存在。
+                self._ensure_seed_rows(cursor)
+            conn.commit()
+        finally:
+            conn.close()
 
-        cursor.execute(
-            '''
+    @staticmethod
+    def _get_user_version(cursor: sqlite3.Cursor) -> int:
+        cursor.execute("PRAGMA user_version")
+        row = cursor.fetchone()
+        try:
+            return int(row[0]) if row else 0
+        except Exception:
+            return 0
+
+    @staticmethod
+    def _set_user_version(cursor: sqlite3.Cursor, version: int) -> None:
+        cursor.execute(f"PRAGMA user_version = {int(version)}")
+
+    def _handle_schema_mismatch(self, cursor: sqlite3.Cursor, *, current_version: int, expected_version: int) -> None:
+        allow_reset = bool(getattr(settings, "sqlite_reset_on_schema_mismatch", True))
+        if not allow_reset:
+            raise RuntimeError(
+                "SQLite schema 版本不一致，且已禁用自动重建。"
+                f" current={int(current_version)} expected={int(expected_version)}"
+                f" db_path={getattr(self, '_db_path', '')!s}。"
+                "请手动删除数据库文件或开启 SQLITE_RESET_ON_SCHEMA_MISMATCH=True。"
+            )
+
+        self._drop_all_tables(cursor)
+        self._create_schema(cursor)
+        self._ensure_seed_rows(cursor)
+        self._set_user_version(cursor, expected_version)
+
+    @staticmethod
+    def _drop_all_tables(cursor: sqlite3.Cursor) -> None:
+        # 关闭外键约束，避免 drop 顺序导致失败。
+        try:
+            cursor.execute("PRAGMA foreign_keys=OFF")
+        except Exception:
+            pass
+
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")
+        rows = cursor.fetchall() or []
+        for row in rows:
+            name = row[0] if isinstance(row, (list, tuple)) and row else None
+            if not name:
+                continue
+            cursor.execute(f'DROP TABLE IF EXISTS "{name}"')
+
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='view' AND name NOT LIKE 'sqlite_%'")
+        rows = cursor.fetchall() or []
+        for row in rows:
+            name = row[0] if isinstance(row, (list, tuple)) and row else None
+            if not name:
+                continue
+            cursor.execute(f'DROP VIEW IF EXISTS "{name}"')
+
+        try:
+            cursor.execute("PRAGMA foreign_keys=ON")
+        except Exception:
+            pass
+
+    @staticmethod
+    def _create_schema(cursor: sqlite3.Cursor) -> None:
+        cursor.executescript(
+            """
             CREATE TABLE IF NOT EXISTS users (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 username TEXT UNIQUE NOT NULL,
@@ -20,12 +102,8 @@ class SQLiteSchemaMixin:
                 role TEXT DEFAULT 'admin',
                 created_at TIMESTAMP,
                 updated_at TIMESTAMP
-            )
-            '''
-        )
+            );
 
-        cursor.execute(
-            '''
             CREATE TABLE IF NOT EXISTS audit_logs (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 category TEXT NOT NULL,
@@ -45,16 +123,12 @@ class SQLiteSchemaMixin:
                 operator_username TEXT,
                 extra_json TEXT,
                 created_at TIMESTAMP NOT NULL
-            )
-            '''
-        )
-        cursor.execute('CREATE INDEX IF NOT EXISTS idx_audit_logs_created ON audit_logs(created_at DESC)')
-        cursor.execute('CREATE INDEX IF NOT EXISTS idx_audit_logs_category ON audit_logs(category)')
-        cursor.execute('CREATE INDEX IF NOT EXISTS idx_audit_logs_action ON audit_logs(action)')
-        cursor.execute('CREATE INDEX IF NOT EXISTS idx_audit_logs_operator ON audit_logs(operator_user_id)')
+            );
+            CREATE INDEX IF NOT EXISTS idx_audit_logs_created ON audit_logs(created_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_audit_logs_category ON audit_logs(category);
+            CREATE INDEX IF NOT EXISTS idx_audit_logs_action ON audit_logs(action);
+            CREATE INDEX IF NOT EXISTS idx_audit_logs_operator ON audit_logs(operator_user_id);
 
-        cursor.execute(
-            '''
             CREATE TABLE IF NOT EXISTS event_logs (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 created_at TIMESTAMP NOT NULL,
@@ -82,55 +156,36 @@ class SQLiteSchemaMixin:
                 error_type TEXT,
                 error_code INTEGER,
                 metadata_json TEXT
-            )
-            '''
-        )
-        cursor.execute('CREATE INDEX IF NOT EXISTS idx_event_logs_created ON event_logs(created_at DESC)')
-        cursor.execute('CREATE INDEX IF NOT EXISTS idx_event_logs_source_created ON event_logs(source, created_at DESC)')
-        cursor.execute('CREATE INDEX IF NOT EXISTS idx_event_logs_status_created ON event_logs(status, created_at DESC)')
-        cursor.execute('CREATE INDEX IF NOT EXISTS idx_event_logs_level_created ON event_logs(level, created_at DESC)')
-        cursor.execute('CREATE INDEX IF NOT EXISTS idx_event_logs_operator_created ON event_logs(operator_username, created_at DESC)')
-        cursor.execute('CREATE INDEX IF NOT EXISTS idx_event_logs_trace_id ON event_logs(trace_id)')
-        cursor.execute('CREATE INDEX IF NOT EXISTS idx_event_logs_request_id ON event_logs(request_id)')
-        cursor.execute('CREATE INDEX IF NOT EXISTS idx_event_logs_resource_created ON event_logs(resource_type, resource_id, created_at DESC)')
-        cursor.execute(
-            'CREATE INDEX IF NOT EXISTS idx_event_logs_task_fail_lookup '
-            'ON event_logs(source, resource_type, event, created_at DESC, resource_id)'
-        )
+            );
+            CREATE INDEX IF NOT EXISTS idx_event_logs_created ON event_logs(created_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_event_logs_source_created ON event_logs(source, created_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_event_logs_status_created ON event_logs(status, created_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_event_logs_level_created ON event_logs(level, created_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_event_logs_operator_created ON event_logs(operator_username, created_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_event_logs_trace_id ON event_logs(trace_id);
+            CREATE INDEX IF NOT EXISTS idx_event_logs_request_id ON event_logs(request_id);
+            CREATE INDEX IF NOT EXISTS idx_event_logs_resource_created ON event_logs(resource_type, resource_id, created_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_event_logs_task_fail_lookup ON event_logs(source, resource_type, event, created_at DESC, resource_id);
 
-        cursor.execute(
-            '''
             CREATE TABLE IF NOT EXISTS system_settings (
                 id INTEGER PRIMARY KEY CHECK (id = 1),
                 payload_json TEXT NOT NULL,
                 updated_at TIMESTAMP NOT NULL
-            )
-            '''
-        )
+            );
 
-        cursor.execute(
-            '''
             CREATE TABLE IF NOT EXISTS scan_scheduler_settings (
                 id INTEGER PRIMARY KEY CHECK (id = 1),
                 payload_json TEXT NOT NULL,
                 updated_at TIMESTAMP NOT NULL
-            )
-            '''
-        )
+            );
 
-        cursor.execute(
-            '''
             CREATE TABLE IF NOT EXISTS scheduler_locks (
                 lock_key TEXT PRIMARY KEY,
                 owner TEXT NOT NULL,
                 locked_until TIMESTAMP NOT NULL,
                 updated_at TIMESTAMP NOT NULL
-            )
-            '''
-        )
+            );
 
-        cursor.execute(
-            '''
             CREATE TABLE IF NOT EXISTS watermark_free_config (
                 id INTEGER PRIMARY KEY CHECK (id = 1),
                 enabled INTEGER NOT NULL DEFAULT 1,
@@ -142,12 +197,8 @@ class SQLiteSchemaMixin:
                 fallback_on_failure INTEGER NOT NULL DEFAULT 1,
                 auto_delete_published_post INTEGER NOT NULL DEFAULT 0,
                 updated_at TIMESTAMP NOT NULL
-            )
-            '''
-        )
+            );
 
-        cursor.execute(
-            '''
             CREATE TABLE IF NOT EXISTS ixbrowser_scan_runs (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 group_id INTEGER NOT NULL,
@@ -159,12 +210,8 @@ class SQLiteSchemaMixin:
                 operator_user_id INTEGER,
                 operator_username TEXT,
                 scanned_at TIMESTAMP NOT NULL
-            )
-            '''
-        )
+            );
 
-        cursor.execute(
-            '''
             CREATE TABLE IF NOT EXISTS ixbrowser_scan_results (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 run_id INTEGER NOT NULL,
@@ -195,45 +242,11 @@ class SQLiteSchemaMixin:
                 duration_ms INTEGER NOT NULL DEFAULT 0,
                 scanned_at TIMESTAMP NOT NULL,
                 FOREIGN KEY(run_id) REFERENCES ixbrowser_scan_runs(id) ON DELETE CASCADE
-            )
-            '''
-        )
-        cursor.execute('CREATE INDEX IF NOT EXISTS idx_ix_scan_runs_group ON ixbrowser_scan_runs(group_title, id DESC)')
-        cursor.execute('CREATE INDEX IF NOT EXISTS idx_ix_scan_results_run ON ixbrowser_scan_results(run_id)')
-        cursor.execute('CREATE INDEX IF NOT EXISTS idx_ix_scan_results_profile ON ixbrowser_scan_results(group_title, profile_id, run_id DESC)')
-        cursor.execute("PRAGMA table_info(ixbrowser_scan_results)")
-        ix_scan_columns = {row["name"] for row in cursor.fetchall()}
-        if "account_plan" not in ix_scan_columns:
-            cursor.execute(
-                "ALTER TABLE ixbrowser_scan_results ADD COLUMN account_plan TEXT"
-            )
-        if "proxy_mode" not in ix_scan_columns:
-            cursor.execute(
-                "ALTER TABLE ixbrowser_scan_results ADD COLUMN proxy_mode INTEGER"
-            )
-        if "proxy_id" not in ix_scan_columns:
-            cursor.execute(
-                "ALTER TABLE ixbrowser_scan_results ADD COLUMN proxy_id INTEGER"
-            )
-        if "proxy_type" not in ix_scan_columns:
-            cursor.execute(
-                "ALTER TABLE ixbrowser_scan_results ADD COLUMN proxy_type TEXT"
-            )
-        if "proxy_ip" not in ix_scan_columns:
-            cursor.execute(
-                "ALTER TABLE ixbrowser_scan_results ADD COLUMN proxy_ip TEXT"
-            )
-        if "proxy_port" not in ix_scan_columns:
-            cursor.execute(
-                "ALTER TABLE ixbrowser_scan_results ADD COLUMN proxy_port TEXT"
-            )
-        if "real_ip" not in ix_scan_columns:
-            cursor.execute(
-                "ALTER TABLE ixbrowser_scan_results ADD COLUMN real_ip TEXT"
-            )
+            );
+            CREATE INDEX IF NOT EXISTS idx_ix_scan_runs_group ON ixbrowser_scan_runs(group_title, id DESC);
+            CREATE INDEX IF NOT EXISTS idx_ix_scan_results_run ON ixbrowser_scan_results(run_id);
+            CREATE INDEX IF NOT EXISTS idx_ix_scan_results_profile ON ixbrowser_scan_results(group_title, profile_id, run_id DESC);
 
-        cursor.execute(
-            '''
             CREATE TABLE IF NOT EXISTS ixbrowser_silent_refresh_jobs (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 group_title TEXT NOT NULL,
@@ -254,18 +267,10 @@ class SQLiteSchemaMixin:
                 created_at TIMESTAMP NOT NULL,
                 updated_at TIMESTAMP NOT NULL,
                 finished_at TIMESTAMP
-            )
-            '''
-        )
-        cursor.execute(
-            'CREATE INDEX IF NOT EXISTS idx_ix_silent_jobs_group ON ixbrowser_silent_refresh_jobs(group_title, id DESC)'
-        )
-        cursor.execute(
-            'CREATE INDEX IF NOT EXISTS idx_ix_silent_jobs_status ON ixbrowser_silent_refresh_jobs(status, updated_at DESC)'
-        )
+            );
+            CREATE INDEX IF NOT EXISTS idx_ix_silent_jobs_group ON ixbrowser_silent_refresh_jobs(group_title, id DESC);
+            CREATE INDEX IF NOT EXISTS idx_ix_silent_jobs_status ON ixbrowser_silent_refresh_jobs(status, updated_at DESC);
 
-        cursor.execute(
-            '''
             CREATE TABLE IF NOT EXISTS ixbrowser_sora_generate_jobs (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 profile_id INTEGER NOT NULL,
@@ -285,6 +290,7 @@ class SQLiteSchemaMixin:
                 published_at TIMESTAMP,
                 task_id TEXT,
                 task_url TEXT,
+                generation_id TEXT,
                 error TEXT,
                 submit_attempts INTEGER NOT NULL DEFAULT 0,
                 poll_attempts INTEGER NOT NULL DEFAULT 0,
@@ -295,54 +301,11 @@ class SQLiteSchemaMixin:
                 finished_at TIMESTAMP,
                 created_at TIMESTAMP NOT NULL,
                 updated_at TIMESTAMP NOT NULL
-            )
-            '''
-        )
-        cursor.execute('CREATE INDEX IF NOT EXISTS idx_ix_gen_jobs_group ON ixbrowser_sora_generate_jobs(group_title, id DESC)')
-        cursor.execute('CREATE INDEX IF NOT EXISTS idx_ix_gen_jobs_profile ON ixbrowser_sora_generate_jobs(profile_id, id DESC)')
-        cursor.execute('CREATE INDEX IF NOT EXISTS idx_ix_gen_jobs_status ON ixbrowser_sora_generate_jobs(status, id DESC)')
+            );
+            CREATE INDEX IF NOT EXISTS idx_ix_gen_jobs_group ON ixbrowser_sora_generate_jobs(group_title, id DESC);
+            CREATE INDEX IF NOT EXISTS idx_ix_gen_jobs_profile ON ixbrowser_sora_generate_jobs(profile_id, id DESC);
+            CREATE INDEX IF NOT EXISTS idx_ix_gen_jobs_status ON ixbrowser_sora_generate_jobs(status, id DESC);
 
-        cursor.execute("PRAGMA table_info(ixbrowser_sora_generate_jobs)")
-        columns = {row["name"] for row in cursor.fetchall()}
-        if "progress" not in columns:
-            cursor.execute(
-                "ALTER TABLE ixbrowser_sora_generate_jobs ADD COLUMN progress INTEGER NOT NULL DEFAULT 0"
-            )
-        if "publish_status" not in columns:
-            cursor.execute(
-                "ALTER TABLE ixbrowser_sora_generate_jobs ADD COLUMN publish_status TEXT NOT NULL DEFAULT 'queued'"
-            )
-        if "publish_url" not in columns:
-            cursor.execute(
-                "ALTER TABLE ixbrowser_sora_generate_jobs ADD COLUMN publish_url TEXT"
-            )
-        if "publish_post_id" not in columns:
-            cursor.execute(
-                "ALTER TABLE ixbrowser_sora_generate_jobs ADD COLUMN publish_post_id TEXT"
-            )
-        if "publish_permalink" not in columns:
-            cursor.execute(
-                "ALTER TABLE ixbrowser_sora_generate_jobs ADD COLUMN publish_permalink TEXT"
-            )
-        if "publish_error" not in columns:
-            cursor.execute(
-                "ALTER TABLE ixbrowser_sora_generate_jobs ADD COLUMN publish_error TEXT"
-            )
-        if "publish_attempts" not in columns:
-            cursor.execute(
-                "ALTER TABLE ixbrowser_sora_generate_jobs ADD COLUMN publish_attempts INTEGER NOT NULL DEFAULT 0"
-            )
-        if "published_at" not in columns:
-            cursor.execute(
-                "ALTER TABLE ixbrowser_sora_generate_jobs ADD COLUMN published_at TIMESTAMP"
-            )
-        if "generation_id" not in columns:
-            cursor.execute(
-                "ALTER TABLE ixbrowser_sora_generate_jobs ADD COLUMN generation_id TEXT"
-            )
-
-        cursor.execute(
-            '''
             CREATE TABLE IF NOT EXISTS sora_jobs (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 profile_id INTEGER NOT NULL,
@@ -360,6 +323,12 @@ class SQLiteSchemaMixin:
                 publish_url TEXT,
                 publish_post_id TEXT,
                 publish_permalink TEXT,
+                watermark_status TEXT,
+                watermark_url TEXT,
+                watermark_error TEXT,
+                watermark_attempts INTEGER NOT NULL DEFAULT 0,
+                watermark_started_at TIMESTAMP,
+                watermark_finished_at TIMESTAMP,
                 dispatch_mode TEXT,
                 dispatch_score REAL,
                 dispatch_quantity_score REAL,
@@ -380,113 +349,15 @@ class SQLiteSchemaMixin:
                 operator_username TEXT,
                 created_at TIMESTAMP NOT NULL,
                 updated_at TIMESTAMP NOT NULL
-            )
-            '''
-        )
-        cursor.execute('CREATE INDEX IF NOT EXISTS idx_sora_jobs_group ON sora_jobs(group_title, id DESC)')
-        cursor.execute('CREATE INDEX IF NOT EXISTS idx_sora_jobs_profile ON sora_jobs(profile_id, id DESC)')
-        cursor.execute('CREATE INDEX IF NOT EXISTS idx_sora_jobs_status ON sora_jobs(status, id DESC)')
-        cursor.execute('CREATE INDEX IF NOT EXISTS idx_sora_jobs_phase ON sora_jobs(phase, id DESC)')
-        cursor.execute('CREATE INDEX IF NOT EXISTS idx_sora_jobs_profile_created ON sora_jobs(profile_id, created_at DESC)')
-        cursor.execute(
-            'CREATE INDEX IF NOT EXISTS idx_sora_jobs_group_status_profile '
-            'ON sora_jobs(group_title, status, profile_id)'
-        )
+            );
+            CREATE INDEX IF NOT EXISTS idx_sora_jobs_group ON sora_jobs(group_title, id DESC);
+            CREATE INDEX IF NOT EXISTS idx_sora_jobs_profile ON sora_jobs(profile_id, id DESC);
+            CREATE INDEX IF NOT EXISTS idx_sora_jobs_status ON sora_jobs(status, id DESC);
+            CREATE INDEX IF NOT EXISTS idx_sora_jobs_phase ON sora_jobs(phase, id DESC);
+            CREATE INDEX IF NOT EXISTS idx_sora_jobs_profile_created ON sora_jobs(profile_id, created_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_sora_jobs_group_status_profile ON sora_jobs(group_title, status, profile_id);
+            CREATE INDEX IF NOT EXISTS idx_sora_jobs_status_lease ON sora_jobs(status, lease_until, id ASC);
 
-        cursor.execute("PRAGMA table_info(sora_jobs)")
-        columns = {row["name"] for row in cursor.fetchall()}
-        if "image_url" not in columns:
-            cursor.execute(
-                "ALTER TABLE sora_jobs ADD COLUMN image_url TEXT"
-            )
-        if "watermark_status" not in columns:
-            cursor.execute(
-                "ALTER TABLE sora_jobs ADD COLUMN watermark_status TEXT"
-            )
-        if "watermark_url" not in columns:
-            cursor.execute(
-                "ALTER TABLE sora_jobs ADD COLUMN watermark_url TEXT"
-            )
-        if "watermark_error" not in columns:
-            cursor.execute(
-                "ALTER TABLE sora_jobs ADD COLUMN watermark_error TEXT"
-            )
-        if "watermark_attempts" not in columns:
-            cursor.execute(
-                "ALTER TABLE sora_jobs ADD COLUMN watermark_attempts INTEGER NOT NULL DEFAULT 0"
-            )
-        if "watermark_started_at" not in columns:
-            cursor.execute(
-                "ALTER TABLE sora_jobs ADD COLUMN watermark_started_at TIMESTAMP"
-            )
-        if "watermark_finished_at" not in columns:
-            cursor.execute(
-                "ALTER TABLE sora_jobs ADD COLUMN watermark_finished_at TIMESTAMP"
-            )
-        if "publish_post_id" not in columns:
-            cursor.execute(
-                "ALTER TABLE sora_jobs ADD COLUMN publish_post_id TEXT"
-            )
-        if "publish_permalink" not in columns:
-            cursor.execute(
-                "ALTER TABLE sora_jobs ADD COLUMN publish_permalink TEXT"
-            )
-        if "dispatch_mode" not in columns:
-            cursor.execute(
-                "ALTER TABLE sora_jobs ADD COLUMN dispatch_mode TEXT"
-            )
-        if "dispatch_score" not in columns:
-            cursor.execute(
-                "ALTER TABLE sora_jobs ADD COLUMN dispatch_score REAL"
-            )
-        if "dispatch_quantity_score" not in columns:
-            cursor.execute(
-                "ALTER TABLE sora_jobs ADD COLUMN dispatch_quantity_score REAL"
-            )
-        if "dispatch_quality_score" not in columns:
-            cursor.execute(
-                "ALTER TABLE sora_jobs ADD COLUMN dispatch_quality_score REAL"
-            )
-        if "dispatch_reason" not in columns:
-            cursor.execute(
-                "ALTER TABLE sora_jobs ADD COLUMN dispatch_reason TEXT"
-            )
-        if "retry_of_job_id" not in columns:
-            cursor.execute(
-                "ALTER TABLE sora_jobs ADD COLUMN retry_of_job_id INTEGER"
-            )
-        if "retry_root_job_id" not in columns:
-            cursor.execute(
-                "ALTER TABLE sora_jobs ADD COLUMN retry_root_job_id INTEGER"
-            )
-        if "retry_index" not in columns:
-            cursor.execute(
-                "ALTER TABLE sora_jobs ADD COLUMN retry_index INTEGER NOT NULL DEFAULT 0"
-            )
-        if "lease_owner" not in columns:
-            cursor.execute(
-                "ALTER TABLE sora_jobs ADD COLUMN lease_owner TEXT"
-            )
-        if "lease_until" not in columns:
-            cursor.execute(
-                "ALTER TABLE sora_jobs ADD COLUMN lease_until TIMESTAMP"
-            )
-        if "heartbeat_at" not in columns:
-            cursor.execute(
-                "ALTER TABLE sora_jobs ADD COLUMN heartbeat_at TIMESTAMP"
-            )
-        if "run_attempt" not in columns:
-            cursor.execute(
-                "ALTER TABLE sora_jobs ADD COLUMN run_attempt INTEGER NOT NULL DEFAULT 0"
-            )
-        if "run_last_error" not in columns:
-            cursor.execute(
-                "ALTER TABLE sora_jobs ADD COLUMN run_last_error TEXT"
-            )
-        cursor.execute('CREATE INDEX IF NOT EXISTS idx_sora_jobs_status_lease ON sora_jobs(status, lease_until, id ASC)')
-
-        cursor.execute(
-            '''
             CREATE TABLE IF NOT EXISTS sora_job_events (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 job_id INTEGER NOT NULL,
@@ -495,15 +366,11 @@ class SQLiteSchemaMixin:
                 message TEXT,
                 created_at TIMESTAMP NOT NULL,
                 FOREIGN KEY(job_id) REFERENCES sora_jobs(id) ON DELETE CASCADE
-            )
-            '''
-        )
-        cursor.execute('CREATE INDEX IF NOT EXISTS idx_sora_job_events_job ON sora_job_events(job_id, id DESC)')
-        cursor.execute('CREATE INDEX IF NOT EXISTS idx_sora_job_events_created ON sora_job_events(created_at DESC)')
-        cursor.execute('CREATE INDEX IF NOT EXISTS idx_sora_job_events_phase_event ON sora_job_events(phase, event, created_at DESC)')
+            );
+            CREATE INDEX IF NOT EXISTS idx_sora_job_events_job ON sora_job_events(job_id, id DESC);
+            CREATE INDEX IF NOT EXISTS idx_sora_job_events_created ON sora_job_events(created_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_sora_job_events_phase_event ON sora_job_events(phase, event, created_at DESC);
 
-        cursor.execute(
-            '''
             CREATE TABLE IF NOT EXISTS sora_nurture_batches (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 name TEXT,
@@ -533,38 +400,11 @@ class SQLiteSchemaMixin:
                 finished_at TIMESTAMP,
                 created_at TIMESTAMP NOT NULL,
                 updated_at TIMESTAMP NOT NULL
-            )
-            '''
-        )
-        cursor.execute('CREATE INDEX IF NOT EXISTS idx_sora_nurture_batches_status ON sora_nurture_batches(status, id DESC)')
-        cursor.execute('CREATE INDEX IF NOT EXISTS idx_sora_nurture_batches_group ON sora_nurture_batches(group_title, id DESC)')
+            );
+            CREATE INDEX IF NOT EXISTS idx_sora_nurture_batches_status ON sora_nurture_batches(status, id DESC);
+            CREATE INDEX IF NOT EXISTS idx_sora_nurture_batches_group ON sora_nurture_batches(group_title, id DESC);
+            CREATE INDEX IF NOT EXISTS idx_sora_nurture_batches_status_lease ON sora_nurture_batches(status, lease_until, id ASC);
 
-        cursor.execute("PRAGMA table_info(sora_nurture_batches)")
-        batch_columns = {row["name"] for row in cursor.fetchall()}
-        if "lease_owner" not in batch_columns:
-            cursor.execute(
-                "ALTER TABLE sora_nurture_batches ADD COLUMN lease_owner TEXT"
-            )
-        if "lease_until" not in batch_columns:
-            cursor.execute(
-                "ALTER TABLE sora_nurture_batches ADD COLUMN lease_until TIMESTAMP"
-            )
-        if "heartbeat_at" not in batch_columns:
-            cursor.execute(
-                "ALTER TABLE sora_nurture_batches ADD COLUMN heartbeat_at TIMESTAMP"
-            )
-        if "run_attempt" not in batch_columns:
-            cursor.execute(
-                "ALTER TABLE sora_nurture_batches ADD COLUMN run_attempt INTEGER NOT NULL DEFAULT 0"
-            )
-        if "run_last_error" not in batch_columns:
-            cursor.execute(
-                "ALTER TABLE sora_nurture_batches ADD COLUMN run_last_error TEXT"
-            )
-        cursor.execute('CREATE INDEX IF NOT EXISTS idx_sora_nurture_batches_status_lease ON sora_nurture_batches(status, lease_until, id ASC)')
-
-        cursor.execute(
-            '''
             CREATE TABLE IF NOT EXISTS sora_nurture_jobs (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 batch_id INTEGER NOT NULL,
@@ -583,15 +423,11 @@ class SQLiteSchemaMixin:
                 created_at TIMESTAMP NOT NULL,
                 updated_at TIMESTAMP NOT NULL,
                 FOREIGN KEY(batch_id) REFERENCES sora_nurture_batches(id) ON DELETE CASCADE
-            )
-            '''
-        )
-        cursor.execute('CREATE INDEX IF NOT EXISTS idx_sora_nurture_jobs_batch ON sora_nurture_jobs(batch_id, id ASC)')
-        cursor.execute('CREATE INDEX IF NOT EXISTS idx_sora_nurture_jobs_profile ON sora_nurture_jobs(profile_id, id DESC)')
-        cursor.execute('CREATE INDEX IF NOT EXISTS idx_sora_nurture_jobs_status ON sora_nurture_jobs(status, id DESC)')
+            );
+            CREATE INDEX IF NOT EXISTS idx_sora_nurture_jobs_batch ON sora_nurture_jobs(batch_id, id ASC);
+            CREATE INDEX IF NOT EXISTS idx_sora_nurture_jobs_profile ON sora_nurture_jobs(profile_id, id DESC);
+            CREATE INDEX IF NOT EXISTS idx_sora_nurture_jobs_status ON sora_nurture_jobs(status, id DESC);
 
-        cursor.execute(
-            '''
             CREATE TABLE IF NOT EXISTS proxies (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 ix_id INTEGER UNIQUE,
@@ -629,36 +465,11 @@ class SQLiteSchemaMixin:
                 check_at TIMESTAMP,
                 created_at TIMESTAMP NOT NULL,
                 updated_at TIMESTAMP NOT NULL
-            )
-            '''
-        )
-        cursor.execute("PRAGMA table_info(proxies)")
-        proxy_columns = {row["name"] for row in cursor.fetchall()}
-        if "check_health_score" not in proxy_columns:
-            cursor.execute("ALTER TABLE proxies ADD COLUMN check_health_score INTEGER")
-        if "check_risk_level" not in proxy_columns:
-            cursor.execute("ALTER TABLE proxies ADD COLUMN check_risk_level TEXT")
-        if "check_risk_flags" not in proxy_columns:
-            cursor.execute("ALTER TABLE proxies ADD COLUMN check_risk_flags TEXT")
-        if "check_proxycheck_type" not in proxy_columns:
-            cursor.execute("ALTER TABLE proxies ADD COLUMN check_proxycheck_type TEXT")
-        if "check_proxycheck_risk" not in proxy_columns:
-            cursor.execute("ALTER TABLE proxies ADD COLUMN check_proxycheck_risk INTEGER")
-        if "check_is_proxy" not in proxy_columns:
-            cursor.execute("ALTER TABLE proxies ADD COLUMN check_is_proxy INTEGER")
-        if "check_is_vpn" not in proxy_columns:
-            cursor.execute("ALTER TABLE proxies ADD COLUMN check_is_vpn INTEGER")
-        if "check_is_tor" not in proxy_columns:
-            cursor.execute("ALTER TABLE proxies ADD COLUMN check_is_tor INTEGER")
-        if "check_is_datacenter" not in proxy_columns:
-            cursor.execute("ALTER TABLE proxies ADD COLUMN check_is_datacenter INTEGER")
-        if "check_is_abuser" not in proxy_columns:
-            cursor.execute("ALTER TABLE proxies ADD COLUMN check_is_abuser INTEGER")
-        cursor.execute('CREATE INDEX IF NOT EXISTS idx_proxies_ix_id ON proxies(ix_id)')
-        cursor.execute('CREATE INDEX IF NOT EXISTS idx_proxies_key ON proxies(proxy_type, proxy_ip, proxy_port, proxy_user)')
-        cursor.execute('CREATE INDEX IF NOT EXISTS idx_proxies_updated ON proxies(updated_at DESC)')
-        cursor.execute(
-            '''
+            );
+            CREATE INDEX IF NOT EXISTS idx_proxies_ix_id ON proxies(ix_id);
+            CREATE INDEX IF NOT EXISTS idx_proxies_key ON proxies(proxy_type, proxy_ip, proxy_port, proxy_user);
+            CREATE INDEX IF NOT EXISTS idx_proxies_updated ON proxies(updated_at DESC);
+
             CREATE TABLE IF NOT EXISTS proxy_cf_events (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 proxy_id INTEGER,
@@ -670,45 +481,22 @@ class SQLiteSchemaMixin:
                 is_cf INTEGER NOT NULL DEFAULT 0,
                 created_at TIMESTAMP NOT NULL,
                 FOREIGN KEY(proxy_id) REFERENCES proxies(id) ON DELETE SET NULL
-            )
-            '''
+            );
+            CREATE INDEX IF NOT EXISTS idx_proxy_cf_events_proxy_id_id ON proxy_cf_events(proxy_id, id DESC);
+            CREATE INDEX IF NOT EXISTS idx_proxy_cf_events_created ON proxy_cf_events(created_at DESC);
+            """
         )
-        cursor.execute('CREATE INDEX IF NOT EXISTS idx_proxy_cf_events_proxy_id_id ON proxy_cf_events(proxy_id, id DESC)')
-        cursor.execute('CREATE INDEX IF NOT EXISTS idx_proxy_cf_events_created ON proxy_cf_events(created_at DESC)')
 
-        cursor.execute("PRAGMA table_info(watermark_free_config)")
-        wm_columns = {row["name"] for row in cursor.fetchall()}
-        if "custom_parse_path" not in wm_columns:
-            cursor.execute(
-                "ALTER TABLE watermark_free_config ADD COLUMN custom_parse_path TEXT NOT NULL DEFAULT '/get-sora-link'"
-            )
-        if "retry_max" not in wm_columns:
-            cursor.execute(
-                "ALTER TABLE watermark_free_config ADD COLUMN retry_max INTEGER NOT NULL DEFAULT 2"
-            )
-        if "fallback_on_failure" not in wm_columns:
-            cursor.execute(
-                "ALTER TABLE watermark_free_config ADD COLUMN fallback_on_failure INTEGER NOT NULL DEFAULT 1"
-            )
-        if "auto_delete_published_post" not in wm_columns:
-            cursor.execute(
-                "ALTER TABLE watermark_free_config ADD COLUMN auto_delete_published_post INTEGER NOT NULL DEFAULT 0"
-            )
+    @staticmethod
+    def _ensure_seed_rows(cursor: sqlite3.Cursor) -> None:
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        cursor.execute(
+            """
+            INSERT OR IGNORE INTO watermark_free_config (
+                id, enabled, parse_method, custom_parse_url, custom_parse_token,
+                custom_parse_path, retry_max, fallback_on_failure, auto_delete_published_post, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (1, 1, "custom", None, None, "/get-sora-link", 2, 1, 0, now),
+        )
 
-        cursor.execute("SELECT COUNT(*) as cnt FROM watermark_free_config WHERE id = 1")
-        wm_count_row = cursor.fetchone()
-        wm_count = int(wm_count_row["cnt"]) if wm_count_row else 0
-        if wm_count == 0:
-            now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            cursor.execute(
-                '''
-                INSERT INTO watermark_free_config (
-                    id, enabled, parse_method, custom_parse_url, custom_parse_token,
-                    custom_parse_path, retry_max, fallback_on_failure, auto_delete_published_post, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ''',
-                (1, 1, "custom", None, None, "/get-sora-link", 2, 1, 0, now)
-            )
-
-        conn.commit()
-        conn.close()

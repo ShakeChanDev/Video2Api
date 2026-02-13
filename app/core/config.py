@@ -9,6 +9,10 @@ class Settings(BaseSettings):
     host: str = "0.0.0.0"
     port: int = 8001
 
+    # SQLite
+    sqlite_db_path: str = "data/video2api.db"
+    sqlite_reset_on_schema_mismatch: bool = True
+
     ixbrowser_api_base: str = "http://127.0.0.1:53200"
     playwright_stealth_enabled: bool = True
     playwright_stealth_plugin_enabled: bool = True
