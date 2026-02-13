@@ -237,6 +237,11 @@ export const retrySoraJobWatermark = async (jobId) => {
   return response.data
 }
 
+export const getSoraRiskSummary = async (data) => {
+  const response = await api.post('/sora/risk-summary', data, { timeout: 60000 })
+  return response.data
+}
+
 export const parseSoraWatermarkLink = async (data) => {
   const response = await api.post('/sora/watermark/parse', data)
   return response.data

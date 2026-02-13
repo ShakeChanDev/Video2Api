@@ -64,6 +64,21 @@ def test_list_sora_jobs_recent_by_profiles_returns_recent_rows_per_profile(temp_
     assert (1, p1_id_1, "queued") not in simplified
 
 
+def test_list_sora_jobs_recent_by_profiles_supports_group_title_filter(temp_db):
+    del temp_db
+    p1_id_1 = _create_job(1, "Sora", "completed", "done")
+    p1_id_2 = _create_job(1, "Other", "failed", "submit", error="timeout")
+    p1_id_3 = _create_job(1, "Sora", "failed", "submit", error="timeout")
+
+    rows = sqlite_db.list_sora_jobs_recent_by_profiles([1], window=10, group_title="Sora")
+    simplified = [(int(row["profile_id"]), int(row["id"]), str(row["status"])) for row in rows]
+    assert simplified == [
+        (1, p1_id_3, "failed"),
+        (1, p1_id_1, "completed"),
+    ]
+    assert (1, p1_id_2, "failed") not in simplified
+
+
 def test_list_sora_jobs_recent_by_profiles_handles_empty_input(temp_db):
     del temp_db
     assert sqlite_db.list_sora_jobs_recent_by_profiles([], window=30) == []

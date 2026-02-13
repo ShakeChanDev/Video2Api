@@ -18,10 +18,12 @@ from app.models.ixbrowser import (
     SoraWatermarkParseRequest,
     SoraWatermarkParseResponse,
 )
+from app.models.sora_risk import SoraRiskSummaryRequest, SoraRiskSummaryResponse
 from app.services.account_dispatch_service import account_dispatch_service
 from app.services.ixbrowser_service import (
     ixbrowser_service,
 )
+from app.services.sora_risk_service import sora_risk_service
 from app.services.sora_job_stream_service import sora_job_stream_service
 
 router = APIRouter(prefix="/api/v1/sora", tags=["sora"])
@@ -77,6 +79,15 @@ async def list_sora_account_weights(
 ):
     del current_user
     return await account_dispatch_service.list_account_weights(group_title=group_title, limit=limit)
+
+
+@router.post("/risk-summary", response_model=SoraRiskSummaryResponse)
+async def get_sora_risk_summary(
+    payload: SoraRiskSummaryRequest,
+    current_user: dict = Depends(get_current_active_user),
+):
+    del current_user
+    return sora_risk_service.build_summary(payload)
 
 
 @router.post("/watermark/parse", response_model=SoraWatermarkParseResponse)

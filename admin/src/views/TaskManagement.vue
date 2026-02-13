@@ -97,7 +97,7 @@
         </div>
       </template>
 
-      <el-table :data="filteredJobs" class="card-table task-table">
+        <el-table :data="filteredJobs" class="card-table task-table">
         <el-table-column label="任务" min-width="480">
           <template #default="{ row }">
             <div class="task-cell">
@@ -152,51 +152,88 @@
             </div>
           </template>
         </el-table-column>
-        <el-table-column label="输出" min-width="300">
+        <el-table-column label="风控" min-width="320">
           <template #default="{ row }">
-            <div class="output-cell">
-              <div class="output-line">
-                <a
-                  v-if="row.publish_url"
-                  class="share-code-link"
-                  href="#"
-                  :title="extractShareCode(row.publish_url)"
-                  @click.prevent="openLink(row.publish_url)"
-                >
-                  {{ extractShareCode(row.publish_url) }}
-                </a>
-                <span v-else class="output-empty" />
+            <div class="risk-cell">
+              <div class="risk-row">
+                <span class="risk-label">账号</span>
+                <div class="completion-heat-grid" :style="{ '--completion-window': String(riskWindow) }">
+                  <span
+                    v-for="(dot, dotIndex) in getCompletionDotsByProfile(row.profile_id)"
+                    :key="`risk-${row.job_id}-comp-${dotIndex}`"
+                    :class="['completion-heat-dot', getCompletionDotClass(dot)]"
+                    :title="getCompletionDotTitle(dot)"
+                  />
+                </div>
+                <span class="mono risk-stat">{{ formatCompletionStatByProfile(row.profile_id) }}</span>
               </div>
-              <div class="output-line">
-                <a
-                  v-if="row.watermark_url"
-                  class="share-code-link watermark-link"
-                  href="#"
-                  :title="extractShareCode(row.watermark_url)"
-                  @click.prevent="openLink(row.watermark_url)"
-                >
-                  {{ extractShareCode(row.watermark_url) }}
-                </a>
-                <template v-else-if="row.watermark_status === 'failed'">
-                  <span class="output-error">去水印失败</span>
-                  <el-button
-                    v-if="canRetryWatermark(row)"
-                    size="small"
-                    class="btn-soft"
-                    @click="retryWatermark(row)"
-                  >
-                    重试
-                  </el-button>
-                </template>
-                <span v-else class="output-empty" />
+              <div class="risk-row">
+                <span class="risk-label">CF</span>
+                <div class="cf-heat-grid" :style="{ '--cf-window': String(riskWindow) }">
+                  <span
+                    v-for="(dot, dotIndex) in getCfHeatDotsByProxy(row.proxy_local_id)"
+                    :key="`risk-${row.job_id}-cf-${dotIndex}`"
+                    :class="['cf-heat-dot', getCfHeatDotClass(dot)]"
+                    :title="getCfDotTitle(dot)"
+                  />
+                </div>
+                <span class="mono risk-stat">{{ formatCfStatByProxy(row.proxy_local_id) }}</span>
               </div>
             </div>
           </template>
         </el-table-column>
-        <el-table-column label="操作" fixed="right" width="150">
+        <el-table-column label="操作" fixed="right" width="220">
           <template #default="{ row }">
             <div class="action-cell">
               <el-button size="small" class="btn-soft" @click="openDetail(row)">详情</el-button>
+              <el-popover placement="left" width="320" trigger="click" :hide-after="0">
+                <template #reference>
+                  <el-button size="small" class="btn-soft" :disabled="!hasAnyOutput(row)">输出</el-button>
+                </template>
+                <div class="output-popover-body">
+                  <div class="output-popover-item">
+                    <span class="output-popover-label">发布</span>
+                    <div class="output-popover-value">
+                      <a
+                        v-if="row.publish_url"
+                        class="share-code-link"
+                        href="#"
+                        :title="extractShareCode(row.publish_url)"
+                        @click.prevent="openLink(row.publish_url)"
+                      >
+                        {{ extractShareCode(row.publish_url) }}
+                      </a>
+                      <span v-else class="output-empty-text">-</span>
+                    </div>
+                  </div>
+                  <div class="output-popover-item">
+                    <span class="output-popover-label">无水印</span>
+                    <div class="output-popover-value">
+                      <a
+                        v-if="row.watermark_url"
+                        class="share-code-link watermark-link"
+                        href="#"
+                        :title="extractShareCode(row.watermark_url)"
+                        @click.prevent="openLink(row.watermark_url)"
+                      >
+                        {{ extractShareCode(row.watermark_url) }}
+                      </a>
+                      <template v-else-if="row.watermark_status === 'failed'">
+                        <span class="output-error">去水印失败</span>
+                        <el-button
+                          v-if="canRetryWatermark(row)"
+                          size="small"
+                          class="btn-soft"
+                          @click="retryWatermark(row)"
+                        >
+                          重试
+                        </el-button>
+                      </template>
+                      <span v-else class="output-empty-text">-</span>
+                    </div>
+                  </div>
+                </div>
+              </el-popover>
               <el-button
                 v-if="canRetryJob(row)"
                 size="small"
@@ -393,6 +430,7 @@ import {
   createVideoViaVideoApi,
   createSoraJob,
   getSoraAccountWeights,
+  getSoraRiskSummary,
   getIxBrowserGroupWindows,
   getLatestIxBrowserSoraSessionAccounts,
   getSystemSettings,
@@ -425,6 +463,12 @@ const nowTick = ref(Date.now())
 
 const weightsLoading = ref(false)
 const accountWeights = ref([])
+
+const riskWindow = 12
+const riskLoading = ref(false)
+const riskProfileMap = ref({})
+const riskProxyMap = ref({})
+let riskSeq = 0
 
 const accountPlanMap = ref({})
 const accountPlanGroupTitle = ref(null)
@@ -517,6 +561,13 @@ const shorten = (value, maxLen) => {
   return `${value.slice(0, maxLen)}...`
 }
 
+const formatPercent = (value) => {
+  const num = Number(value || 0)
+  if (!Number.isFinite(num)) return '0'
+  const fixed = num.toFixed(1)
+  return fixed.endsWith('.0') ? fixed.slice(0, -2) : fixed
+}
+
 const formatProxy = (row) => {
   const ip = String(row?.proxy_ip || '').trim()
   const port = String(row?.proxy_port || '').trim()
@@ -605,6 +656,186 @@ const extractShareCode = (url) => {
     }
   }
   return text
+}
+
+const hasAnyOutput = (row) => {
+  if (!row) return false
+  if (row.publish_url) return true
+  if (row.watermark_url) return true
+  return String(row.watermark_status || '').trim().toLowerCase() === 'failed'
+}
+
+const getProfileRisk = (profileId) => {
+  const key = String(profileId ?? '')
+  const item = riskProfileMap.value?.[key]
+  if (item) return item
+  return {
+    profile_id: Number(profileId || 0) || 0,
+    completion_recent_window: riskWindow,
+    completion_recent_total: 0,
+    completion_recent_success_count: 0,
+    completion_recent_ratio: 0.0,
+    completion_recent_heat: '-'.repeat(riskWindow)
+  }
+}
+
+const getProxyRisk = (proxyId) => {
+  const key = String(proxyId ?? '')
+  const item = riskProxyMap.value?.[key]
+  if (item) return item
+  return {
+    proxy_id: Number(proxyId || 0) || 0,
+    cf_recent_window: riskWindow,
+    cf_recent_count: 0,
+    cf_recent_total: 0,
+    cf_recent_ratio: 0.0,
+    cf_recent_heat: '-'.repeat(riskWindow)
+  }
+}
+
+const formatCompletionStatByProfile = (profileId) => {
+  const risk = getProfileRisk(profileId)
+  const successCount = Number(risk?.completion_recent_success_count || 0)
+  const totalCount = Number(risk?.completion_recent_total || 0)
+  if (!Number.isFinite(totalCount) || totalCount <= 0) return '-'
+  const ratio = Number(risk?.completion_recent_ratio)
+  const pct = Number.isFinite(ratio) ? ratio : (successCount * 100) / totalCount
+  return `${successCount}/${totalCount}(${formatPercent(pct)}%)`
+}
+
+const formatCfStatByProxy = (proxyId) => {
+  const risk = getProxyRisk(proxyId)
+  const count = Number(risk?.cf_recent_count || 0)
+  const totalCount = Number(risk?.cf_recent_total || 0)
+  if (!Number.isFinite(totalCount) || totalCount <= 0) return '-'
+  const ratio = Number(risk?.cf_recent_ratio)
+  const pct = Number.isFinite(ratio) ? ratio : (count * 100) / totalCount
+  return `${count}/${totalCount}(${formatPercent(pct)}%)`
+}
+
+const getCompletionDotsByProfile = (profileId) => {
+  const windowSize = Math.max(1, Number(riskWindow || 12))
+  const heatText = String(getProfileRisk(profileId)?.completion_recent_heat || '').toUpperCase()
+  const chars = heatText
+    .split('')
+    .filter((char) => char === 'G' || char === 'B' || char === 'Y' || char === 'R' || char === 'N' || char === '-')
+    .slice(-windowSize)
+  if (chars.length < windowSize) {
+    return [...Array(windowSize - chars.length).fill('-'), ...chars]
+  }
+  return chars
+}
+
+const getCompletionDotClass = (dot) => {
+  if (dot === 'G') return 'completion-heat-dot--success'
+  if (dot === 'B') return 'completion-heat-dot--running'
+  if (dot === 'Y') return 'completion-heat-dot--warn'
+  if (dot === 'R') return 'completion-heat-dot--danger'
+  return 'completion-heat-dot--neutral'
+}
+
+const getCompletionDotTitle = (dot) => {
+  if (dot === 'G') return '成功'
+  if (dot === 'B') return '进行中'
+  if (dot === 'Y') return '失败（非 heavy）'
+  if (dot === 'R') return '失败（heavy）'
+  if (dot === 'N') return '已取消'
+  return '无记录'
+}
+
+const getCfHeatDotsByProxy = (proxyId) => {
+  const windowSize = Math.max(1, Number(riskWindow || 12))
+  const heatText = String(getProxyRisk(proxyId)?.cf_recent_heat || '').toUpperCase()
+  const chars = heatText
+    .split('')
+    .filter((char) => char === 'C' || char === 'P' || char === '-')
+    .slice(-windowSize)
+  if (chars.length < windowSize) {
+    return [...Array(windowSize - chars.length).fill('-'), ...chars]
+  }
+  return chars
+}
+
+const getCfHeatDotClass = (dot) => {
+  if (dot === 'C') return 'cf-heat-dot--c'
+  if (dot === 'P') return 'cf-heat-dot--p'
+  return 'cf-heat-dot--empty'
+}
+
+const getCfDotTitle = (dot) => {
+  if (dot === 'C') return 'CF 命中'
+  if (dot === 'P') return '通过'
+  return '无记录'
+}
+
+let riskRefreshTimer = null
+const scheduleRiskRefresh = (delayMs = 800) => {
+  if (riskRefreshTimer) return
+  riskRefreshTimer = setTimeout(() => {
+    riskRefreshTimer = null
+    void loadRiskSummary({ silent: true })
+  }, Math.max(0, Number(delayMs || 0)))
+}
+
+const loadRiskSummary = async (options = {}) => {
+  const silent = Boolean(options?.silent)
+  const seq = (riskSeq += 1)
+
+  const profileIds = Array.from(
+    new Set(
+      (jobs.value || [])
+        .map((item) => Number(item?.profile_id || 0))
+        .filter((value) => Number.isFinite(value) && value > 0)
+    )
+  ).slice(0, 500)
+
+  const proxyIds = Array.from(
+    new Set(
+      (jobs.value || [])
+        .map((item) => Number(item?.proxy_local_id || 0))
+        .filter((value) => Number.isFinite(value) && value > 0)
+    )
+  ).slice(0, 500)
+
+  if (!profileIds.length && !proxyIds.length) {
+    riskProfileMap.value = {}
+    riskProxyMap.value = {}
+    return
+  }
+
+  riskLoading.value = true
+  try {
+    const data = await getSoraRiskSummary({
+      group_title: selectedGroupTitle.value || undefined,
+      window: riskWindow,
+      profile_ids: profileIds,
+      proxy_ids: proxyIds
+    })
+    if (seq !== riskSeq) return
+
+    const nextProfileMap = {}
+    for (const item of Array.isArray(data?.profiles) ? data.profiles : []) {
+      const pid = Number(item?.profile_id || 0)
+      if (!Number.isFinite(pid) || pid <= 0) continue
+      nextProfileMap[String(pid)] = item
+    }
+    const nextProxyMap = {}
+    for (const item of Array.isArray(data?.proxies) ? data.proxies : []) {
+      const pid = Number(item?.proxy_id || 0)
+      if (!Number.isFinite(pid) || pid <= 0) continue
+      nextProxyMap[String(pid)] = item
+    }
+    riskProfileMap.value = nextProfileMap
+    riskProxyMap.value = nextProxyMap
+  } catch (error) {
+    if (!silent) {
+      ElMessage.error(error?.response?.data?.detail || '获取风控摘要失败')
+    }
+  } finally {
+    if (seq === riskSeq) {
+      riskLoading.value = false
+    }
+  }
 }
 
 const loadAccountPlans = async (force = false) => {
@@ -716,6 +947,7 @@ const upsertJob = (item) => {
   const targetId = Number(normalized.job_id || 0)
   if (!targetId) return
   const idx = jobs.value.findIndex((job) => Number(job?.job_id || 0) === targetId)
+  const prev = idx >= 0 ? jobs.value[idx] : null
   if (idx >= 0) {
     jobs.value.splice(idx, 1, normalized)
   } else {
@@ -725,6 +957,20 @@ const upsertJob = (item) => {
     }
   }
   syncDetailJob()
+
+  // 风控摘要不需要每次进度更新都刷新：仅在新增/终态切换时做一次轻量刷新。
+  if (idx < 0) {
+    scheduleRiskRefresh(600)
+    return
+  }
+  const prevStatus = String(prev?.status || '').trim().toLowerCase()
+  const nextStatus = String(normalized?.status || '').trim().toLowerCase()
+  const terminal = new Set(['completed', 'failed', 'canceled'])
+  const statusChanged = prevStatus && nextStatus && prevStatus !== nextStatus
+  const proxyChanged = Number(prev?.proxy_local_id || 0) !== Number(normalized?.proxy_local_id || 0)
+  if ((statusChanged && terminal.has(nextStatus)) || proxyChanged) {
+    scheduleRiskRefresh(900)
+  }
 }
 
 const removeJob = (jobId) => {
@@ -780,6 +1026,7 @@ const loadJobs = async (withLoading = true, options = {}) => {
     })
     jobs.value = normalizeJobs(data)
     syncDetailJob()
+    void loadRiskSummary({ silent: true })
     return true
   } catch (error) {
     if (!silent) {
@@ -846,6 +1093,7 @@ const startJobRealtime = () => {
       const payload = JSON.parse(event.data || '{}')
       jobs.value = normalizeJobs(payload?.jobs || [])
       syncDetailJob()
+      void loadRiskSummary({ silent: true })
     } catch {
       // noop
     }
@@ -1097,6 +1345,10 @@ onUnmounted(() => {
     clearInterval(relativeTimeTimer)
     relativeTimeTimer = null
   }
+  if (riskRefreshTimer) {
+    clearTimeout(riskRefreshTimer)
+    riskRefreshTimer = null
+  }
   stopFallbackPolling()
   stopJobRealtime()
 })
@@ -1293,32 +1545,138 @@ onUnmounted(() => {
   text-overflow: ellipsis;
 }
 
-.output-cell {
+.risk-cell {
   display: flex;
   flex-direction: column;
-  min-height: 52px;
+  gap: 6px;
+  min-height: 56px;
   justify-content: center;
-  align-items: flex-start;
-  gap: 4px;
 }
 
-.output-line {
-  width: 100%;
-  min-height: 20px;
+.risk-row {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
+  min-height: 20px;
+}
+
+.risk-label {
+  width: 34px;
+  flex: 0 0 34px;
+  font-size: 12px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.risk-stat {
+  font-size: 12px;
+  color: rgba(71, 85, 105, 0.92);
+  font-weight: 650;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.completion-heat-grid {
+  --completion-window: 12;
+  display: grid;
+  grid-template-columns: repeat(var(--completion-window), 5px);
+  gap: 2px;
+  justify-content: flex-start;
+}
+
+.completion-heat-dot {
+  width: 5px;
+  height: 12px;
+  border-radius: 2px;
+}
+
+.completion-heat-dot--success {
+  background: #22c55e;
+}
+
+.completion-heat-dot--running {
+  background: #3b82f6;
+}
+
+.completion-heat-dot--warn {
+  background: #f59e0b;
+}
+
+.completion-heat-dot--danger {
+  background: #ef4444;
+}
+
+.completion-heat-dot--neutral {
+  background: #dbe4ee;
+}
+
+.cf-heat-grid {
+  --cf-window: 12;
+  display: grid;
+  grid-template-columns: repeat(var(--cf-window), 5px);
+  gap: 2px;
+  justify-content: flex-start;
+}
+
+.cf-heat-dot {
+  width: 5px;
+  height: 12px;
+  border-radius: 2px;
+}
+
+.cf-heat-dot--c {
+  background: #ef4444;
+}
+
+.cf-heat-dot--p {
+  background: #22c55e;
+}
+
+.cf-heat-dot--empty {
+  background: #dbe4ee;
+}
+
+.output-popover-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.output-popover-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 24px;
+}
+
+.output-popover-label {
+  width: 52px;
+  flex: 0 0 52px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.output-popover-value {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.output-popover-value .share-code-link {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.output-empty-text {
+  font-size: 12px;
+  color: var(--muted);
 }
 
 .output-error {
   font-size: 12px;
   color: #b91c1c;
-}
-
-.output-empty {
-  display: inline-block;
-  min-height: 20px;
-  min-width: 1px;
 }
 
 .share-code-link {
