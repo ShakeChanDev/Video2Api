@@ -258,7 +258,12 @@ class SQLiteSoraRepo:
         conn.close()
         return [dict(row) for row in rows]
 
-    def list_sora_jobs_recent_by_profiles(self, profile_ids: List[int], window: int = 30) -> List[Dict[str, Any]]:
+    def list_sora_jobs_recent_by_profiles(
+        self,
+        profile_ids: List[int],
+        window: int = 30,
+        group_title: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
         normalized_set = set()
         for pid_raw in profile_ids:
             try:
@@ -272,6 +277,12 @@ class SQLiteSoraRepo:
             return []
         safe_window = min(max(int(window), 1), 200)
         placeholders = ",".join("?" for _ in normalized_ids)
+        safe_group = str(group_title).strip() if group_title is not None else ""
+        group_clause = ""
+        group_params: List[Any] = []
+        if safe_group:
+            group_clause = " AND group_title = ?"
+            group_params.append(safe_group)
 
         conn = self._get_conn()
         cursor = conn.cursor()
@@ -289,14 +300,14 @@ class SQLiteSoraRepo:
                         ORDER BY id DESC
                     ) AS rn
                 FROM sora_jobs
-                WHERE profile_id IN ({placeholders})
+                WHERE profile_id IN ({placeholders}){group_clause}
             )
             SELECT profile_id, id, status, phase, error
             FROM ranked
             WHERE rn <= ?
             ORDER BY profile_id ASC, id DESC
             ''',
-            [*normalized_ids, safe_window],
+            [*normalized_ids, *group_params, safe_window],
         )
         rows = cursor.fetchall()
         conn.close()
