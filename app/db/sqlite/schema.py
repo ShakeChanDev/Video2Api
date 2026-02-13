@@ -500,3 +500,51 @@ class SQLiteSchemaMixin:
             (1, 1, "custom", None, None, "/get-sora-link", 2, 1, 0, now),
         )
 
+        # Bootstrap admin user (create or reset password) if password is provided.
+        admin_password = getattr(settings, "bootstrap_admin_password", None)
+        admin_password_text = str(admin_password) if admin_password is not None else ""
+        if admin_password_text and admin_password_text.strip():
+            admin_username = str(getattr(settings, "bootstrap_admin_username", "") or "").strip() or "Admin"
+            from passlib.context import CryptContext  # local import to avoid adding heavy deps on cold path
+
+            pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+            password_hash = pwd_context.hash(admin_password_text)
+
+            cursor.execute("SELECT id FROM users WHERE username = ?", (admin_username,))
+            exists = cursor.fetchone()
+            if exists:
+                cursor.execute(
+                    "UPDATE users SET password = ?, updated_at = ? WHERE username = ?",
+                    (password_hash, now, admin_username),
+                )
+            else:
+                cursor.execute(
+                    "INSERT INTO users (username, password, role, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                    (admin_username, password_hash, "admin", now, now),
+                )
+
+        # Bootstrap watermark custom parse settings (only update non-empty env fields).
+        wm_url = getattr(settings, "bootstrap_watermark_custom_parse_url", None)
+        wm_token = getattr(settings, "bootstrap_watermark_custom_parse_token", None)
+        wm_path = getattr(settings, "bootstrap_watermark_custom_parse_path", None)
+
+        watermark_updates = {}
+        if wm_url is not None:
+            url_text = str(wm_url).strip()
+            if url_text:
+                watermark_updates["custom_parse_url"] = url_text
+        if wm_token is not None:
+            token_text = str(wm_token).strip()
+            if token_text:
+                watermark_updates["custom_parse_token"] = token_text
+        if wm_path is not None:
+            path_text = str(wm_path).strip()
+            if path_text:
+                if not path_text.startswith("/"):
+                    path_text = f"/{path_text}"
+                watermark_updates["custom_parse_path"] = path_text
+
+        if watermark_updates:
+            sets = ", ".join([f"{key} = ?" for key in watermark_updates.keys()] + ["updated_at = ?"])
+            params = list(watermark_updates.values()) + [now, 1]
+            cursor.execute(f"UPDATE watermark_free_config SET {sets} WHERE id = ?", params)
