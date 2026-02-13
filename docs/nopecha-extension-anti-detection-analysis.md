@@ -149,9 +149,9 @@
 #### 4) 注入面收敛：按 stage / host / frame 精细注入
 - 可借鉴点：NopeCHA `0.5.5` 相比 `0.5.4` 收紧了通用注入范围，改成更有针对性的注入。
 - 你当前现状：
-  - 基础脚本：`app/services/ixbrowser/stealth_scripts.py:8`
-  - create 阶段移动脚本：`app/services/ixbrowser/stealth_scripts.py:57`
-  - 统一注入入口：`app/services/ixbrowser/browser_prep.py:135`
+  - 基础脚本：`app/services/ixbrowser/stealth_scripts.py`
+  - 统一注入入口：`app/services/ixbrowser/browser_prep.py`
+  - 备注：已移除 create 阶段移动脚本与 Playwright UA 覆盖，统一使用指纹浏览器 Profile 的 UA/指纹配置。
 - 借鉴方式：
   - 维持“兜底脚本 + 插件”的结构，但增加 host 白名单（例如仅 `sora.chatgpt.com`）。
   - 对高风险属性覆盖（如 `platform/hardwareConcurrency`）改为按阶段/场景可配置开关。
@@ -159,11 +159,9 @@
 
 #### 5) 增加“作用域开关”避免全局扫射
 - 可借鉴点：NopeCHA 有 `disabled_hosts`，可按站点关闭自动化。
-- 你当前现状：已有 `ua_mode / blocking_mode` 配置化框架，扩展点清晰。
-  - `app/core/config.py:13`
-  - `app/core/config.py:14`
-  - `app/core/config.py:15`
-  - `app/core/config.py:16`
+- 你当前现状：已有 `blocking_mode` 等配置化框架（UA 不再由 Playwright 覆盖），扩展点清晰。
+  - `app/core/config.py`
+  - `.env.example`
 - 借鉴方式：
   - 新增如 `PLAYWRIGHT_STEALTH_DISABLED_HOSTS`、`PLAYWRIGHT_HUMAN_ACTION_ENABLED_HOSTS`。
   - 在 `_prepare_sora_page` 里按 host 动态决定是否注入脚本、是否启用“人类动作层”。

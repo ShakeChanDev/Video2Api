@@ -1,4 +1,4 @@
-"""Sora 页面准备与浏览器侧辅助逻辑（UA、资源拦截、CF 导航监听、实时配额监听）。"""
+"""Sora 页面准备与浏览器侧辅助逻辑（资源拦截、CF 导航监听、实时配额监听、反检测脚本注入）。"""
 
 from __future__ import annotations
 
@@ -22,14 +22,6 @@ CF_NAV_LISTENER_TTL_SEC = 60
 CF_NAV_RECORD_COOLDOWN_SEC = 20
 CF_NAV_TITLE_CHECK_DELAY_SEC = 0.2
 CF_NAV_TITLE_MARKERS = ("just a moment", "challenge-platform", "cloudflare")
-PLAYWRIGHT_UA_MODE_CREATE_ONLY = "create_only"
-PLAYWRIGHT_UA_MODE_ALWAYS_MOBILE = "always_mobile"
-PLAYWRIGHT_UA_MODE_NATIVE = "native"
-PLAYWRIGHT_UA_MODE_ALLOWED = {
-    PLAYWRIGHT_UA_MODE_CREATE_ONLY,
-    PLAYWRIGHT_UA_MODE_ALWAYS_MOBILE,
-    PLAYWRIGHT_UA_MODE_NATIVE,
-}
 PLAYWRIGHT_BLOCKING_MODE_LIGHT = "light"
 PLAYWRIGHT_BLOCKING_MODE_LEGACY = "legacy"
 PLAYWRIGHT_BLOCKING_MODE_OFF = "off"
@@ -81,26 +73,11 @@ IPHONE_UA_POOL = [
 
 
 class BrowserPrepMixin:
-    def _normalize_playwright_ua_mode(self) -> str:
-        mode = str(getattr(settings, "playwright_ua_mode", "") or "").strip().lower()
-        if mode not in PLAYWRIGHT_UA_MODE_ALLOWED:
-            return PLAYWRIGHT_UA_MODE_CREATE_ONLY
-        return mode
-
     def _normalize_playwright_blocking_mode(self) -> str:
         mode = str(getattr(settings, "playwright_resource_blocking_mode", "") or "").strip().lower()
         if mode not in PLAYWRIGHT_BLOCKING_MODE_ALLOWED:
             return PLAYWRIGHT_BLOCKING_MODE_LIGHT
         return mode
-
-    def _should_apply_mobile_ua(self, stage: str) -> bool:
-        ua_mode = self._normalize_playwright_ua_mode()
-        normalized_stage = str(stage or "").strip().lower() or "default"
-        if ua_mode == PLAYWRIGHT_UA_MODE_NATIVE:
-            return False
-        if ua_mode == PLAYWRIGHT_UA_MODE_ALWAYS_MOBILE:
-            return True
-        return normalized_stage == "create"
 
     def _resolve_blocked_resource_types(self) -> Set[str]:
         mode = self._normalize_playwright_blocking_mode()
@@ -122,17 +99,7 @@ class BrowserPrepMixin:
             index = 0
         return IPHONE_UA_POOL[index]
 
-    async def _apply_ua_override(self, page, user_agent: str) -> None:
-        try:
-            session = await page.context.new_cdp_session(page)
-            await session.send("Network.setUserAgentOverride", {"userAgent": user_agent})
-        except Exception:  # noqa: BLE001
-            try:
-                await page.set_extra_http_headers({"User-Agent": user_agent})
-            except Exception:  # noqa: BLE001
-                pass
-
-    async def _apply_stealth(self, page, stage: str = "default") -> bool:
+    async def _apply_stealth(self, page) -> bool:
         if not bool(getattr(settings, "playwright_stealth_enabled", True)):
             return False
 
@@ -148,7 +115,7 @@ class BrowserPrepMixin:
                 except Exception as exc:  # noqa: BLE001
                     logger.warning("Playwright stealth 插件应用失败，将继续注入内置兜底脚本: %s", str(exc))
 
-        for script in get_stealth_init_scripts(stage=stage):
+        for script in get_stealth_init_scripts():
             try:
                 await page.add_init_script(script)
             except Exception as exc:  # noqa: BLE001
@@ -312,28 +279,16 @@ class BrowserPrepMixin:
         except Exception:  # noqa: BLE001
             return
 
-    async def _prepare_sora_page(self, page, profile_id: int, stage: str = "default") -> None:
-        normalized_stage = str(stage or "").strip().lower() or "default"
-        ua_mode = self._normalize_playwright_ua_mode()
+    async def _prepare_sora_page(self, page, profile_id: int) -> None:
         blocking_mode = self._normalize_playwright_blocking_mode()
-        stealth_plugin_applied = await self._apply_stealth(page, stage=normalized_stage)
-
-        ua_applied = False
-        if self._should_apply_mobile_ua(stage=normalized_stage):
-            user_agent = self._select_iphone_user_agent(profile_id)
-            await self._apply_ua_override(page, user_agent)
-            ua_applied = True
+        stealth_plugin_applied = await self._apply_stealth(page)
 
         await self._apply_request_blocking(page)
         await self._attach_realtime_quota_listener(page, profile_id, "Sora")
         await self._attach_cf_nav_listener(page, profile_id)
         logger.info(
-            "Playwright 页面准备完成 | profile_id=%s | stage=%s | ua_applied=%s | ua_mode=%s | "
-            "stealth_plugin_applied=%s | blocking_mode=%s",
+            "Playwright 页面准备完成 | profile_id=%s | stealth_plugin_applied=%s | blocking_mode=%s",
             int(profile_id),
-            normalized_stage,
-            bool(ua_applied),
-            ua_mode,
             bool(stealth_plugin_applied),
             blocking_mode,
         )

@@ -2785,61 +2785,37 @@ async def test_poll_sora_task_via_proxy_api_failed_draft_stops_long_wait(monkeyp
 
 
 @pytest.mark.asyncio
-async def test_prepare_sora_page_applies_mobile_ua_on_create_stage(monkeypatch):
+async def test_prepare_sora_page_calls_helpers(monkeypatch):
     service = IXBrowserService()
-    called = {"ua": 0}
+    called = {"stealth": 0, "blocking": 0, "realtime": 0, "cf": 0}
 
-    async def _fake_apply_ua(_page, _ua):
-        called["ua"] += 1
+    async def _fake_apply_stealth(_page):
+        called["stealth"] += 1
+        return False
 
     async def _fake_apply_blocking(_page):
+        called["blocking"] += 1
         return None
 
     async def _fake_attach_realtime(_page, _profile_id, _group_title):
+        called["realtime"] += 1
         return None
 
     async def _fake_attach_cf(_page, _profile_id):
+        called["cf"] += 1
         return None
 
-    monkeypatch.setattr("app.services.ixbrowser.browser_prep.settings.playwright_ua_mode", "create_only")
-    monkeypatch.setattr("app.services.ixbrowser.browser_prep.settings.playwright_stealth_enabled", False)
-    monkeypatch.setattr(service, "_apply_ua_override", _fake_apply_ua, raising=True)
+    monkeypatch.setattr(service, "_apply_stealth", _fake_apply_stealth, raising=True)
     monkeypatch.setattr(service, "_apply_request_blocking", _fake_apply_blocking, raising=True)
     monkeypatch.setattr(service, "_attach_realtime_quota_listener", _fake_attach_realtime, raising=True)
     monkeypatch.setattr(service, "_attach_cf_nav_listener", _fake_attach_cf, raising=True)
 
-    await service._prepare_sora_page(SimpleNamespace(), 9, stage="create")  # noqa: SLF001
+    await service._prepare_sora_page(SimpleNamespace(), 9)  # noqa: SLF001
 
-    assert called["ua"] == 1
-
-
-@pytest.mark.asyncio
-async def test_prepare_sora_page_skips_mobile_ua_on_default_stage(monkeypatch):
-    service = IXBrowserService()
-    called = {"ua": 0}
-
-    async def _fake_apply_ua(_page, _ua):
-        called["ua"] += 1
-
-    async def _fake_apply_blocking(_page):
-        return None
-
-    async def _fake_attach_realtime(_page, _profile_id, _group_title):
-        return None
-
-    async def _fake_attach_cf(_page, _profile_id):
-        return None
-
-    monkeypatch.setattr("app.services.ixbrowser.browser_prep.settings.playwright_ua_mode", "create_only")
-    monkeypatch.setattr("app.services.ixbrowser.browser_prep.settings.playwright_stealth_enabled", False)
-    monkeypatch.setattr(service, "_apply_ua_override", _fake_apply_ua, raising=True)
-    monkeypatch.setattr(service, "_apply_request_blocking", _fake_apply_blocking, raising=True)
-    monkeypatch.setattr(service, "_attach_realtime_quota_listener", _fake_attach_realtime, raising=True)
-    monkeypatch.setattr(service, "_attach_cf_nav_listener", _fake_attach_cf, raising=True)
-
-    await service._prepare_sora_page(SimpleNamespace(), 9, stage="default")  # noqa: SLF001
-
-    assert called["ua"] == 0
+    assert called["stealth"] == 1
+    assert called["blocking"] == 1
+    assert called["realtime"] == 1
+    assert called["cf"] == 1
 
 
 @pytest.mark.asyncio
@@ -2909,10 +2885,10 @@ async def test_apply_stealth_plugin_failure_keeps_fallback_scripts(monkeypatch):
     monkeypatch.setattr("app.services.ixbrowser.browser_prep.Stealth", _BrokenStealth)
 
     page = _FakePage()
-    plugin_applied = await service._apply_stealth(page, stage="create")  # noqa: SLF001
+    plugin_applied = await service._apply_stealth(page)  # noqa: SLF001
 
     assert plugin_applied is False
-    assert len(page.scripts) >= 2
+    assert len(page.scripts) == 1
 
 
 @pytest.mark.asyncio
@@ -2983,10 +2959,10 @@ async def test_run_sora_submit_and_progress_not_finished_by_pending_missing(monk
     async def _fake_sleep(*_args, **_kwargs):
         return None
 
-    prepare_stages = []
+    prepare_calls = []
 
-    async def _fake_prepare_page(_page, _profile_id, stage="default"):
-        prepare_stages.append(str(stage))
+    async def _fake_prepare_page(_page, _profile_id):
+        prepare_calls.append(int(_profile_id))
 
     service._deps.playwright_factory = lambda: _FakePlaywrightContext()  # noqa: SLF001
     monkeypatch.setattr("app.services.ixbrowser.sora_generation_workflow.asyncio.sleep", _fake_sleep)
@@ -3013,11 +2989,11 @@ async def test_run_sora_submit_and_progress_not_finished_by_pending_missing(monk
     assert submit_kwargs.get("image_url") == "https://example.com/submit.png"
     assert submit_kwargs.get("submit_priority") == "playwright_action_first"
     assert submit_kwargs.get("strict_priority") is True
-    assert prepare_stages and prepare_stages[0] == "create"
+    assert prepare_calls and prepare_calls[0] == 1
 
 
 @pytest.mark.asyncio
-async def test_submit_and_monitor_sora_video_prepare_uses_create_stage(monkeypatch):
+async def test_submit_and_monitor_sora_video_calls_prepare_sora_page(monkeypatch):
     service = IXBrowserService()
     workflow = service._sora_generation_workflow  # noqa: SLF001
     publish_workflow = service._sora_publish_workflow  # noqa: SLF001
@@ -3076,10 +3052,10 @@ async def test_submit_and_monitor_sora_video_prepare_uses_create_stage(monkeypat
     async def _fake_proxy_poll(**_kwargs):
         return {"state": "failed", "error": "mock failed", "progress": 0}
 
-    prepare_stages = []
+    prepare_calls = []
 
-    async def _fake_prepare_page(_page, _profile_id, stage="default"):
-        prepare_stages.append(str(stage))
+    async def _fake_prepare_page(_page, _profile_id):
+        prepare_calls.append(int(_profile_id))
 
     service._deps.playwright_factory = lambda: _FakePlaywrightContext()  # noqa: SLF001
     monkeypatch.setattr(workflow, "_open_profile_with_retry", _fake_open_profile, raising=True)
@@ -3107,7 +3083,7 @@ async def test_submit_and_monitor_sora_video_prepare_uses_create_stage(monkeypat
     assert result["status"] == "failed"
     assert submit_kwargs.get("submit_priority") == "playwright_action_first"
     assert submit_kwargs.get("strict_priority") is True
-    assert prepare_stages and prepare_stages[0] == "create"
+    assert prepare_calls and prepare_calls[0] == 1
 
 
 @pytest.mark.asyncio
