@@ -2035,6 +2035,58 @@ async def test_submit_video_request_from_page_passes_sentinel_flows_and_payload_
 
 
 @pytest.mark.asyncio
+async def test_ensure_sentinel_ready_for_server_submit_ready_after_reload():
+    service = IXBrowserService()
+    publish_workflow = service._sora_publish_workflow  # noqa: SLF001
+
+    class _FakePage:
+        def __init__(self):
+            self.reload_calls = 0
+
+        async def evaluate(self, script, _arg=None):
+            if isinstance(script, str) and "typeof window.SentinelSDK" in script:
+                return self.reload_calls > 0
+            return None
+
+        async def wait_for_timeout(self, *_args, **_kwargs):
+            return None
+
+        async def reload(self, *_args, **_kwargs):
+            self.reload_calls += 1
+            return None
+
+    page = _FakePage()
+    ready, error_code = await publish_workflow._ensure_sentinel_ready_for_server_submit(page)  # noqa: SLF001
+
+    assert ready is True
+    assert error_code is None
+    assert page.reload_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_ensure_sentinel_ready_for_server_submit_not_ready_after_reload():
+    service = IXBrowserService()
+    publish_workflow = service._sora_publish_workflow  # noqa: SLF001
+
+    class _FakePage:
+        async def evaluate(self, script, _arg=None):
+            if isinstance(script, str) and "typeof window.SentinelSDK" in script:
+                return False
+            return None
+
+        async def wait_for_timeout(self, *_args, **_kwargs):
+            return None
+
+        async def reload(self, *_args, **_kwargs):
+            return None
+
+    ready, error_code = await publish_workflow._ensure_sentinel_ready_for_server_submit(_FakePage())  # noqa: SLF001
+
+    assert ready is False
+    assert error_code == "sentinel_not_ready_after_reload"
+
+
+@pytest.mark.asyncio
 async def test_submit_video_request_from_page_server_first_strict_does_not_fallback_ui(monkeypatch):
     service = IXBrowserService()
     publish_workflow = service._sora_publish_workflow  # noqa: SLF001
@@ -2068,6 +2120,7 @@ async def test_submit_video_request_from_page_server_first_strict_does_not_fallb
     assert ui_calls["count"] == 0
     assert result["task_id"] is None
     assert "SentinelSDK" in str(result.get("error") or "")
+    assert result.get("error_code") == "sentinel_not_ready_after_reload"
 
 
 @pytest.mark.asyncio
@@ -2993,6 +3046,232 @@ async def test_run_sora_submit_and_progress_not_finished_by_pending_missing(monk
 
 
 @pytest.mark.asyncio
+async def test_run_sora_submit_and_progress_reopens_once_for_sentinel_not_ready(monkeypatch):
+    service = IXBrowserService()
+    service.sora_submit_priority = "server_request_first"  # noqa: SLF001
+    workflow = service._sora_generation_workflow  # noqa: SLF001
+    publish_workflow = service._sora_publish_workflow  # noqa: SLF001
+
+    class _FakePage:
+        async def goto(self, *_args, **_kwargs):
+            return None
+
+        async def wait_for_timeout(self, *_args, **_kwargs):
+            return None
+
+        def on(self, *_args, **_kwargs):
+            return None
+
+    class _FakeContext:
+        def __init__(self):
+            self.pages = [_FakePage()]
+
+    class _FakeBrowser:
+        def __init__(self):
+            self.contexts = [_FakeContext()]
+
+        async def close(self):
+            return None
+
+    class _FakeChromium:
+        async def connect_over_cdp(self, *_args, **_kwargs):
+            return _FakeBrowser()
+
+    class _FakePlaywright:
+        def __init__(self):
+            self.chromium = _FakeChromium()
+
+    class _FakePlaywrightContext:
+        async def __aenter__(self):
+            return _FakePlaywright()
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+    async def _fake_open_profile(*_args, **_kwargs):
+        return {"ws": "ws://127.0.0.1/mock"}
+
+    async def _fake_close_profile(*_args, **_kwargs):
+        return True
+
+    async def _fake_sleep(*_args, **_kwargs):
+        return None
+
+    async def _fake_prepare_page(_page, _profile_id):
+        return None
+
+    submit_calls = []
+
+    async def _fake_submit(*_args, **_kwargs):
+        submit_calls.append(dict(_kwargs))
+        if len(submit_calls) == 1:
+            return {
+                "task_id": None,
+                "access_token": None,
+                "error": "页面未加载 SentinelSDK，无法提交生成请求（error_code=sentinel_not_ready_after_reload）",
+                "error_code": "sentinel_not_ready_after_reload",
+            }
+        return {"task_id": "task_1", "access_token": "token_1", "error": None}
+
+    states = [
+        {"state": "processing", "progress": 0.2, "pending_missing": True, "cf_challenge": False},
+        {"state": "completed", "progress": 1.0, "generation_id": "gen_1", "cf_challenge": False},
+    ]
+
+    async def _fake_proxy_poll(**_kwargs):
+        return states.pop(0)
+
+    async def _fake_get_device(*_args, **_kwargs):
+        return "did_initial"
+
+    reopen_calls = []
+
+    async def _fake_reopen_submit_page(_playwright, _profile_id, *, previous_browser=None):
+        reopen_calls.append({"profile_id": int(_profile_id), "had_previous": previous_browser is not None})
+        return _FakeBrowser(), _FakeContext(), _FakePage(), "did_reopen"
+
+    events = []
+
+    def _fake_create_sora_job_event(job_id, phase, event, message=None):
+        events.append({"job_id": int(job_id), "phase": phase, "event": event, "message": message})
+        return 1
+
+    service._deps.playwright_factory = lambda: _FakePlaywrightContext()  # noqa: SLF001
+    monkeypatch.setattr("app.services.ixbrowser.sora_generation_workflow.asyncio.sleep", _fake_sleep)
+    monkeypatch.setattr("app.services.ixbrowser.sora_generation_workflow.sqlite_db.create_sora_job_event", _fake_create_sora_job_event)
+    monkeypatch.setattr(workflow, "_open_profile_with_retry", _fake_open_profile, raising=True)
+    monkeypatch.setattr(workflow, "_close_profile", _fake_close_profile, raising=True)
+    monkeypatch.setattr(workflow, "_is_sora_job_canceled", lambda _job_id: False, raising=True)
+    monkeypatch.setattr(service, "_prepare_sora_page", _fake_prepare_page, raising=True)
+    monkeypatch.setattr(publish_workflow, "_get_device_id_from_context", _fake_get_device, raising=True)
+    monkeypatch.setattr(publish_workflow, "_submit_video_request_from_page", _fake_submit, raising=True)
+    monkeypatch.setattr(publish_workflow, "poll_sora_task_via_proxy_api", _fake_proxy_poll, raising=True)
+    monkeypatch.setattr(workflow, "_reopen_submit_page", _fake_reopen_submit_page, raising=True)
+
+    task_id, generation_id = await workflow.run_sora_submit_and_progress(
+        job_id=999999,
+        profile_id=1,
+        prompt="test prompt",
+        duration="10s",
+        aspect_ratio="landscape",
+        started_at="2026-02-09 10:00:00",
+    )
+
+    assert task_id == "task_1"
+    assert generation_id == "gen_1"
+    assert len(submit_calls) == 2
+    assert submit_calls[0].get("device_id") == "did_initial"
+    assert submit_calls[1].get("device_id") == "did_reopen"
+    assert len(reopen_calls) == 1
+    assert any(
+        item.get("phase") == "submit"
+        and item.get("event") == "retry"
+        and "Sentinel 未就绪" in str(item.get("message") or "")
+        for item in events
+    )
+
+
+@pytest.mark.asyncio
+async def test_run_sora_submit_and_progress_sentinel_not_ready_after_reopen_raises(monkeypatch):
+    service = IXBrowserService()
+    service.sora_submit_priority = "server_request_first"  # noqa: SLF001
+    workflow = service._sora_generation_workflow  # noqa: SLF001
+    publish_workflow = service._sora_publish_workflow  # noqa: SLF001
+
+    class _FakePage:
+        async def goto(self, *_args, **_kwargs):
+            return None
+
+        async def wait_for_timeout(self, *_args, **_kwargs):
+            return None
+
+        def on(self, *_args, **_kwargs):
+            return None
+
+    class _FakeContext:
+        def __init__(self):
+            self.pages = [_FakePage()]
+
+    class _FakeBrowser:
+        def __init__(self):
+            self.contexts = [_FakeContext()]
+
+        async def close(self):
+            return None
+
+    class _FakeChromium:
+        async def connect_over_cdp(self, *_args, **_kwargs):
+            return _FakeBrowser()
+
+    class _FakePlaywright:
+        def __init__(self):
+            self.chromium = _FakeChromium()
+
+    class _FakePlaywrightContext:
+        async def __aenter__(self):
+            return _FakePlaywright()
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+    async def _fake_open_profile(*_args, **_kwargs):
+        return {"ws": "ws://127.0.0.1/mock"}
+
+    async def _fake_close_profile(*_args, **_kwargs):
+        return True
+
+    async def _fake_sleep(*_args, **_kwargs):
+        return None
+
+    async def _fake_prepare_page(_page, _profile_id):
+        return None
+
+    submit_calls = []
+
+    async def _fake_submit(*_args, **_kwargs):
+        submit_calls.append(dict(_kwargs))
+        return {
+            "task_id": None,
+            "access_token": None,
+            "error": "页面未加载 SentinelSDK，无法提交生成请求（error_code=sentinel_not_ready_after_reload）",
+            "error_code": "sentinel_not_ready_after_reload",
+        }
+
+    async def _fake_get_device(*_args, **_kwargs):
+        return "did_initial"
+
+    reopen_calls = []
+
+    async def _fake_reopen_submit_page(_playwright, _profile_id, *, previous_browser=None):
+        reopen_calls.append({"profile_id": int(_profile_id), "had_previous": previous_browser is not None})
+        return _FakeBrowser(), _FakeContext(), _FakePage(), "did_reopen"
+
+    service._deps.playwright_factory = lambda: _FakePlaywrightContext()  # noqa: SLF001
+    monkeypatch.setattr("app.services.ixbrowser.sora_generation_workflow.asyncio.sleep", _fake_sleep)
+    monkeypatch.setattr(workflow, "_open_profile_with_retry", _fake_open_profile, raising=True)
+    monkeypatch.setattr(workflow, "_close_profile", _fake_close_profile, raising=True)
+    monkeypatch.setattr(workflow, "_is_sora_job_canceled", lambda _job_id: False, raising=True)
+    monkeypatch.setattr(service, "_prepare_sora_page", _fake_prepare_page, raising=True)
+    monkeypatch.setattr(publish_workflow, "_get_device_id_from_context", _fake_get_device, raising=True)
+    monkeypatch.setattr(publish_workflow, "_submit_video_request_from_page", _fake_submit, raising=True)
+    monkeypatch.setattr(workflow, "_reopen_submit_page", _fake_reopen_submit_page, raising=True)
+
+    with pytest.raises(IXBrowserServiceError) as exc_info:
+        await workflow.run_sora_submit_and_progress(
+            job_id=999999,
+            profile_id=1,
+            prompt="test prompt",
+            duration="10s",
+            aspect_ratio="landscape",
+            started_at="2026-02-09 10:00:00",
+        )
+
+    assert len(submit_calls) == 2
+    assert len(reopen_calls) == 1
+    assert "error_code=sentinel_not_ready_after_reopen" in str(exc_info.value)
+
+
+@pytest.mark.asyncio
 async def test_submit_and_monitor_sora_video_calls_prepare_sora_page(monkeypatch):
     service = IXBrowserService()
     workflow = service._sora_generation_workflow  # noqa: SLF001
@@ -3084,6 +3363,115 @@ async def test_submit_and_monitor_sora_video_calls_prepare_sora_page(monkeypatch
     assert submit_kwargs.get("submit_priority") == "playwright_action_first"
     assert submit_kwargs.get("strict_priority") is True
     assert prepare_calls and prepare_calls[0] == 1
+
+
+@pytest.mark.asyncio
+async def test_submit_and_monitor_sora_video_sentinel_not_ready_gets_one_extra_attempt(monkeypatch):
+    service = IXBrowserService()
+    service.sora_submit_priority = "server_request_first"  # noqa: SLF001
+    workflow = service._sora_generation_workflow  # noqa: SLF001
+    publish_workflow = service._sora_publish_workflow  # noqa: SLF001
+
+    class _FakePage:
+        async def goto(self, *_args, **_kwargs):
+            return None
+
+        async def wait_for_timeout(self, *_args, **_kwargs):
+            return None
+
+        def on(self, *_args, **_kwargs):
+            return None
+
+    class _FakeContext:
+        def __init__(self):
+            self.pages = [_FakePage()]
+
+        async def cookies(self, *_args, **_kwargs):
+            return []
+
+    class _FakeBrowser:
+        def __init__(self):
+            self.contexts = [_FakeContext()]
+
+        async def close(self):
+            return None
+
+    class _FakeChromium:
+        async def connect_over_cdp(self, *_args, **_kwargs):
+            return _FakeBrowser()
+
+    class _FakePlaywright:
+        def __init__(self):
+            self.chromium = _FakeChromium()
+
+    class _FakePlaywrightContext:
+        async def __aenter__(self):
+            return _FakePlaywright()
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+    async def _fake_open_profile(*_args, **_kwargs):
+        return {"ws": "ws://127.0.0.1/mock"}
+
+    async def _fake_close_profile(*_args, **_kwargs):
+        return True
+
+    async def _fake_prepare_page(_page, _profile_id):
+        return None
+
+    submit_calls = []
+
+    async def _fake_submit(*_args, **_kwargs):
+        submit_calls.append(dict(_kwargs))
+        if len(submit_calls) == 1:
+            return {
+                "task_id": None,
+                "task_url": None,
+                "access_token": None,
+                "error": "页面未加载 SentinelSDK，无法提交生成请求（error_code=sentinel_not_ready_after_reload）",
+                "error_code": "sentinel_not_ready_after_reload",
+            }
+        return {"task_id": "task_1", "task_url": None, "access_token": "token_1", "error": None}
+
+    async def _fake_proxy_poll(**_kwargs):
+        return {"state": "failed", "error": "mock failed", "progress": 0}
+
+    reopen_calls = []
+
+    async def _fake_reopen_submit_page(_playwright, _profile_id, *, previous_browser=None):
+        reopen_calls.append({"profile_id": int(_profile_id), "had_previous": previous_browser is not None})
+        return _FakeBrowser(), _FakeContext(), _FakePage(), "did_reopen"
+
+    service._deps.playwright_factory = lambda: _FakePlaywrightContext()  # noqa: SLF001
+    monkeypatch.setattr(workflow, "_open_profile_with_retry", _fake_open_profile, raising=True)
+    monkeypatch.setattr(workflow, "_close_profile", _fake_close_profile, raising=True)
+    monkeypatch.setattr(service, "_prepare_sora_page", _fake_prepare_page, raising=True)
+    monkeypatch.setattr(
+        "app.services.ixbrowser.sora_generation_workflow.sqlite_db.update_ixbrowser_generate_job",
+        lambda *_args, **_kwargs: True,
+    )
+    monkeypatch.setattr(publish_workflow, "_submit_video_request_from_page", _fake_submit, raising=True)
+    monkeypatch.setattr(publish_workflow, "poll_sora_task_via_proxy_api", _fake_proxy_poll, raising=True)
+    monkeypatch.setattr(workflow, "_reopen_submit_page", _fake_reopen_submit_page, raising=True)
+
+    result = await workflow.submit_and_monitor_sora_video(
+        profile_id=1,
+        prompt="test prompt",
+        duration="10s",
+        aspect_ratio="landscape",
+        max_submit_attempts=1,
+        timeout_seconds=120,
+        poll_interval_seconds=1,
+        job_id=123,
+        created_after="2026-02-09 10:00:00",
+    )
+
+    assert result["status"] == "failed"
+    assert result["submit_attempts"] == 2
+    assert len(submit_calls) == 2
+    assert submit_calls[0].get("device_id") != submit_calls[1].get("device_id")
+    assert len(reopen_calls) == 1
 
 
 @pytest.mark.asyncio

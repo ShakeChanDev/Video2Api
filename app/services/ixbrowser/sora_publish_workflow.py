@@ -26,6 +26,10 @@ logger = logging.getLogger(__name__)
 class SoraPublishWorkflow:
     DRAFT_RETRY_BACKOFF_SECONDS: Tuple[int, ...] = (1, 2, 3, 10, 60)
     CREATE_TASK_SENTINEL_FLOWS: Tuple[str, ...] = ("sora_2_create_task", "sora_2_create_task__auto")
+    SENTINEL_READY_WAIT_MS = 10_000
+    SENTINEL_READY_WAIT_INTERVAL_MS = 250
+    SENTINEL_READY_RELOAD_TIMEOUT_MS = 40_000
+    SENTINEL_NOT_READY_AFTER_RELOAD = "sentinel_not_ready_after_reload"
 
     def __init__(self, service) -> None:
         self._service = service
@@ -2580,6 +2584,60 @@ class SoraPublishWorkflow:
             return text
         return str(default or "server_request_first").strip().lower() or "server_request_first"
 
+    async def _wait_for_sentinel_sdk_ready(
+        self,
+        page,
+        *,
+        timeout_ms: int,
+        interval_ms: int,
+    ) -> bool:
+        timeout_seconds = max(0.1, float(int(timeout_ms or 0)) / 1000.0)
+        wait_interval_ms = max(50, int(interval_ms or 0))
+        deadline = time.perf_counter() + timeout_seconds
+        while True:
+            try:
+                ready = await page.evaluate(
+                    "typeof window.SentinelSDK !== 'undefined' && typeof window.SentinelSDK.token === 'function'"
+                )
+            except Exception:  # noqa: BLE001
+                ready = False
+            if bool(ready):
+                return True
+
+            now = time.perf_counter()
+            if now >= deadline:
+                return False
+            remain_ms = int(max(1.0, (deadline - now) * 1000.0))
+            sleep_ms = min(wait_interval_ms, remain_ms)
+            try:
+                await page.wait_for_timeout(sleep_ms)
+            except Exception:  # noqa: BLE001
+                return False
+
+    async def _ensure_sentinel_ready_for_server_submit(self, page) -> Tuple[bool, Optional[str]]:
+        ready = await self._wait_for_sentinel_sdk_ready(
+            page,
+            timeout_ms=int(self.SENTINEL_READY_WAIT_MS),
+            interval_ms=int(self.SENTINEL_READY_WAIT_INTERVAL_MS),
+        )
+        if ready:
+            return True, None
+
+        try:
+            await page.reload(wait_until="domcontentloaded", timeout=int(self.SENTINEL_READY_RELOAD_TIMEOUT_MS))
+            await page.wait_for_timeout(800)
+        except Exception as exc:  # noqa: BLE001
+            logger.info("SentinelSDK 未就绪后重载页面失败(忽略，继续判定未就绪): %s", str(exc))
+
+        ready_after_reload = await self._wait_for_sentinel_sdk_ready(
+            page,
+            timeout_ms=int(self.SENTINEL_READY_WAIT_MS),
+            interval_ms=int(self.SENTINEL_READY_WAIT_INTERVAL_MS),
+        )
+        if ready_after_reload:
+            return True, None
+        return False, str(self.SENTINEL_NOT_READY_AFTER_RELOAD)
+
     async def _submit_video_request_via_server_request(
         self,
         page,
@@ -2599,18 +2657,11 @@ class SoraPublishWorkflow:
             except Exception as exc:  # noqa: BLE001
                 return {"task_id": None, "task_url": None, "access_token": None, "error": str(exc)}
 
-        ready = False
-        for _ in range(30):
-            try:
-                ready = await page.evaluate(
-                    "typeof window.SentinelSDK !== 'undefined' && typeof window.SentinelSDK.token === 'function'"
-                )
-            except Exception:  # noqa: BLE001
-                ready = False
-            if ready:
-                break
-            await page.wait_for_timeout(1000)
+        ready, sentinel_error_code = await self._ensure_sentinel_ready_for_server_submit(page)
         if not ready:
+            sentinel_error = "页面未加载 SentinelSDK，无法提交生成请求"
+            if isinstance(sentinel_error_code, str) and sentinel_error_code.strip():
+                sentinel_error = f"{sentinel_error}（error_code={sentinel_error_code.strip()}）"
             if allow_ui_fallback:
                 fallback = await self._submit_video_request_via_ui(
                     page=page,
@@ -2621,7 +2672,13 @@ class SoraPublishWorkflow:
                 )
                 if fallback.get("task_id") or fallback.get("error"):
                     return fallback
-            return {"task_id": None, "task_url": None, "access_token": None, "error": "页面未加载 SentinelSDK，无法提交生成请求"}
+            return {
+                "task_id": None,
+                "task_url": None,
+                "access_token": None,
+                "error": sentinel_error,
+                "error_code": sentinel_error_code,
+            }
 
         create_payload_base = self._build_create_task_payload_base(prompt=prompt, aspect_ratio=aspect_ratio, n_frames=n_frames)
         create_task_flows = list(self.CREATE_TASK_SENTINEL_FLOWS)
@@ -2629,7 +2686,13 @@ class SoraPublishWorkflow:
         data = await page.evaluate(
             """
             async ({prompt, aspectRatio, nFrames, deviceId, imageBase64, imageMime, imageFilename, createTaskFlows, createPayloadBase}) => {
-              const err = (message) => ({ task_id: null, task_url: null, access_token: null, error: message });
+              const err = (message, errorCode = null) => ({
+                task_id: null,
+                task_url: null,
+                access_token: null,
+                error: message,
+                error_code: errorCode
+              });
               try {
                 const decodeBase64 = (value) => {
                   if (!value) return null;
@@ -2807,13 +2870,14 @@ class SoraPublishWorkflow:
             }
         )
         if not isinstance(data, dict):
-            return {"task_id": None, "task_url": None, "access_token": None, "error": "提交返回格式异常"}
+            return {"task_id": None, "task_url": None, "access_token": None, "error": "提交返回格式异常", "error_code": None}
         return {
             "task_id": data.get("task_id"),
             "task_url": data.get("task_url"),
             "access_token": data.get("access_token"),
             "sentinel_flow": data.get("sentinel_flow"),
             "error": data.get("error"),
+            "error_code": data.get("error_code"),
         }
 
     async def _submit_video_request_from_page(

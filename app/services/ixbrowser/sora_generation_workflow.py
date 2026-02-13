@@ -13,6 +13,10 @@ logger = logging.getLogger(__name__)
 
 
 class SoraGenerationWorkflow:
+    SENTINEL_NOT_READY_ERROR_PREFIX = "sentinel_not_ready"
+    SENTINEL_NOT_READY_AFTER_REOPEN = "sentinel_not_ready_after_reopen"
+    SENTINEL_REOPEN_MAX_ATTEMPTS = 1
+
     def __init__(self, service, db=sqlite_db) -> None:
         self._service = service
         self._db = db
@@ -34,6 +38,66 @@ class SoraGenerationWorkflow:
             sqlite_db.update_sora_job(job_id, {"generation_id": generation_id})
             return
         sqlite_db.update_ixbrowser_generate_job(job_id, {"generation_id": generation_id})
+
+    @staticmethod
+    def _normalize_submit_error_code(value: Optional[str]) -> Optional[str]:
+        text = str(value or "").strip().lower()
+        return text or None
+
+    @classmethod
+    def _is_sentinel_not_ready_submit_error(cls, *, error: Optional[str], error_code: Optional[str]) -> bool:
+        code = cls._normalize_submit_error_code(error_code)
+        if isinstance(code, str) and code.startswith(cls.SENTINEL_NOT_READY_ERROR_PREFIX):
+            return True
+        raw = str(error or "")
+        if "页面未加载 SentinelSDK" in raw:
+            return True
+        lowered = raw.lower()
+        return "sentinelsdk" in lowered and "无法提交生成请求" in raw
+
+    @staticmethod
+    def _append_submit_error_code(error: Optional[str], error_code: Optional[str]) -> str:
+        text = str(error or "").strip() or "提交生成失败"
+        code = str(error_code or "").strip().lower()
+        if not code:
+            return text
+        marker = f"error_code={code}"
+        if marker in text:
+            return text
+        return f"{text}（{marker}）"
+
+    async def _reopen_submit_page(self, playwright, profile_id: int, *, previous_browser=None):
+        if previous_browser is not None:
+            try:
+                await previous_browser.close()
+            except Exception:  # noqa: BLE001
+                pass
+        try:
+            await self._close_profile(profile_id)
+        except Exception:  # noqa: BLE001
+            pass
+
+        open_data = await self._open_profile_with_retry(profile_id, max_attempts=2)
+        ws_endpoint = open_data.get("ws")
+        if not ws_endpoint:
+            debugging_address = open_data.get("debugging_address")
+            if debugging_address:
+                ws_endpoint = f"http://{debugging_address}"
+        if not ws_endpoint:
+            raise self._connection_error("提交重连失败：未返回调试地址（ws/debugging_address）")
+
+        browser = await playwright.chromium.connect_over_cdp(ws_endpoint, timeout=20_000)
+        context = browser.contexts[0] if browser.contexts else await browser.new_context()
+        page = context.pages[0] if context.pages else await context.new_page()
+        await self._prepare_sora_page(page, profile_id)
+        await page.goto("https://sora.chatgpt.com/drafts", wait_until="domcontentloaded", timeout=40_000)
+        await page.wait_for_timeout(1200)
+        device_id = await self._service._sora_publish_workflow._get_device_id_from_context(
+            context,
+            profile_id=profile_id,
+        )
+        return browser, context, page, device_id
+
     async def run_sora_submit_and_progress(
         self,
         job_id: int,
@@ -96,6 +160,7 @@ class SoraGenerationWorkflow:
                     strict_submit_priority,
                 )
                 last_submit_error: Optional[str] = None
+                sentinel_reopen_attempted = 0
                 for attempt in range(1, 3):
                     submit_attempts = attempt
                     submit_data = await self._service._sora_publish_workflow._submit_video_request_from_page(
@@ -111,11 +176,50 @@ class SoraGenerationWorkflow:
                     task_id = submit_data.get("task_id")
                     access_token = submit_data.get("access_token")
                     submit_error = submit_data.get("error")
+                    submit_error_code = self._normalize_submit_error_code(submit_data.get("error_code"))
 
                     if task_id:
                         break
 
+                    sentinel_not_ready = self._is_sentinel_not_ready_submit_error(
+                        error=submit_error,
+                        error_code=submit_error_code,
+                    )
+                    if sentinel_not_ready and sentinel_reopen_attempted >= self.SENTINEL_REOPEN_MAX_ATTEMPTS:
+                        submit_error_code = self.SENTINEL_NOT_READY_AFTER_REOPEN
+                        submit_error = self._append_submit_error_code(submit_error, submit_error_code)
+
                     last_submit_error = submit_error or "提交生成失败"
+
+                    can_reopen_for_sentinel = (
+                        sentinel_not_ready
+                        and sentinel_reopen_attempted < self.SENTINEL_REOPEN_MAX_ATTEMPTS
+                        and submit_priority == "server_request_first"
+                        and bool(strict_submit_priority)
+                        and attempt < 2
+                    )
+                    if can_reopen_for_sentinel:
+                        sentinel_reopen_attempted += 1
+                        sqlite_db.create_sora_job_event(
+                            job_id,
+                            "submit",
+                            "retry",
+                            f"Sentinel 未就绪，执行窗口重连重试({sentinel_reopen_attempted}/{self.SENTINEL_REOPEN_MAX_ATTEMPTS})",
+                        )
+                        try:
+                            browser, context, page, device_id = await self._reopen_submit_page(
+                                playwright,
+                                profile_id,
+                                previous_browser=browser,
+                            )
+                        except Exception as reopen_exc:  # noqa: BLE001
+                            last_submit_error = self._append_submit_error_code(
+                                f"页面未加载 SentinelSDK，窗口重连后仍不可用: {reopen_exc}",
+                                self.SENTINEL_NOT_READY_AFTER_REOPEN,
+                            )
+                            break
+                        continue
+
                     if submit_error and self._is_sora_overload_error(submit_error):
                         # 不要在同一账号内重复提交，交给“换号重试”逻辑处理
                         break
@@ -548,7 +652,10 @@ class SoraGenerationWorkflow:
                 )
 
                 last_submit_error: Optional[str] = None
-                for attempt in range(1, max_submit_attempts + 1):
+                sentinel_reopen_attempted = 0
+                max_submit_attempts_int = max(1, int(max_submit_attempts))
+                attempt = 1
+                while attempt <= max_submit_attempts_int:
                     submit_attempts = attempt
                     sqlite_db.update_ixbrowser_generate_job(job_id, {"submit_attempts": submit_attempts})
                     submit_data = await self._service._sora_publish_workflow._submit_video_request_from_page(
@@ -564,14 +671,58 @@ class SoraGenerationWorkflow:
                     task_url = submit_data.get("task_url")
                     access_token = submit_data.get("access_token")
                     submit_error = submit_data.get("error")
+                    submit_error_code = self._normalize_submit_error_code(submit_data.get("error_code"))
 
                     if task_id:
                         break
 
+                    sentinel_not_ready = self._is_sentinel_not_ready_submit_error(
+                        error=submit_error,
+                        error_code=submit_error_code,
+                    )
+                    if sentinel_not_ready and sentinel_reopen_attempted >= self.SENTINEL_REOPEN_MAX_ATTEMPTS:
+                        submit_error_code = self.SENTINEL_NOT_READY_AFTER_REOPEN
+                        submit_error = self._append_submit_error_code(submit_error, submit_error_code)
+
                     last_submit_error = submit_error or "提交生成失败"
-                    if attempt < max_submit_attempts:
-                        await page.wait_for_timeout(1500)
+
+                    can_reopen_for_sentinel = (
+                        sentinel_not_ready
+                        and sentinel_reopen_attempted < self.SENTINEL_REOPEN_MAX_ATTEMPTS
+                        and submit_priority == "server_request_first"
+                        and bool(strict_submit_priority)
+                    )
+                    if can_reopen_for_sentinel:
+                        sentinel_reopen_attempted += 1
+                        logger.info(
+                            "Sentinel 未就绪，执行窗口重连重试 | profile_id=%s | attempt=%s/%s",
+                            int(profile_id),
+                            sentinel_reopen_attempted,
+                            int(self.SENTINEL_REOPEN_MAX_ATTEMPTS),
+                        )
+                        try:
+                            browser, context, page, device_id = await self._reopen_submit_page(
+                                playwright,
+                                profile_id,
+                                previous_browser=browser,
+                            )
+                        except Exception as reopen_exc:  # noqa: BLE001
+                            last_submit_error = self._append_submit_error_code(
+                                f"页面未加载 SentinelSDK，窗口重连后仍不可用: {reopen_exc}",
+                                self.SENTINEL_NOT_READY_AFTER_REOPEN,
+                            )
+                            break
+
+                        if attempt >= max_submit_attempts_int:
+                            max_submit_attempts_int += 1
+                        attempt += 1
                         continue
+
+                    if attempt < max_submit_attempts_int:
+                        await page.wait_for_timeout(1500)
+                        attempt += 1
+                        continue
+                    break
 
                 if not task_id:
                     raise self._service_error(last_submit_error or "提交生成失败")
