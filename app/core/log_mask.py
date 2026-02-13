@@ -61,7 +61,9 @@ def mask_message_text(message: str | None, mode: str | None = "basic") -> str | 
         return message
     if not _is_basic_mode(mode):
         return message
-    return _MESSAGE_KV_RE.sub(lambda m: f"{m.group(1)}{m.group(2)}{mask_secret_value(m.group(3))}", str(message))
+    return _MESSAGE_KV_RE.sub(
+        lambda m: f"{m.group(1)}{m.group(2)}{mask_secret_value(m.group(3))}", str(message)
+    )
 
 
 def mask_metadata(metadata: Any, mode: str | None = "basic") -> Any:

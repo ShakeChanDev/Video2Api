@@ -1,4 +1,5 @@
 """Video2Api FastAPI 入口"""
+
 import asyncio
 import logging
 import os
@@ -19,7 +20,11 @@ from app.core.logger import setup_logging
 from app.db.sqlite import sqlite_db
 from app.services.account_recovery_scheduler import account_recovery_scheduler
 from app.services.scan_scheduler import scan_scheduler
-from app.services.system_settings import apply_runtime_settings, load_scan_scheduler_settings, load_system_settings
+from app.services.system_settings import (
+    apply_runtime_settings,
+    load_scan_scheduler_settings,
+    load_system_settings,
+)
 from app.services.worker_runner import worker_runner
 
 # Windows 平台下，Playwright 需要使用 ProactorEventLoopPolicy 才能正常启动子进程
@@ -29,6 +34,7 @@ if sys.platform == "win32":
 setup_logging()
 logger = logging.getLogger(__name__)
 apply_runtime_settings()
+
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
@@ -49,7 +55,9 @@ async def lifespan(_app: FastAPI):
             )
         apply_runtime_settings()
         scan_scheduler.apply_settings(load_scan_scheduler_settings())
-        account_recovery_scheduler.apply_settings(load_system_settings(mask_sensitive=False).sora.account_dispatch)
+        account_recovery_scheduler.apply_settings(
+            load_system_settings(mask_sensitive=False).sora.account_dispatch
+        )
         await worker_runner.start()
         await scan_scheduler.start()
         await account_recovery_scheduler.start()
@@ -176,7 +184,9 @@ async def log_requests(request: Request, call_next):
         duration_ms = int(process_time * 1000)
         slow_threshold_ms = int(getattr(settings, "api_slow_threshold_ms", 2000) or 2000)
         is_slow = duration_ms >= slow_threshold_ms
-        capture_mode = str(getattr(settings, "api_log_capture_mode", "all") or "all").strip().lower()
+        capture_mode = (
+            str(getattr(settings, "api_log_capture_mode", "all") or "all").strip().lower()
+        )
         should_capture = True
         if capture_mode == "failed_slow":
             should_capture = bool(status_code >= 400 or is_slow)

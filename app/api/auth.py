@@ -1,4 +1,5 @@
 """认证接口"""
+
 from datetime import timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
@@ -38,7 +39,9 @@ async def login(request: Request, form_data: OAuth2PasswordRequestForm = Depends
         )
 
     access_token_expires = timedelta(minutes=settings.access_token_expire_minutes)
-    access_token = create_access_token(data={"sub": user["username"]}, expires_delta=access_token_expires)
+    access_token = create_access_token(
+        data={"sub": user["username"]}, expires_delta=access_token_expires
+    )
 
     response_payload = {
         "access_token": access_token,

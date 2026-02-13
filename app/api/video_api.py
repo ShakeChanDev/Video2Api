@@ -89,7 +89,9 @@ def _map_progress(raw_progress: Any, status: str) -> int:
     return progress
 
 
-def _map_progress_message(status: str, raw_status: Any, phase: Any, error: Any, watermark_error: Any) -> Optional[str]:
+def _map_progress_message(
+    status: str, raw_status: Any, phase: Any, error: Any, watermark_error: Any
+) -> Optional[str]:
     if status == "completed":
         return None
     if status == "failed":
@@ -218,7 +220,9 @@ def _build_video_detail_response(job: Any) -> VideoDetailResponse:
     watermark_url = str(_read_attr(job, "watermark_url") or "").strip()
     video_url = None
     has_valid_watermark = bool(watermark_url) and not _is_sora_share_like_url(watermark_url)
-    if has_valid_watermark and (watermark_status == "completed" or (not watermark_status and status == "completed")):
+    if has_valid_watermark and (
+        watermark_status == "completed" or (not watermark_status and status == "completed")
+    ):
         video_url = watermark_url
 
     return VideoDetailResponse(

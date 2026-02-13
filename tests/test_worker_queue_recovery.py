@@ -48,7 +48,10 @@ def test_sora_job_claim_heartbeat_and_fail_recovery(temp_db):
     claimed2 = sqlite_db.claim_next_sora_job(owner="worker-b", lease_seconds=30)
     assert claimed2 is None
 
-    assert sqlite_db.heartbeat_sora_job_lease(job_id=job_id, owner="worker-a", lease_seconds=30) is True
+    assert (
+        sqlite_db.heartbeat_sora_job_lease(job_id=job_id, owner="worker-a", lease_seconds=30)
+        is True
+    )
 
     # 模拟运行中任务租约过期 -> 失败收敛
     sqlite_db.update_sora_job(
@@ -134,7 +137,12 @@ def test_nurture_batch_claim_and_requeue(temp_db):
     assert int(claimed["id"]) == int(batch_id)
     assert claimed["lease_owner"] == "worker-a"
     assert int(claimed.get("run_attempt") or 0) == 1
-    assert sqlite_db.heartbeat_sora_nurture_batch_lease(batch_id=batch_id, owner="worker-a", lease_seconds=30) is True
+    assert (
+        sqlite_db.heartbeat_sora_nurture_batch_lease(
+            batch_id=batch_id, owner="worker-a", lease_seconds=30
+        )
+        is True
+    )
 
     sqlite_db.update_sora_nurture_batch(
         batch_id,

@@ -20,4 +20,3 @@ class IXBrowserAPIError(IXBrowserServiceError):
 
 class IXBrowserNotFoundError(IXBrowserServiceError):
     """ixBrowser 资源不存在"""
-

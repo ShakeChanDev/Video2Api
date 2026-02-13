@@ -30,7 +30,11 @@ def temp_db(tmp_path):
 @pytest.fixture()
 def client(temp_db):
     del temp_db
-    app.dependency_overrides[get_current_active_user] = lambda: {"id": 1, "username": "Admin", "role": "admin"}
+    app.dependency_overrides[get_current_active_user] = lambda: {
+        "id": 1,
+        "username": "Admin",
+        "role": "admin",
+    }
     try:
         yield TestClient(app, raise_server_exceptions=False)
     finally:

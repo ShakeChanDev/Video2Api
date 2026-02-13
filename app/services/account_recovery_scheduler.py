@@ -1,4 +1,5 @@
 """账号恢复扫描调度器（基于 account_dispatch 配置）。"""
+
 from __future__ import annotations
 
 import asyncio
@@ -82,7 +83,9 @@ class AccountRecoveryScheduler:
         interval_minutes = max(1, int(cfg.auto_scan_interval_minutes or 10))
         slot = int(now // (interval_minutes * 60))
         lock_key = f"scheduler.account_recovery.{slot}"
-        if not sqlite_db.try_acquire_scheduler_lock(lock_key=lock_key, owner=self._owner, ttl_seconds=120):
+        if not sqlite_db.try_acquire_scheduler_lock(
+            lock_key=lock_key, owner=self._owner, ttl_seconds=120
+        ):
             self._next_run_at = now + 5
             return
 
@@ -113,7 +116,11 @@ class AccountRecoveryScheduler:
                 status="failed",
                 level="WARN",
                 message=f"账号恢复扫描失败: {exc}",
-                metadata={"group_title": group_title, "interval_minutes": interval_minutes, "error": str(exc)},
+                metadata={
+                    "group_title": group_title,
+                    "interval_minutes": interval_minutes,
+                    "error": str(exc),
+                },
             )
 
     def _set_paused(self, reason: str) -> None:

@@ -1,4 +1,5 @@
 """Sora 任务 SSE 流服务：快照差分与阶段事件筛选。"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass

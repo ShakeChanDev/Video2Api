@@ -30,7 +30,11 @@ def temp_db(tmp_path):
 @pytest.fixture()
 def client(temp_db):
     del temp_db
-    app.dependency_overrides[get_current_active_user] = lambda: {"id": 1, "username": "Admin", "role": "admin"}
+    app.dependency_overrides[get_current_active_user] = lambda: {
+        "id": 1,
+        "username": "Admin",
+        "role": "admin",
+    }
     try:
         yield TestClient(app, raise_server_exceptions=False)
     finally:
@@ -80,7 +84,12 @@ def test_fail_running_silent_refresh_jobs_marks_failed(temp_db):
         {"group_title": "Sora", "status": "running", "with_fallback": True}
     )
     completed_id = sqlite_db.create_ixbrowser_silent_refresh_job(
-        {"group_title": "Sora", "status": "completed", "with_fallback": True, "finished_at": "2026-02-08 10:00:00"}
+        {
+            "group_title": "Sora",
+            "status": "completed",
+            "with_fallback": True,
+            "finished_at": "2026-02-08 10:00:00",
+        }
     )
 
     affected = sqlite_db.fail_running_ixbrowser_silent_refresh_jobs("服务重启中断")

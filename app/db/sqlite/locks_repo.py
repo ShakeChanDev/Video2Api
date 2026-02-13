@@ -12,18 +12,20 @@ class SQLiteLocksRepo:
         if not safe_key:
             return False
         now = self._now_str()
-        lock_until = (datetime.now() + timedelta(seconds=max(1, int(ttl_seconds)))).strftime("%Y-%m-%d %H:%M:%S")
+        lock_until = (datetime.now() + timedelta(seconds=max(1, int(ttl_seconds)))).strftime(
+            "%Y-%m-%d %H:%M:%S"
+        )
         conn = self._get_conn()
         cursor = conn.cursor()
         try:
             cursor.execute("BEGIN IMMEDIATE")
             cursor.execute(
-                '''
+                """
                 SELECT lock_key
                 FROM scheduler_locks
                 WHERE lock_key = ?
                   AND locked_until >= ?
-                ''',
+                """,
                 (safe_key, now),
             )
             row = cursor.fetchone()
@@ -31,14 +33,14 @@ class SQLiteLocksRepo:
                 conn.rollback()
                 return False
             cursor.execute(
-                '''
+                """
                 INSERT INTO scheduler_locks (lock_key, owner, locked_until, updated_at)
                 VALUES (?, ?, ?, ?)
                 ON CONFLICT(lock_key) DO UPDATE SET
                     owner = excluded.owner,
                     locked_until = excluded.locked_until,
                     updated_at = excluded.updated_at
-                ''',
+                """,
                 (safe_key, safe_owner, lock_until, now),
             )
             conn.commit()
@@ -48,4 +50,3 @@ class SQLiteLocksRepo:
             return False
         finally:
             conn.close()
-

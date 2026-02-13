@@ -1,4 +1,5 @@
 """Sora 任务执行器：承接 SoraJob 运行与去水印链路。"""
+
 from __future__ import annotations
 
 import asyncio
@@ -61,7 +62,9 @@ class SoraJobRunner:
             dt = dt.astimezone().replace(tzinfo=None)
         return dt
 
-    def _remaining_job_timeout_seconds(self, *, started_at: Optional[str], timeout_seconds: int) -> float:
+    def _remaining_job_timeout_seconds(
+        self, *, started_at: Optional[str], timeout_seconds: int
+    ) -> float:
         timeout_sec = float(max(1, int(timeout_seconds)))
         started_dt = self._parse_datetime_text(started_at)
         if started_dt is None:
@@ -76,7 +79,9 @@ class SoraJobRunner:
             return f"任务执行超时（>{minutes}分钟）"
         return f"任务执行超时（>{total_seconds}秒）"
 
-    def _ensure_job_not_timed_out(self, *, started_at: Optional[str], timeout_seconds: int) -> float:
+    def _ensure_job_not_timed_out(
+        self, *, started_at: Optional[str], timeout_seconds: int
+    ) -> float:
         remaining = self._remaining_job_timeout_seconds(
             started_at=started_at,
             timeout_seconds=timeout_seconds,
@@ -134,14 +139,16 @@ class SoraJobRunner:
             try:
                 if phase == "submit":
                     task_id, generation_id = await self._run_with_job_timeout(
-                        lambda: self._service._sora_generation_workflow.run_sora_submit_and_progress(  # noqa: SLF001
-                            job_id=job_id,
-                            profile_id=int(row["profile_id"]),
-                            prompt=str(row["prompt"]),
-                            image_url=str(row.get("image_url") or "").strip() or None,
-                            duration=str(row["duration"]),
-                            aspect_ratio=str(row["aspect_ratio"]),
-                            started_at=started_at,
+                        lambda: (
+                            self._service._sora_generation_workflow.run_sora_submit_and_progress(  # noqa: SLF001
+                                job_id=job_id,
+                                profile_id=int(row["profile_id"]),
+                                prompt=str(row["prompt"]),
+                                image_url=str(row.get("image_url") or "").strip() or None,
+                                duration=str(row["duration"]),
+                                aspect_ratio=str(row["aspect_ratio"]),
+                                started_at=started_at,
+                            )
                         ),
                         started_at=started_at,
                         timeout_seconds=job_timeout_seconds,
@@ -174,10 +181,12 @@ class SoraJobRunner:
                     self._db.create_sora_job_event(job_id, "genid", "start", "开始获取 genid")
                     if not generation_id:
                         generation_id = await self._run_with_job_timeout(
-                            lambda: self._service._sora_generation_workflow.run_sora_fetch_generation_id(  # noqa: SLF001
-                                job_id=job_id,
-                                profile_id=int(row["profile_id"]),
-                                task_id=task_id,
+                            lambda: (
+                                self._service._sora_generation_workflow.run_sora_fetch_generation_id(  # noqa: SLF001
+                                    job_id=job_id,
+                                    profile_id=int(row["profile_id"]),
+                                    task_id=task_id,
+                                )
                             ),
                             started_at=started_at,
                             timeout_seconds=job_timeout_seconds,
@@ -236,7 +245,9 @@ class SoraJobRunner:
                         )
                     except Exception as watermark_exc:  # noqa: BLE001
                         config = self._db.get_watermark_free_config() or {}
-                        if self._is_fallback_enabled(config) and self._is_watermark_fallback_candidate(str(watermark_exc)):
+                        if self._is_fallback_enabled(
+                            config
+                        ) and self._is_watermark_fallback_candidate(str(watermark_exc)):
                             self.complete_sora_job_with_publish_fallback(
                                 job_id=job_id,
                                 publish_url=publish_url,
@@ -244,7 +255,9 @@ class SoraJobRunner:
                             )
                             return
                         raise
-                    self.complete_sora_job_after_watermark(job_id=job_id, watermark_url=watermark_url)
+                    self.complete_sora_job_after_watermark(
+                        job_id=job_id, watermark_url=watermark_url
+                    )
                     return
 
                 if phase == "done":
@@ -269,12 +282,16 @@ class SoraJobRunner:
                     },
                 )
                 self._db.create_sora_job_event(job_id, failed_phase, "fail", str(exc))
-                if str(failed_phase or "").strip().lower() == "submit" and self._service._is_sora_overload_error(str(exc)):  # noqa: SLF001
+                if str(
+                    failed_phase or ""
+                ).strip().lower() == "submit" and self._service._is_sora_overload_error(str(exc)):  # noqa: SLF001
                     try:
                         updated_row = self._db.get_sora_job(job_id) or current_row
                         await self._service._spawn_sora_job_on_overload(updated_row, trigger="auto")  # noqa: SLF001
                     except Exception as retry_exc:  # noqa: BLE001
-                        self._db.create_sora_job_event(job_id, failed_phase, "auto_retry_giveup", str(retry_exc))
+                        self._db.create_sora_job_event(
+                            job_id, failed_phase, "auto_retry_giveup", str(retry_exc)
+                        )
                 return
 
     def complete_sora_job_after_watermark(self, job_id: int, watermark_url: str) -> None:
@@ -293,7 +310,9 @@ class SoraJobRunner:
         )
         self._db.create_sora_job_event(job_id, "watermark", "finish", "去水印完成")
 
-    def complete_sora_job_with_publish_fallback(self, job_id: int, publish_url: str, reason: str) -> None:
+    def complete_sora_job_with_publish_fallback(
+        self, job_id: int, publish_url: str, reason: str
+    ) -> None:
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         self._db.update_sora_job(
             job_id,
@@ -309,7 +328,9 @@ class SoraJobRunner:
                 "finished_at": now,
             },
         )
-        self._db.create_sora_job_event(job_id, "watermark", "fallback", f"去水印失败，回退分享链接: {reason}")
+        self._db.create_sora_job_event(
+            job_id, "watermark", "fallback", f"去水印失败，回退分享链接: {reason}"
+        )
 
     def is_sora_job_canceled(self, job_id: int) -> bool:
         row = self._db.get_sora_job(job_id)
@@ -321,8 +342,12 @@ class SoraJobRunner:
             self.complete_sora_job_after_watermark(job_id=job_id, watermark_url=watermark_url)
         except Exception as exc:  # noqa: BLE001
             config = self._db.get_watermark_free_config() or {}
-            if self._is_fallback_enabled(config) and self._is_watermark_fallback_candidate(str(exc)):
-                self.complete_sora_job_with_publish_fallback(job_id=job_id, publish_url=publish_url, reason=str(exc))
+            if self._is_fallback_enabled(config) and self._is_watermark_fallback_candidate(
+                str(exc)
+            ):
+                self.complete_sora_job_with_publish_fallback(
+                    job_id=job_id, publish_url=publish_url, reason=str(exc)
+                )
                 return
             failed_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             self._db.update_sora_job(
@@ -364,7 +389,11 @@ class SoraJobRunner:
             parsed = urlparse(text)
         except Exception:  # noqa: BLE001
             return None
-        if parsed.scheme in {"http", "https"} and parsed.netloc == "sora.chatgpt.com" and parsed.path.startswith("/p/"):
+        if (
+            parsed.scheme in {"http", "https"}
+            and parsed.netloc == "sora.chatgpt.com"
+            and parsed.path.startswith("/p/")
+        ):
             return f"https://sora.chatgpt.com{parsed.path}"
         return None
 
@@ -478,7 +507,11 @@ class SoraJobRunner:
             return False
         host = str(parsed.netloc or "").strip().lower()
         path = str(parsed.path or "").strip()
-        if parsed.scheme in {"http", "https"} and host in {"sora.chatgpt.com", "www.sora.chatgpt.com"} and path.startswith("/p/"):
+        if (
+            parsed.scheme in {"http", "https"}
+            and host in {"sora.chatgpt.com", "www.sora.chatgpt.com"}
+            and path.startswith("/p/")
+        ):
             return cls.extract_share_id_from_url(path) is not None
         return False
 
@@ -515,7 +548,9 @@ class SoraJobRunner:
         if result.get("error"):
             raise self._service_error(str(result.get("error")))
 
-        download_link = result.get("download_link") or result.get("download_url") or result.get("url")
+        download_link = (
+            result.get("download_link") or result.get("download_url") or result.get("url")
+        )
         if not download_link:
             raise self._service_error("解析服务未返回下载链接")
         return str(download_link)

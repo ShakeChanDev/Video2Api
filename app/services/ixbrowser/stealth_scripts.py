@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from typing import List
 
-
 BASE_STEALTH_SCRIPT = r"""
 (() => {
   const defineGetter = (obj, key, value) => {
@@ -86,4 +85,3 @@ def get_stealth_init_scripts(stage: str = "default") -> List[str]:
     if str(stage or "").strip().lower() == "create":
         scripts.append(MOBILE_CREATE_STAGE_SCRIPT)
     return scripts
-

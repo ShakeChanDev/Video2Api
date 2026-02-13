@@ -33,7 +33,9 @@ def client():
         (IXBrowserServiceError("bad req"), 400, "ixbrowser_service_error", False),
     ],
 )
-def test_custom_ixbrowser_exceptions_mapped(monkeypatch, client, exc, status_code, error_type, has_code):
+def test_custom_ixbrowser_exceptions_mapped(
+    monkeypatch, client, exc, status_code, error_type, has_code
+):
     async def _fake_list_groups():
         raise exc
 

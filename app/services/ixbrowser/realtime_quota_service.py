@@ -1,4 +1,5 @@
 """实时配额服务：承接配额监听、入库与 SSE 推送。"""
+
 from __future__ import annotations
 
 import asyncio
@@ -79,7 +80,11 @@ class RealtimeQuotaService:
                 return
             now = time.monotonic()
             cached = self._quota_cache.get(int(profile_id))
-            if cached and cached[0] == remaining_count and (now - cached[1]) < self._quota_cache_ttl:
+            if (
+                cached
+                and cached[0] == remaining_count
+                and (now - cached[1]) < self._quota_cache_ttl
+            ):
                 return
             self._quota_cache[int(profile_id)] = (remaining_count, now)
             spawn(
@@ -128,7 +133,9 @@ class RealtimeQuotaService:
                     window_name = window.name
                     break
 
-        operator_username = str(getattr(self._service, "_realtime_operator_username", "实时使用") or "实时使用")
+        operator_username = str(
+            getattr(self._service, "_realtime_operator_username", "实时使用") or "实时使用"
+        )
         run_row = self._db.get_ixbrowser_latest_scan_run_by_operator(group_title, operator_username)
         run_id = None
         if run_row:
@@ -203,7 +210,9 @@ class RealtimeQuotaService:
             }
 
         remaining_count = self._to_int(rate_info.get("estimated_num_videos_remaining"))
-        purchased_remaining = self._to_int(rate_info.get("estimated_num_purchased_videos_remaining"))
+        purchased_remaining = self._to_int(
+            rate_info.get("estimated_num_purchased_videos_remaining")
+        )
         reset_seconds = self._to_int(rate_info.get("access_resets_in_seconds"))
 
         total_count = None
@@ -234,4 +243,3 @@ class RealtimeQuotaService:
             except ValueError:
                 return None
         return None
-

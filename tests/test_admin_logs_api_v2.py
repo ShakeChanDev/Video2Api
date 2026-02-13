@@ -6,8 +6,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.api.admin import stream_system_logs
-from app.core.auth import create_access_token
-from app.core.auth import get_current_active_user
+from app.core.auth import create_access_token, get_current_active_user
 from app.db.sqlite import sqlite_db
 from app.main import app
 
@@ -34,7 +33,11 @@ def temp_db(tmp_path):
 @pytest.fixture()
 def client(temp_db):
     del temp_db
-    app.dependency_overrides[get_current_active_user] = lambda: {"id": 1, "username": "Admin", "role": "admin"}
+    app.dependency_overrides[get_current_active_user] = lambda: {
+        "id": 1,
+        "username": "Admin",
+        "role": "admin",
+    }
     try:
         yield TestClient(app, raise_server_exceptions=False)
     finally:
@@ -64,14 +67,18 @@ def test_admin_logs_v2_list_and_stats(client):
         is_slow=True,
     )
 
-    resp = client.get("/api/v1/admin/logs", params={"source": "api", "path": "/api/v1/demo", "limit": 1})
+    resp = client.get(
+        "/api/v1/admin/logs", params={"source": "api", "path": "/api/v1/demo", "limit": 1}
+    )
     assert resp.status_code == 200
     payload = resp.json()
     assert isinstance(payload.get("items"), list)
     assert payload.get("has_more") is True
     assert isinstance(payload.get("next_cursor"), str)
 
-    stats_resp = client.get("/api/v1/admin/logs/stats", params={"source": "api", "path": "/api/v1/demo"})
+    stats_resp = client.get(
+        "/api/v1/admin/logs/stats", params={"source": "api", "path": "/api/v1/demo"}
+    )
     assert stats_resp.status_code == 200
     stats = stats_resp.json()
     assert stats["total_count"] == 2

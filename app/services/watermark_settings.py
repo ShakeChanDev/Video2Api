@@ -1,4 +1,5 @@
 """去水印配置服务"""
+
 from __future__ import annotations
 
 from typing import Dict

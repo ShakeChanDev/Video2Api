@@ -1,4 +1,5 @@
 """后台任务运行时：统一创建任务并记录异常。"""
+
 from __future__ import annotations
 
 import asyncio
@@ -10,7 +11,9 @@ from app.db.sqlite import sqlite_db
 logger = logging.getLogger(__name__)
 
 
-def _safe_log_background_exception(task_name: str, exc: Exception, metadata: Optional[Dict[str, Any]] = None) -> None:
+def _safe_log_background_exception(
+    task_name: str, exc: Exception, metadata: Optional[Dict[str, Any]] = None
+) -> None:
     try:
         sqlite_db.create_event_log(
             source="system",
@@ -61,4 +64,3 @@ def spawn(
     task = asyncio.create_task(_runner(), name=task_name)
     task.add_done_callback(_consume_task_result)
     return task
-

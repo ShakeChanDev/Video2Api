@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import base64
 import inspect
 import json
@@ -22,10 +21,8 @@ from app.models.ixbrowser import (
     IXBrowserWindow,
 )
 from app.services.ixbrowser.errors import (
-    IXBrowserAPIError,
     IXBrowserConnectionError,
     IXBrowserNotFoundError,
-    IXBrowserServiceError,
 )
 
 logger = logging.getLogger(__name__)
@@ -78,12 +75,11 @@ class ScanMixin:
                     ws_endpoint = f"http://{debugging_address}"
 
             if not ws_endpoint:
-                raise IXBrowserConnectionError("打开窗口成功，但未返回调试地址（ws/debugging_address）")
+                raise IXBrowserConnectionError(
+                    "打开窗口成功，但未返回调试地址（ws/debugging_address）"
+                )
 
-            browser = await playwright.chromium.connect_over_cdp(
-                ws_endpoint,
-                timeout=15_000
-            )
+            browser = await playwright.chromium.connect_over_cdp(ws_endpoint, timeout=15_000)
             session_status, session_obj, session_raw = await self._fetch_sora_session(
                 browser,
                 window.profile_id,
@@ -249,8 +245,14 @@ class ScanMixin:
                 started_at = time.perf_counter()
                 profile_id = int(window.profile_id)
 
-                history_session = sqlite_db.get_latest_ixbrowser_profile_session(target.title, profile_id)
-                session_seed = history_session.get("session_json") if isinstance(history_session, dict) else None
+                history_session = sqlite_db.get_latest_ixbrowser_profile_session(
+                    target.title, profile_id
+                )
+                session_seed = (
+                    history_session.get("session_json")
+                    if isinstance(history_session, dict)
+                    else None
+                )
                 access_token = self._extract_access_token(session_seed)
 
                 item: Optional[IXBrowserSessionScanItem] = None
@@ -294,7 +296,11 @@ class ScanMixin:
                         )
 
                         fetch_started_at = time.perf_counter()
-                        session_status, session_obj, session_raw = await self._fetch_sora_session_via_curl_cffi(
+                        (
+                            session_status,
+                            session_obj,
+                            session_raw,
+                        ) = await self._fetch_sora_session_via_curl_cffi(
                             access_token,
                             proxy_url=proxy_url,
                             user_agent=user_agent,
@@ -313,7 +319,9 @@ class ScanMixin:
                             profile_id=profile_id,
                         )
                         fetch_cost_ms = int((time.perf_counter() - fetch_started_at) * 1000)
-                        account_plan_hint = subscription_info.get("plan") or self._extract_account_plan(session_obj)
+                        account_plan_hint = subscription_info.get(
+                            "plan"
+                        ) or self._extract_account_plan(session_obj)
                         logger.info(
                             "静默更新 | profile_id=%s | API 拉取完成 | session=%s | subscriptions=%s | plan=%s | nf_check=%s | remaining=%s | total=%s | reset_at=%s | 耗时=%sms",
                             int(profile_id),
@@ -337,8 +345,16 @@ class ScanMixin:
 
                         cf_challenge = (
                             is_cf(session_status, session_raw)
-                            or is_cf(subscription_info.get("status"), subscription_info.get("raw"), subscription_info.get("error"))
-                            or is_cf(quota_info.get("status"), quota_info.get("raw"), quota_info.get("error"))
+                            or is_cf(
+                                subscription_info.get("status"),
+                                subscription_info.get("raw"),
+                                subscription_info.get("error"),
+                            )
+                            or is_cf(
+                                quota_info.get("status"),
+                                quota_info.get("raw"),
+                                quota_info.get("error"),
+                            )
                         )
                         if cf_challenge:
                             should_browser_fallback = True
@@ -353,20 +369,30 @@ class ScanMixin:
                                 session_obj if isinstance(session_obj, dict) else None,
                             )
                             subscription_auth_failed = self._is_sora_token_auth_failure(
-                                subscription_info.get("status") if isinstance(subscription_info.get("status"), int) else None,
+                                subscription_info.get("status")
+                                if isinstance(subscription_info.get("status"), int)
+                                else None,
                                 subscription_info.get("raw"),
                                 subscription_info.get("payload"),
                             )
                             quota_auth_failed = self._is_sora_token_auth_failure(
-                                quota_info.get("status") if isinstance(quota_info.get("status"), int) else None,
+                                quota_info.get("status")
+                                if isinstance(quota_info.get("status"), int)
+                                else None,
                                 quota_info.get("raw"),
                                 quota_info.get("payload"),
                             )
-                            should_browser_fallback = session_auth_failed or subscription_auth_failed or quota_auth_failed
+                            should_browser_fallback = (
+                                session_auth_failed or subscription_auth_failed or quota_auth_failed
+                            )
 
                             if not should_browser_fallback:
-                                account_plan = subscription_info.get("plan") or self._extract_account_plan(session_obj)
-                                success = int(session_status or 0) == 200 and isinstance(session_obj, dict)
+                                account_plan = subscription_info.get(
+                                    "plan"
+                                ) or self._extract_account_plan(session_obj)
+                                success = int(session_status or 0) == 200 and isinstance(
+                                    session_obj, dict
+                                )
                                 err = None
                                 if not success and session_status is not None:
                                     err = f"session 状态码 {session_status}"
@@ -378,16 +404,22 @@ class ScanMixin:
                                     window_name=window.name,
                                     group_id=target.id,
                                     group_title=target.title,
-                                    session_status=int(session_status) if isinstance(session_status, int) else None,
+                                    session_status=int(session_status)
+                                    if isinstance(session_status, int)
+                                    else None,
                                     account=self._extract_account(session_obj),
                                     account_plan=account_plan,
                                     session=session_obj if isinstance(session_obj, dict) else None,
-                                    session_raw=session_raw if isinstance(session_raw, str) else None,
+                                    session_raw=session_raw
+                                    if isinstance(session_raw, str)
+                                    else None,
                                     quota_remaining_count=quota_info.get("remaining_count"),
                                     quota_total_count=quota_info.get("total_count"),
                                     quota_reset_at=quota_info.get("reset_at"),
                                     quota_source=quota_info.get("source"),
-                                    quota_payload=quota_info.get("payload") if isinstance(quota_info.get("payload"), dict) else None,
+                                    quota_payload=quota_info.get("payload")
+                                    if isinstance(quota_info.get("payload"), dict)
+                                    else None,
                                     quota_error=quota_info.get("error"),
                                     proxy_mode=window.proxy_mode,
                                     proxy_id=window.proxy_id,
@@ -436,7 +468,9 @@ class ScanMixin:
                         )
 
                 if should_browser_fallback:
-                    logger.info("静默更新 | profile_id=%s | 进入补扫（将打开窗口抓取）", int(profile_id))
+                    logger.info(
+                        "静默更新 | profile_id=%s | 进入补扫（将打开窗口抓取）", int(profile_id)
+                    )
                     if playwright is None:
                         playwright_cm = self.playwright_factory()
                         playwright = await playwright_cm.__aenter__()
@@ -491,7 +525,9 @@ class ScanMixin:
                         error="未知错误",
                         duration_ms=duration_ms,
                     )
-                    logger.warning("静默更新失败 | profile_id=%s | 未生成扫描结果（未知错误）", int(profile_id))
+                    logger.warning(
+                        "静默更新失败 | profile_id=%s | 未生成扫描结果（未知错误）", int(profile_id)
+                    )
 
                 scanned_items[profile_id] = item
 
@@ -558,7 +594,9 @@ class ScanMixin:
         if with_fallback:
             self._apply_fallback_from_history(response)
             if response.run_id is not None:
-                sqlite_db.update_ixbrowser_scan_run_fallback_count(response.run_id, response.fallback_applied_count)
+                sqlite_db.update_ixbrowser_scan_run_fallback_count(
+                    response.run_id, response.fallback_applied_count
+                )
                 for it in response.results:
                     if it.fallback_applied:
                         sqlite_db.upsert_ixbrowser_scan_result(response.run_id, it.model_dump())
@@ -687,7 +725,9 @@ class ScanMixin:
                 browser = None
 
                 try:
-                    open_data = await self._open_profile_with_retry(window.profile_id, max_attempts=2)
+                    open_data = await self._open_profile_with_retry(
+                        window.profile_id, max_attempts=2
+                    )
                     ws_endpoint = open_data.get("ws")
                     if not ws_endpoint:
                         debugging_address = open_data.get("debugging_address")
@@ -695,11 +735,12 @@ class ScanMixin:
                             ws_endpoint = f"http://{debugging_address}"
 
                     if not ws_endpoint:
-                        raise IXBrowserConnectionError("打开窗口成功，但未返回调试地址（ws/debugging_address）")
+                        raise IXBrowserConnectionError(
+                            "打开窗口成功，但未返回调试地址（ws/debugging_address）"
+                        )
 
                     browser = await playwright.chromium.connect_over_cdp(
-                        ws_endpoint,
-                        timeout=15_000
+                        ws_endpoint, timeout=15_000
                     )
                     session_status, session_obj, session_raw = await self._fetch_sora_session(
                         browser,
@@ -831,12 +872,13 @@ class ScanMixin:
         if with_fallback:
             self._apply_fallback_from_history(response)
             if response.run_id is not None:
-                sqlite_db.update_ixbrowser_scan_run_fallback_count(response.run_id, response.fallback_applied_count)
+                sqlite_db.update_ixbrowser_scan_run_fallback_count(
+                    response.run_id, response.fallback_applied_count
+                )
                 for item in response.results:
                     if item.fallback_applied:
                         sqlite_db.upsert_ixbrowser_scan_result(response.run_id, item.model_dump())
         return response
-
 
     def get_latest_sora_scan(
         self,
@@ -881,9 +923,15 @@ class ScanMixin:
             self._apply_fallback_from_history(response)
 
         # 始终以“完整扫描”作为底图，再用“实时使用”覆盖配额信息（不覆盖账号/套餐字段）
-        if realtime_row and int(realtime_row.get("id") or 0) and int(base_row.get("id") or 0) != int(realtime_row.get("id") or 0):
+        if (
+            realtime_row
+            and int(realtime_row.get("id") or 0)
+            and int(base_row.get("id") or 0) != int(realtime_row.get("id") or 0)
+        ):
             try:
-                realtime_results = sqlite_db.get_ixbrowser_scan_results_by_run(int(realtime_row["id"]))
+                realtime_results = sqlite_db.get_ixbrowser_scan_results_by_run(
+                    int(realtime_row["id"])
+                )
             except Exception:  # noqa: BLE001
                 realtime_results = []
 
@@ -930,7 +978,9 @@ class ScanMixin:
         group_title: str = "Sora",
         limit: int = 10,
     ) -> List[IXBrowserScanRunSummary]:
-        rows = sqlite_db.get_ixbrowser_scan_runs(group_title, limit=min(max(limit, 1), self.scan_history_limit))
+        rows = sqlite_db.get_ixbrowser_scan_runs(
+            group_title, limit=min(max(limit, 1), self.scan_history_limit)
+        )
         return [
             IXBrowserScanRunSummary(
                 run_id=int(row["id"]),
@@ -963,8 +1013,12 @@ class ScanMixin:
         rows = sqlite_db.get_ixbrowser_scan_results_by_run(run_id)
         results: List[IXBrowserSessionScanItem] = []
         for row in rows:
-            session_obj = row.get("session_json") if isinstance(row.get("session_json"), dict) else None
-            account_plan = self._normalize_account_plan(row.get("account_plan")) or self._extract_account_plan(session_obj)
+            session_obj = (
+                row.get("session_json") if isinstance(row.get("session_json"), dict) else None
+            )
+            account_plan = self._normalize_account_plan(
+                row.get("account_plan")
+            ) or self._extract_account_plan(session_obj)
             results.append(
                 IXBrowserSessionScanItem(
                     profile_id=int(row["profile_id"]),
@@ -981,7 +1035,9 @@ class ScanMixin:
                     quota_total_count=row.get("quota_total_count"),
                     quota_reset_at=row.get("quota_reset_at"),
                     quota_source=row.get("quota_source"),
-                    quota_payload=row.get("quota_payload_json") if isinstance(row.get("quota_payload_json"), dict) else None,
+                    quota_payload=row.get("quota_payload_json")
+                    if isinstance(row.get("quota_payload_json"), dict)
+                    else None,
                     quota_error=row.get("quota_error"),
                     proxy_mode=row.get("proxy_mode"),
                     proxy_id=row.get("proxy_id"),
@@ -1041,8 +1097,12 @@ class ScanMixin:
             "success_count": response.success_count,
             "failed_count": response.failed_count,
             "fallback_applied_count": 0,
-            "operator_user_id": operator_user.get("id") if isinstance(operator_user, dict) else None,
-            "operator_username": operator_user.get("username") if isinstance(operator_user, dict) else None,
+            "operator_user_id": operator_user.get("id")
+            if isinstance(operator_user, dict)
+            else None,
+            "operator_username": operator_user.get("username")
+            if isinstance(operator_user, dict)
+            else None,
         }
         result_rows = [item.model_dump() for item in response.results]
         return sqlite_db.create_ixbrowser_scan_run(
@@ -1080,7 +1140,10 @@ class ScanMixin:
                 if fallback_plan:
                     item.account_plan = fallback_plan
                     changed = True
-            if item.quota_remaining_count is None and fallback_row.get("quota_remaining_count") is not None:
+            if (
+                item.quota_remaining_count is None
+                and fallback_row.get("quota_remaining_count") is not None
+            ):
                 item.quota_remaining_count = int(fallback_row.get("quota_remaining_count"))
                 changed = True
             if item.quota_total_count is None and fallback_row.get("quota_total_count") is not None:
@@ -1112,9 +1175,7 @@ class ScanMixin:
         try:
             await self._prepare_sora_page(page, profile_id)
             await page.goto(
-                "https://sora.chatgpt.com/drafts",
-                wait_until="domcontentloaded",
-                timeout=30_000
+                "https://sora.chatgpt.com/drafts", wait_until="domcontentloaded", timeout=30_000
             )
             await page.wait_for_timeout(1200)
         except PlaywrightTimeoutError as exc:
@@ -1164,9 +1225,7 @@ class ScanMixin:
                 await page.wait_for_timeout(2500 + attempt * 1000)
                 try:
                     await page.goto(
-                        "https://sora.chatgpt.com/",
-                        wait_until="domcontentloaded",
-                        timeout=40_000
+                        "https://sora.chatgpt.com/", wait_until="domcontentloaded", timeout=40_000
                     )
                     await page.wait_for_timeout(1200)
                 except PlaywrightTimeoutError:
@@ -1180,10 +1239,7 @@ class ScanMixin:
         return last_status, last_parsed, last_raw
 
     async def _fetch_sora_quota(
-        self,
-        browser,
-        profile_id: int,
-        session_obj: Optional[dict] = None
+        self, browser, profile_id: int, session_obj: Optional[dict] = None
     ) -> Dict[str, Optional[Any]]:
         """
         在指纹浏览器页面内获取 Sora 次数信息：
@@ -1241,7 +1297,7 @@ class ScanMixin:
               }
             }
             """,
-            access_token
+            access_token,
         )
 
         if not isinstance(response_data, dict):
@@ -1292,10 +1348,7 @@ class ScanMixin:
         }
 
     async def _fetch_sora_subscription_plan(
-        self,
-        browser,
-        profile_id: int,
-        session_obj: Optional[dict] = None
+        self, browser, profile_id: int, session_obj: Optional[dict] = None
     ) -> Optional[str]:
         """
         使用 accessToken 请求 Sora 订阅接口，尽可能识别账号套餐（Free/Plus）。
@@ -1307,7 +1360,11 @@ class ScanMixin:
             return None
 
         try:
-            context = browser.contexts[0] if getattr(browser, "contexts", None) else await browser.new_context()
+            context = (
+                browser.contexts[0]
+                if getattr(browser, "contexts", None)
+                else await browser.new_context()
+            )
             page = context.pages[0] if getattr(context, "pages", None) else await context.new_page()
             await self._prepare_sora_page(page, profile_id)
         except Exception:  # noqa: BLE001
@@ -1349,7 +1406,7 @@ class ScanMixin:
                   }
                 }
                 """,
-                access_token
+                access_token,
             )
         except Exception:  # noqa: BLE001
             return None

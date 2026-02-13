@@ -1,4 +1,5 @@
 """账号权重调度服务"""
+
 from __future__ import annotations
 
 from collections import defaultdict
@@ -63,7 +64,6 @@ class AccountDispatchService:
         now_ts = now.timestamp()
         lookback_since = now - timedelta(hours=int(settings.lookback_hours))
         lookback_since_str = _fmt_dt(lookback_since) or "1970-01-01 00:00:00"
-        cap = max(int(settings.quota_cap), 1)
 
         scan_map = self._load_latest_scan_map(safe_group)
         recent_jobs = sqlite_db.list_sora_jobs_since(safe_group, lookback_since_str)
@@ -113,7 +113,11 @@ class AccountDispatchService:
             # 配额按滚动 24 小时重置：
             # - quota_reset_at 表示“下一次释放的最早时间”，不是“每日清零”
             # - 若 reset_at 已过，但本地仍显示 remaining<=0（扫描/缓存滞后），仅保底到 1 次，避免误判“已回满”。
-            reset_text = quota_reset_at.strip() if isinstance(quota_reset_at, str) and quota_reset_at.strip() else None
+            reset_text = (
+                quota_reset_at.strip()
+                if isinstance(quota_reset_at, str) and quota_reset_at.strip()
+                else None
+            )
             reset_ts: Optional[float] = None
             time_to_reset_minutes: Optional[int] = None
             if reset_text:
@@ -130,7 +134,11 @@ class AccountDispatchService:
             if reset_ts is not None:
                 seconds = max(reset_ts - now_ts, 0.0)
                 time_to_reset_minutes = int((seconds + 59) // 60)
-                if reset_ts <= now_ts and isinstance(quota_remaining, int) and int(quota_remaining) <= 0:
+                if (
+                    reset_ts <= now_ts
+                    and isinstance(quota_remaining, int)
+                    and int(quota_remaining) <= 0
+                ):
                     quota_remaining = 1
 
             reserved_pending_submit = int(pending_submits.get(profile_id, 0) or 0)
@@ -140,7 +148,9 @@ class AccountDispatchService:
                 raw_remaining = int(quota_remaining)
                 effective_remaining = max(raw_remaining - max(reserved_pending_submit, 0), 0)
 
-            quantity_score = self._calc_quantity_score(quota_remaining=effective_remaining, settings=settings)
+            quantity_score = self._calc_quantity_score(
+                quota_remaining=effective_remaining, settings=settings
+            )
             quality_score, quality_meta = self._calc_quality_score(
                 events=fail_events_map.get(profile_id, []),
                 success_count=success_count_map.get(profile_id, 0),
@@ -188,7 +198,9 @@ class AccountDispatchService:
             if plus_bonus > 0:
                 reasons.append(f"Plus 加分 +{plus_bonus:.1f}")
             if active_count > 0:
-                reasons.append(f"活跃任务惩罚 -{active_count * float(settings.active_job_penalty):.1f}")
+                reasons.append(
+                    f"活跃任务惩罚 -{active_count * float(settings.active_job_penalty):.1f}"
+                )
             if not settings.enabled:
                 reasons.append("自动分配已关闭")
             if blocked_by_quota:
@@ -205,9 +217,7 @@ class AccountDispatchService:
                                 f"配额不足：可用 {effective_remaining} < {min_remaining}，距离释放 {time_to_reset_minutes}min > {grace_minutes}min"
                             )
             if blocked_by_cooldown:
-                reasons.append(
-                    f"冷却中至 {_fmt_dt(cooldown_until)}"
-                )
+                reasons.append(f"冷却中至 {_fmt_dt(cooldown_until)}")
             if low_quota_allowed and effective_remaining is not None and effective_remaining > 0:
                 reasons.append(
                     f"低配额放行：可用 {effective_remaining} < {min_remaining}，但距离释放 {time_to_reset_minutes}min <= {grace_minutes}min"
@@ -227,16 +237,28 @@ class AccountDispatchService:
                     proxy_local_id=getattr(window, "proxy_local_id", None),
                     selectable=selectable,
                     cooldown_until=_fmt_dt(cooldown_until),
-                    quota_remaining_count=effective_remaining if effective_remaining is not None else None,
+                    quota_remaining_count=effective_remaining
+                    if effective_remaining is not None
+                    else None,
                     quota_total_count=quota_total if isinstance(quota_total, int) else None,
                     score_total=round(total_score, 2),
                     score_quantity=round(quantity_score, 2),
                     score_quality=round(quality_score, 2),
                     success_count=int(success_count_map.get(profile_id, 0)),
-                    completion_recent_window=int(completion_recent_map.get(profile_id, {}).get("window") or completion_recent_window),
-                    completion_recent_total=int(completion_recent_map.get(profile_id, {}).get("total") or 0),
-                    completion_recent_success_count=int(completion_recent_map.get(profile_id, {}).get("success_count") or 0),
-                    completion_recent_heat=str(completion_recent_map.get(profile_id, {}).get("heat") or ("-" * completion_recent_window)),
+                    completion_recent_window=int(
+                        completion_recent_map.get(profile_id, {}).get("window")
+                        or completion_recent_window
+                    ),
+                    completion_recent_total=int(
+                        completion_recent_map.get(profile_id, {}).get("total") or 0
+                    ),
+                    completion_recent_success_count=int(
+                        completion_recent_map.get(profile_id, {}).get("success_count") or 0
+                    ),
+                    completion_recent_heat=str(
+                        completion_recent_map.get(profile_id, {}).get("heat")
+                        or ("-" * completion_recent_window)
+                    ),
                     fail_count_non_ignored=int(quality_meta["fail_count_non_ignored"]),
                     ignored_error_count=int(quality_meta["ignored_error_count"]),
                     last_non_ignored_error=quality_meta["last_non_ignored_error"],
@@ -319,7 +341,9 @@ class AccountDispatchService:
             if soonest_ts is not None:
                 minutes = int(((soonest_ts - now_ts) + 59) // 60)
                 soonest_dt = datetime.fromtimestamp(soonest_ts)
-                earliest_reset_detail = f"；最早预计在 {_fmt_dt(soonest_dt)} 释放（约 {minutes} 分钟后）"
+                earliest_reset_detail = (
+                    f"；最早预计在 {_fmt_dt(soonest_dt)} 释放（约 {minutes} 分钟后）"
+                )
         except Exception:
             earliest_reset_detail = ""
 
@@ -328,11 +352,13 @@ class AccountDispatchService:
             reason_text = "；".join(item.reasons[:3]) if item.reasons else "不可选"
             fragments.append(f"profile={item.profile_id}({reason_text})")
         detail = " | ".join(fragments)
-        raise AccountDispatchNoAvailableError(f"自动分配失败：当前无可用账号{earliest_reset_detail}。{detail}")
+        raise AccountDispatchNoAvailableError(
+            f"自动分配失败：当前无可用账号{earliest_reset_detail}。{detail}"
+        )
 
     def _load_settings(self) -> AccountDispatchSettings:
         # Lazy import to avoid circular dependency at module import time.
-        from app.services.system_settings import load_system_settings  # noqa: WPS433
+        from app.services.system_settings import load_system_settings
 
         settings = load_system_settings(mask_sensitive=False)
         return settings.sora.account_dispatch
@@ -340,7 +366,7 @@ class AccountDispatchService:
     async def _list_group_windows(self, group_title: str) -> List[IXBrowserWindow]:
         # Avoid importing ixbrowser_service at module import time to prevent circular deps.
         try:
-            from app.services.ixbrowser_service import ixbrowser_service  # noqa: WPS433
+            from app.services.ixbrowser_service import ixbrowser_service
 
             groups = await ixbrowser_service.list_group_windows()
             normalized = str(group_title or "").strip().lower()
@@ -356,10 +382,9 @@ class AccountDispatchService:
 
         # Fallback to latest scan results (works even when ixBrowser is temporarily unavailable).
         safe_group = str(group_title or "Sora")
-        run_row = (
-            sqlite_db.get_ixbrowser_latest_scan_run_excluding_operator(safe_group, "实时使用")
-            or sqlite_db.get_ixbrowser_latest_scan_run(safe_group)
-        )
+        run_row = sqlite_db.get_ixbrowser_latest_scan_run_excluding_operator(
+            safe_group, "实时使用"
+        ) or sqlite_db.get_ixbrowser_latest_scan_run(safe_group)
         if not run_row:
             return []
         rows = sqlite_db.get_ixbrowser_scan_results_by_run(int(run_row["id"]))
@@ -404,10 +429,9 @@ class AccountDispatchService:
         return windows
 
     def _load_latest_scan_map(self, group_title: str) -> Dict[int, dict]:
-        run_row = (
-            sqlite_db.get_ixbrowser_latest_scan_run_excluding_operator(group_title, "实时使用")
-            or sqlite_db.get_ixbrowser_latest_scan_run(group_title)
-        )
+        run_row = sqlite_db.get_ixbrowser_latest_scan_run_excluding_operator(
+            group_title, "实时使用"
+        ) or sqlite_db.get_ixbrowser_latest_scan_run(group_title)
         if not run_row:
             return {}
         base_run_id = int(run_row["id"])
@@ -424,7 +448,11 @@ class AccountDispatchService:
 
         # 叠加“实时使用”的配额更新（只覆盖 quota 字段，不覆盖账号/套餐字段）
         realtime_run = sqlite_db.get_ixbrowser_latest_scan_run_by_operator(group_title, "实时使用")
-        if realtime_run and int(realtime_run.get("id") or 0) and int(realtime_run.get("id") or 0) != base_run_id:
+        if (
+            realtime_run
+            and int(realtime_run.get("id") or 0)
+            and int(realtime_run.get("id") or 0) != base_run_id
+        ):
             realtime_rows = sqlite_db.get_ixbrowser_scan_results_by_run(int(realtime_run["id"]))
             for row in realtime_rows:
                 try:
@@ -440,15 +468,26 @@ class AccountDispatchService:
 
                 base_scanned_at = _parse_dt(base_row.get("scanned_at"))
                 realtime_scanned_at = _parse_dt(row.get("scanned_at"))
-                if base_scanned_at and realtime_scanned_at and realtime_scanned_at < base_scanned_at:
+                if (
+                    base_scanned_at
+                    and realtime_scanned_at
+                    and realtime_scanned_at < base_scanned_at
+                ):
                     continue
 
-                for key in ("quota_remaining_count", "quota_total_count", "quota_reset_at", "quota_source"):
+                for key in (
+                    "quota_remaining_count",
+                    "quota_total_count",
+                    "quota_reset_at",
+                    "quota_source",
+                ):
                     if row.get(key) is not None:
                         base_row[key] = row.get(key)
         return result
 
-    def _build_completion_recent_map(self, *, profile_ids: List[int], window: int = 30) -> Dict[int, dict]:
+    def _build_completion_recent_map(
+        self, *, profile_ids: List[int], window: int = 30
+    ) -> Dict[int, dict]:
         normalized_ids: List[int] = []
         for profile_id in profile_ids:
             try:
@@ -513,7 +552,9 @@ class AccountDispatchService:
             }
         return result
 
-    def _calc_quantity_score(self, *, quota_remaining: Optional[int], settings: AccountDispatchSettings) -> float:
+    def _calc_quantity_score(
+        self, *, quota_remaining: Optional[int], settings: AccountDispatchSettings
+    ) -> float:
         if quota_remaining is None:
             return _clamp(float(settings.unknown_quota_score), 0, 100)
         cap = max(int(settings.quota_cap), 1)

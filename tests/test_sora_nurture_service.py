@@ -165,7 +165,7 @@ class _FakeIX:
                     IXBrowserWindow(profile_id=2, name="win-2"),
                     IXBrowserWindow(profile_id=3, name="win-3"),
                 ],
-            )
+            ),
         ]
 
     def _find_group_by_title(self, groups, group_title):
@@ -267,7 +267,13 @@ async def test_run_batch_uses_job_group_title(monkeypatch):
                 "finished_at": fake_db._now(),
             },
         )
-        return {"status": "completed", "like_count": 0, "follow_count": 0, "scroll_done": 10, "error": None}
+        return {
+            "status": "completed",
+            "like_count": 0,
+            "follow_count": 0,
+            "scroll_done": 10,
+            "error": None,
+        }
 
     monkeypatch.setattr(service, "_run_single_job", _fake_run_single_job)
     await service._run_batch_impl(batch["batch_id"])
@@ -314,7 +320,13 @@ async def test_run_batch_updates_totals(monkeypatch):
                 "finished_at": fake_db._now(),
             },
         )
-        return {"status": "completed", "like_count": 1, "follow_count": 1, "scroll_done": 10, "error": None}
+        return {
+            "status": "completed",
+            "like_count": 1,
+            "follow_count": 1,
+            "scroll_done": 10,
+            "error": None,
+        }
 
     monkeypatch.setattr(service, "_run_single_job", _fake_run_single_job)
 
@@ -344,7 +356,13 @@ async def test_run_batch_job_timeout_fail_fast_and_continue(monkeypatch):
         job_id = int(kwargs.get("job_id"))
         if job_id == timeout_job_id:
             await asyncio.sleep(1.2)
-            return {"status": "completed", "like_count": 0, "follow_count": 0, "scroll_done": 10, "error": None}
+            return {
+                "status": "completed",
+                "like_count": 0,
+                "follow_count": 0,
+                "scroll_done": 10,
+                "error": None,
+            }
         fake_db.update_sora_nurture_job(
             job_id,
             {
@@ -356,7 +374,13 @@ async def test_run_batch_job_timeout_fail_fast_and_continue(monkeypatch):
                 "finished_at": fake_db._now(),
             },
         )
-        return {"status": "completed", "like_count": 0, "follow_count": 0, "scroll_done": 10, "error": None}
+        return {
+            "status": "completed",
+            "like_count": 0,
+            "follow_count": 0,
+            "scroll_done": 10,
+            "error": None,
+        }
 
     monkeypatch.setattr(service, "_run_single_job", _fake_run_single_job)
 
@@ -378,7 +402,9 @@ async def test_retry_batch_failed_jobs_only_resets_failed():
     fake_db = _FakeDB()
     service = SoraNurtureService(db=fake_db, ix=_FakeIX())
 
-    req = SoraNurtureBatchCreateRequest(group_title="Sora", profile_ids=[1, 2, 3, 4], scroll_count=10)
+    req = SoraNurtureBatchCreateRequest(
+        group_title="Sora", profile_ids=[1, 2, 3, 4], scroll_count=10
+    )
     batch = await service.create_batch(req, operator_user={"id": 1, "username": "admin"})
     jobs = fake_db.list_sora_nurture_jobs(batch_id=batch["batch_id"], limit=10)
     completed_job_id = int(jobs[0]["id"])

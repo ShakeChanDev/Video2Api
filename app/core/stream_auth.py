@@ -23,7 +23,9 @@ def require_user_from_query_token(token: Optional[str]) -> dict:
         payload = jwt.decode(token, settings.secret_key, algorithms=[settings.algorithm])
         username = payload.get("sub")
     except JWTError as exc:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="无效的访问令牌") from exc
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="无效的访问令牌"
+        ) from exc
 
     if not username:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="无效的访问令牌")
@@ -32,4 +34,3 @@ def require_user_from_query_token(token: Optional[str]) -> dict:
     if not user:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="无效的访问令牌")
     return user
-

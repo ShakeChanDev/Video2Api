@@ -19,12 +19,12 @@ class SQLiteIXBrowserRepo:
         scanned_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
         cursor.execute(
-            '''
+            """
             INSERT INTO ixbrowser_scan_runs (
                 group_id, group_title, total_windows, success_count, failed_count,
                 fallback_applied_count, operator_user_id, operator_username, scanned_at
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ''',
+            """,
             (
                 int(run_data.get("group_id") or 0),
                 str(run_data.get("group_title") or ""),
@@ -35,7 +35,7 @@ class SQLiteIXBrowserRepo:
                 run_data.get("operator_user_id"),
                 run_data.get("operator_username"),
                 scanned_at,
-            )
+            ),
         )
         run_id = int(cursor.lastrowid)
 
@@ -48,7 +48,7 @@ class SQLiteIXBrowserRepo:
             session_json = item.get("session")
             quota_payload = item.get("quota_payload")
             cursor.execute(
-                '''
+                """
                 INSERT INTO ixbrowser_scan_results (
                     run_id, profile_id, window_name, group_id, group_title,
                     session_status, account, account_plan,
@@ -57,7 +57,7 @@ class SQLiteIXBrowserRepo:
                     quota_remaining_count, quota_total_count, quota_reset_at, quota_source,
                     quota_payload_json, quota_error, success, close_success, error, duration_ms, scanned_at
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ''',
+                """,
                 (
                     run_id,
                     int(item.get("profile_id") or 0),
@@ -73,38 +73,46 @@ class SQLiteIXBrowserRepo:
                     item.get("proxy_ip"),
                     item.get("proxy_port"),
                     item.get("real_ip"),
-                    json.dumps(session_json, ensure_ascii=False) if isinstance(session_json, dict) else None,
+                    json.dumps(session_json, ensure_ascii=False)
+                    if isinstance(session_json, dict)
+                    else None,
                     item.get("session_raw"),
                     item.get("quota_remaining_count"),
                     item.get("quota_total_count"),
                     item.get("quota_reset_at"),
                     item.get("quota_source"),
-                    json.dumps(quota_payload, ensure_ascii=False) if isinstance(quota_payload, dict) else None,
+                    json.dumps(quota_payload, ensure_ascii=False)
+                    if isinstance(quota_payload, dict)
+                    else None,
                     item.get("quota_error"),
                     1 if item.get("success") else 0,
                     1 if item.get("close_success") else 0,
                     item.get("error"),
                     int(item.get("duration_ms") or 0),
                     item_scanned_at,
-                )
+                ),
             )
 
         group_title = str(run_data.get("group_title") or "")
         if keep_latest_runs > 0 and group_title:
             cursor.execute(
-                '''
+                """
                 SELECT id FROM ixbrowser_scan_runs
                 WHERE group_title = ?
                 ORDER BY id DESC
                 LIMIT -1 OFFSET ?
-                ''',
-                (group_title, keep_latest_runs)
+                """,
+                (group_title, keep_latest_runs),
             )
             old_ids = [int(row["id"]) for row in cursor.fetchall()]
             if old_ids:
                 placeholders = ",".join(["?"] * len(old_ids))
-                cursor.execute(f'DELETE FROM ixbrowser_scan_results WHERE run_id IN ({placeholders})', old_ids)
-                cursor.execute(f'DELETE FROM ixbrowser_scan_runs WHERE id IN ({placeholders})', old_ids)
+                cursor.execute(
+                    f"DELETE FROM ixbrowser_scan_results WHERE run_id IN ({placeholders})", old_ids
+                )
+                cursor.execute(
+                    f"DELETE FROM ixbrowser_scan_runs WHERE id IN ({placeholders})", old_ids
+                )
 
         conn.commit()
         conn.close()
@@ -114,8 +122,8 @@ class SQLiteIXBrowserRepo:
         conn = self._get_conn()
         cursor = conn.cursor()
         cursor.execute(
-            'SELECT * FROM ixbrowser_scan_runs WHERE group_title = ? ORDER BY id DESC LIMIT 1',
-            (group_title,)
+            "SELECT * FROM ixbrowser_scan_runs WHERE group_title = ? ORDER BY id DESC LIMIT 1",
+            (group_title,),
         )
         row = cursor.fetchone()
         conn.close()
@@ -129,25 +137,27 @@ class SQLiteIXBrowserRepo:
         conn = self._get_conn()
         cursor = conn.cursor()
         cursor.execute(
-            '''
+            """
             SELECT * FROM ixbrowser_scan_runs
             WHERE group_title = ?
               AND (operator_username IS NULL OR operator_username != ?)
             ORDER BY id DESC
             LIMIT 1
-            ''',
-            (group_title, operator_username)
+            """,
+            (group_title, operator_username),
         )
         row = cursor.fetchone()
         conn.close()
         return dict(row) if row else None
 
-    def get_ixbrowser_latest_scan_run_by_operator(self, group_title: str, operator_username: str) -> Optional[Dict[str, Any]]:
+    def get_ixbrowser_latest_scan_run_by_operator(
+        self, group_title: str, operator_username: str
+    ) -> Optional[Dict[str, Any]]:
         conn = self._get_conn()
         cursor = conn.cursor()
         cursor.execute(
-            'SELECT * FROM ixbrowser_scan_runs WHERE group_title = ? AND operator_username = ? ORDER BY id DESC LIMIT 1',
-            (group_title, operator_username)
+            "SELECT * FROM ixbrowser_scan_runs WHERE group_title = ? AND operator_username = ? ORDER BY id DESC LIMIT 1",
+            (group_title, operator_username),
         )
         row = cursor.fetchone()
         conn.close()
@@ -156,17 +166,19 @@ class SQLiteIXBrowserRepo:
     def get_ixbrowser_scan_run(self, run_id: int) -> Optional[Dict[str, Any]]:
         conn = self._get_conn()
         cursor = conn.cursor()
-        cursor.execute('SELECT * FROM ixbrowser_scan_runs WHERE id = ?', (run_id,))
+        cursor.execute("SELECT * FROM ixbrowser_scan_runs WHERE id = ?", (run_id,))
         row = cursor.fetchone()
         conn.close()
         return dict(row) if row else None
 
-    def update_ixbrowser_scan_run_fallback_count(self, run_id: int, fallback_applied_count: int) -> bool:
+    def update_ixbrowser_scan_run_fallback_count(
+        self, run_id: int, fallback_applied_count: int
+    ) -> bool:
         conn = self._get_conn()
         cursor = conn.cursor()
         cursor.execute(
-            'UPDATE ixbrowser_scan_runs SET fallback_applied_count = ? WHERE id = ?',
-            (int(fallback_applied_count), int(run_id))
+            "UPDATE ixbrowser_scan_runs SET fallback_applied_count = ? WHERE id = ?",
+            (int(fallback_applied_count), int(run_id)),
         )
         success = cursor.rowcount > 0
         conn.commit()
@@ -183,13 +195,13 @@ class SQLiteIXBrowserRepo:
         cursor = conn.cursor()
         now = self._now_str()
         cursor.execute(
-            '''
+            """
             INSERT INTO ixbrowser_silent_refresh_jobs (
                 group_title, status, total_windows, processed_windows, success_count, failed_count,
                 progress_pct, current_profile_id, current_window_name, message, error, run_id, with_fallback,
                 operator_user_id, operator_username, created_at, updated_at, finished_at
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ''',
+            """,
             (
                 str(data.get("group_title") or ""),
                 str(data.get("status") or "queued"),
@@ -219,22 +231,24 @@ class SQLiteIXBrowserRepo:
     def get_ixbrowser_silent_refresh_job(self, job_id: int) -> Optional[Dict[str, Any]]:
         conn = self._get_conn()
         cursor = conn.cursor()
-        cursor.execute('SELECT * FROM ixbrowser_silent_refresh_jobs WHERE id = ?', (int(job_id),))
+        cursor.execute("SELECT * FROM ixbrowser_silent_refresh_jobs WHERE id = ?", (int(job_id),))
         row = cursor.fetchone()
         conn.close()
         return self._normalize_ixbrowser_silent_refresh_job_row(dict(row)) if row else None
 
-    def get_running_ixbrowser_silent_refresh_job(self, group_title: str) -> Optional[Dict[str, Any]]:
+    def get_running_ixbrowser_silent_refresh_job(
+        self, group_title: str
+    ) -> Optional[Dict[str, Any]]:
         conn = self._get_conn()
         cursor = conn.cursor()
         cursor.execute(
-            '''
+            """
             SELECT * FROM ixbrowser_silent_refresh_jobs
             WHERE group_title = ?
               AND status IN ('queued', 'running')
             ORDER BY id DESC
             LIMIT 1
-            ''',
+            """,
             (str(group_title or ""),),
         )
         row = cursor.fetchone()
@@ -281,7 +295,9 @@ class SQLiteIXBrowserRepo:
 
         conn = self._get_conn()
         cursor = conn.cursor()
-        cursor.execute(f"UPDATE ixbrowser_silent_refresh_jobs SET {', '.join(sets)} WHERE id = ?", params)
+        cursor.execute(
+            f"UPDATE ixbrowser_silent_refresh_jobs SET {', '.join(sets)} WHERE id = ?", params
+        )
         success = cursor.rowcount > 0
         conn.commit()
         conn.close()
@@ -292,7 +308,7 @@ class SQLiteIXBrowserRepo:
         conn = self._get_conn()
         cursor = conn.cursor()
         cursor.execute(
-            '''
+            """
             UPDATE ixbrowser_silent_refresh_jobs
             SET status = 'failed',
                 error = ?,
@@ -300,7 +316,7 @@ class SQLiteIXBrowserRepo:
                 updated_at = ?,
                 finished_at = COALESCE(finished_at, ?)
             WHERE status IN ('queued', 'running')
-            ''',
+            """,
             (str(reason or ""), str(reason or ""), now, now),
         )
         affected = int(cursor.rowcount or 0)
@@ -312,18 +328,20 @@ class SQLiteIXBrowserRepo:
         conn = self._get_conn()
         cursor = conn.cursor()
         cursor.execute(
-            'SELECT * FROM ixbrowser_scan_runs WHERE group_title = ? ORDER BY id DESC LIMIT ?',
-            (group_title, int(limit))
+            "SELECT * FROM ixbrowser_scan_runs WHERE group_title = ? ORDER BY id DESC LIMIT ?",
+            (group_title, int(limit)),
         )
         rows = cursor.fetchall()
         conn.close()
         return [dict(row) for row in rows]
 
-    def get_latest_ixbrowser_profile_session(self, group_title: str, profile_id: int) -> Optional[Dict[str, Any]]:
+    def get_latest_ixbrowser_profile_session(
+        self, group_title: str, profile_id: int
+    ) -> Optional[Dict[str, Any]]:
         conn = self._get_conn()
         cursor = conn.cursor()
         cursor.execute(
-            '''
+            """
             SELECT run_id, profile_id, group_title, session_json, session_raw, scanned_at
             FROM ixbrowser_scan_results
             WHERE group_title = ?
@@ -332,7 +350,7 @@ class SQLiteIXBrowserRepo:
               AND TRIM(session_json) != ''
             ORDER BY run_id DESC, id DESC
             LIMIT 1
-            ''',
+            """,
             (str(group_title or ""), int(profile_id)),
         )
         row = cursor.fetchone()
@@ -351,7 +369,10 @@ class SQLiteIXBrowserRepo:
     def get_ixbrowser_scan_results_by_run(self, run_id: int) -> List[Dict[str, Any]]:
         conn = self._get_conn()
         cursor = conn.cursor()
-        cursor.execute('SELECT * FROM ixbrowser_scan_results WHERE run_id = ? ORDER BY profile_id DESC', (run_id,))
+        cursor.execute(
+            "SELECT * FROM ixbrowser_scan_results WHERE run_id = ? ORDER BY profile_id DESC",
+            (run_id,),
+        )
         rows = cursor.fetchall()
         conn.close()
 
@@ -383,8 +404,8 @@ class SQLiteIXBrowserRepo:
         profile_id = int(item.get("profile_id") or 0)
 
         cursor.execute(
-            'SELECT id FROM ixbrowser_scan_results WHERE run_id = ? AND profile_id = ? LIMIT 1',
-            (int(run_id), profile_id)
+            "SELECT id FROM ixbrowser_scan_results WHERE run_id = ? AND profile_id = ? LIMIT 1",
+            (int(run_id), profile_id),
         )
         row = cursor.fetchone()
 
@@ -404,13 +425,17 @@ class SQLiteIXBrowserRepo:
             item.get("proxy_ip"),
             item.get("proxy_port"),
             item.get("real_ip"),
-            json.dumps(session_json, ensure_ascii=False) if isinstance(session_json, dict) else None,
+            json.dumps(session_json, ensure_ascii=False)
+            if isinstance(session_json, dict)
+            else None,
             item.get("session_raw"),
             item.get("quota_remaining_count"),
             item.get("quota_total_count"),
             item.get("quota_reset_at"),
             item.get("quota_source"),
-            json.dumps(quota_payload, ensure_ascii=False) if isinstance(quota_payload, dict) else None,
+            json.dumps(quota_payload, ensure_ascii=False)
+            if isinstance(quota_payload, dict)
+            else None,
             item.get("quota_error"),
             1 if item.get("success") else 0,
             1 if item.get("close_success") else 0,
@@ -421,7 +446,7 @@ class SQLiteIXBrowserRepo:
 
         if row:
             cursor.execute(
-                '''
+                """
                 UPDATE ixbrowser_scan_results
                 SET window_name = ?,
                     group_id = ?,
@@ -449,13 +474,13 @@ class SQLiteIXBrowserRepo:
                     duration_ms = ?,
                     scanned_at = ?
                 WHERE id = ?
-                ''',
-                payload + (int(row["id"]),)
+                """,
+                payload + (int(row["id"]),),
             )
             row_id = int(row["id"])
         else:
             cursor.execute(
-                '''
+                """
                 INSERT INTO ixbrowser_scan_results (
                     run_id, profile_id, window_name, group_id, group_title,
                     session_status, account, account_plan,
@@ -464,7 +489,7 @@ class SQLiteIXBrowserRepo:
                     quota_remaining_count, quota_total_count, quota_reset_at, quota_source,
                     quota_payload_json, quota_error, success, close_success, error, duration_ms, scanned_at
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ''',
+                """,
                 (
                     int(run_id),
                     profile_id,
@@ -480,20 +505,24 @@ class SQLiteIXBrowserRepo:
                     item.get("proxy_ip"),
                     item.get("proxy_port"),
                     item.get("real_ip"),
-                    json.dumps(session_json, ensure_ascii=False) if isinstance(session_json, dict) else None,
+                    json.dumps(session_json, ensure_ascii=False)
+                    if isinstance(session_json, dict)
+                    else None,
                     item.get("session_raw"),
                     item.get("quota_remaining_count"),
                     item.get("quota_total_count"),
                     item.get("quota_reset_at"),
                     item.get("quota_source"),
-                    json.dumps(quota_payload, ensure_ascii=False) if isinstance(quota_payload, dict) else None,
+                    json.dumps(quota_payload, ensure_ascii=False)
+                    if isinstance(quota_payload, dict)
+                    else None,
                     item.get("quota_error"),
                     1 if item.get("success") else 0,
                     1 if item.get("close_success") else 0,
                     item.get("error"),
                     int(item.get("duration_ms") or 0),
                     scanned_at,
-                )
+                ),
             )
             row_id = int(cursor.lastrowid)
 
@@ -504,17 +533,19 @@ class SQLiteIXBrowserRepo:
     def recalc_ixbrowser_scan_run_stats(self, run_id: int) -> None:
         conn = self._get_conn()
         cursor = conn.cursor()
-        cursor.execute('SELECT total_windows FROM ixbrowser_scan_runs WHERE id = ?', (int(run_id),))
+        cursor.execute("SELECT total_windows FROM ixbrowser_scan_runs WHERE id = ?", (int(run_id),))
         row = cursor.fetchone()
         total_windows = int(row["total_windows"]) if row and row["total_windows"] is not None else 0
 
         cursor.execute(
-            'SELECT COUNT(*) AS total_count, SUM(success) AS success_count FROM ixbrowser_scan_results WHERE run_id = ?',
-            (int(run_id),)
+            "SELECT COUNT(*) AS total_count, SUM(success) AS success_count FROM ixbrowser_scan_results WHERE run_id = ?",
+            (int(run_id),),
         )
         stats = cursor.fetchone()
         total_count = int(stats["total_count"]) if stats and stats["total_count"] is not None else 0
-        success_count = int(stats["success_count"]) if stats and stats["success_count"] is not None else 0
+        success_count = (
+            int(stats["success_count"]) if stats and stats["success_count"] is not None else 0
+        )
 
         if total_windows <= 0:
             total_windows = total_count
@@ -523,17 +554,19 @@ class SQLiteIXBrowserRepo:
         scanned_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
         cursor.execute(
-            'UPDATE ixbrowser_scan_runs SET total_windows = ?, success_count = ?, failed_count = ?, scanned_at = ? WHERE id = ?',
-            (int(total_windows), int(success_count), int(failed_count), scanned_at, int(run_id))
+            "UPDATE ixbrowser_scan_runs SET total_windows = ?, success_count = ?, failed_count = ?, scanned_at = ? WHERE id = ?",
+            (int(total_windows), int(success_count), int(failed_count), scanned_at, int(run_id)),
         )
         conn.commit()
         conn.close()
 
-    def get_ixbrowser_latest_success_results_before_run(self, group_title: str, before_run_id: int) -> List[Dict[str, Any]]:
+    def get_ixbrowser_latest_success_results_before_run(
+        self, group_title: str, before_run_id: int
+    ) -> List[Dict[str, Any]]:
         conn = self._get_conn()
         cursor = conn.cursor()
         cursor.execute(
-            '''
+            """
             SELECT r.*, runs.scanned_at AS run_scanned_at
             FROM ixbrowser_scan_results r
             JOIN (
@@ -555,8 +588,8 @@ class SQLiteIXBrowserRepo:
             LEFT JOIN ixbrowser_scan_runs runs
               ON runs.id = r.run_id
             ORDER BY r.profile_id DESC
-            ''',
-            (group_title, before_run_id)
+            """,
+            (group_title, before_run_id),
         )
         rows = cursor.fetchall()
         conn.close()
@@ -582,14 +615,14 @@ class SQLiteIXBrowserRepo:
         cursor = conn.cursor()
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         cursor.execute(
-            '''
+            """
             INSERT INTO ixbrowser_sora_generate_jobs (
                 profile_id, window_name, group_title, prompt, duration, aspect_ratio, status, progress,
                 publish_status, publish_url, publish_post_id, publish_permalink, publish_error, publish_attempts, published_at,
                 task_id, task_url, error, submit_attempts, poll_attempts, elapsed_ms,
                 operator_user_id, operator_username, started_at, finished_at, created_at, updated_at
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ''',
+            """,
             (
                 int(data.get("profile_id") or 0),
                 data.get("window_name"),
@@ -618,7 +651,7 @@ class SQLiteIXBrowserRepo:
                 data.get("finished_at"),
                 now,
                 now,
-            )
+            ),
         )
         job_id = int(cursor.lastrowid)
         conn.commit()
@@ -630,10 +663,25 @@ class SQLiteIXBrowserRepo:
             return False
 
         allow_keys = {
-            "status", "task_id", "task_url", "error", "submit_attempts", "poll_attempts",
-            "elapsed_ms", "started_at", "finished_at", "window_name", "progress",
-            "publish_status", "publish_url", "publish_error", "publish_attempts", "published_at",
-            "generation_id", "publish_post_id", "publish_permalink",
+            "status",
+            "task_id",
+            "task_url",
+            "error",
+            "submit_attempts",
+            "poll_attempts",
+            "elapsed_ms",
+            "started_at",
+            "finished_at",
+            "window_name",
+            "progress",
+            "publish_status",
+            "publish_url",
+            "publish_error",
+            "publish_attempts",
+            "published_at",
+            "generation_id",
+            "publish_post_id",
+            "publish_permalink",
         }
         sets = []
         params = []
@@ -653,7 +701,9 @@ class SQLiteIXBrowserRepo:
 
         conn = self._get_conn()
         cursor = conn.cursor()
-        cursor.execute(f"UPDATE ixbrowser_sora_generate_jobs SET {', '.join(sets)} WHERE id = ?", params)
+        cursor.execute(
+            f"UPDATE ixbrowser_sora_generate_jobs SET {', '.join(sets)} WHERE id = ?", params
+        )
         success = cursor.rowcount > 0
         conn.commit()
         conn.close()
@@ -662,25 +712,26 @@ class SQLiteIXBrowserRepo:
     def get_ixbrowser_generate_job(self, job_id: int) -> Optional[Dict[str, Any]]:
         conn = self._get_conn()
         cursor = conn.cursor()
-        cursor.execute('SELECT * FROM ixbrowser_sora_generate_jobs WHERE id = ?', (int(job_id),))
+        cursor.execute("SELECT * FROM ixbrowser_sora_generate_jobs WHERE id = ?", (int(job_id),))
         row = cursor.fetchone()
         conn.close()
         return dict(row) if row else None
 
-    def list_ixbrowser_generate_jobs(self, group_title: str = "Sora", limit: int = 20, profile_id: Optional[int] = None) -> List[Dict[str, Any]]:
+    def list_ixbrowser_generate_jobs(
+        self, group_title: str = "Sora", limit: int = 20, profile_id: Optional[int] = None
+    ) -> List[Dict[str, Any]]:
         conn = self._get_conn()
         cursor = conn.cursor()
         if profile_id is None:
             cursor.execute(
-                'SELECT * FROM ixbrowser_sora_generate_jobs WHERE group_title = ? ORDER BY id DESC LIMIT ?',
-                (group_title, int(limit))
+                "SELECT * FROM ixbrowser_sora_generate_jobs WHERE group_title = ? ORDER BY id DESC LIMIT ?",
+                (group_title, int(limit)),
             )
         else:
             cursor.execute(
-                'SELECT * FROM ixbrowser_sora_generate_jobs WHERE group_title = ? AND profile_id = ? ORDER BY id DESC LIMIT ?',
-                (group_title, int(profile_id), int(limit))
+                "SELECT * FROM ixbrowser_sora_generate_jobs WHERE group_title = ? AND profile_id = ? ORDER BY id DESC LIMIT ?",
+                (group_title, int(profile_id), int(limit)),
             )
         rows = cursor.fetchall()
         conn.close()
         return [dict(row) for row in rows]
-

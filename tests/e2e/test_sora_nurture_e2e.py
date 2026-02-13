@@ -17,7 +17,9 @@ POST_LIKE_HEART_D_PREFIX_FILLED = "M9.48 16.252"
 
 
 async def _wait_for_post_links(page, timeout_ms: int = 70_000) -> None:
-    links = page.locator('a[href^="/p/"], a[href^="https://sora.chatgpt.com/p/"], a[href^="http://sora.chatgpt.com/p/"]')
+    links = page.locator(
+        'a[href^="/p/"], a[href^="https://sora.chatgpt.com/p/"], a[href^="http://sora.chatgpt.com/p/"]'
+    )
     deadline = time.monotonic() + max(1, int(timeout_ms)) / 1000.0
     last = 0
     while time.monotonic() < deadline:
@@ -32,7 +34,9 @@ async def _wait_for_post_links(page, timeout_ms: int = 70_000) -> None:
 
 
 async def _open_random_post_from_explore(page) -> None:
-    links = page.locator('a[href^="/p/"], a[href^="https://sora.chatgpt.com/p/"], a[href^="http://sora.chatgpt.com/p/"]')
+    links = page.locator(
+        'a[href^="/p/"], a[href^="https://sora.chatgpt.com/p/"], a[href^="http://sora.chatgpt.com/p/"]'
+    )
     count = await links.count()
     if count <= 0:
         raise RuntimeError("Explore 页面未找到 /p/ 链接")
@@ -61,7 +65,9 @@ async def _open_random_post_from_explore(page) -> None:
     if isinstance(last_href, str):
         href = last_href.strip()
         if href.startswith("/p/"):
-            await page.goto(f"https://sora.chatgpt.com{href}", wait_until="domcontentloaded", timeout=40_000)
+            await page.goto(
+                f"https://sora.chatgpt.com{href}", wait_until="domcontentloaded", timeout=40_000
+            )
             return
         if href.startswith("http://") or href.startswith("https://"):
             await page.goto(href, wait_until="domcontentloaded", timeout=40_000)
@@ -244,15 +250,27 @@ async def _click_post_like_if_needed(page) -> dict:
     for _ in range(10):
         await page.wait_for_timeout(300)
         after = await _get_post_like_state(page)
-        if after and str(after.get("fill") or "").strip() and not str(after.get("stroke") or "").strip():
+        if (
+            after
+            and str(after.get("fill") or "").strip()
+            and not str(after.get("stroke") or "").strip()
+        ):
             return {"ok": True, "clicked": True, "before": before, "after": after}
 
     after = await _get_post_like_state(page)
-    return {"ok": False, "clicked": True, "before": before, "after": after, "reason": "state not confirmed"}
+    return {
+        "ok": False,
+        "clicked": True,
+        "before": before,
+        "after": after,
+        "reason": "state not confirmed",
+    }
 
 
 async def _click_follow_if_needed(page) -> dict:
-    btn = page.locator('[role="dialog"] button[aria-label="Follow"], [role="dialog"] button[aria-label="Following"]')
+    btn = page.locator(
+        '[role="dialog"] button[aria-label="Follow"], [role="dialog"] button[aria-label="Following"]'
+    )
     if await btn.count() == 0:
         return {"ok": True, "clicked": False, "skipped": True, "reason": "no follow btn"}
 
@@ -269,13 +287,19 @@ async def _click_follow_if_needed(page) -> dict:
 @pytest.mark.asyncio
 async def test_sora_nurture_e2e_post_like_and_follow():
     if os.getenv("SORA_NURTURE_E2E") != "1":
-        pytest.skip("跳过 E2E：需要设置环境变量 SORA_NURTURE_E2E=1，并确保 ixBrowser 已启动且 profile 已登录 Sora")
+        pytest.skip(
+            "跳过 E2E：需要设置环境变量 SORA_NURTURE_E2E=1，并确保 ixBrowser 已启动且 profile 已登录 Sora"
+        )
 
     profile_id = int(os.getenv("SORA_NURTURE_PROFILE_ID") or "39")
     group_title = os.getenv("SORA_NURTURE_GROUP_TITLE") or "Sora"
 
-    open_resp = await ixbrowser_service.open_profile_window(profile_id=profile_id, group_title=group_title)
-    ws = open_resp.ws or (f"http://{open_resp.debugging_address}" if open_resp.debugging_address else None)
+    open_resp = await ixbrowser_service.open_profile_window(
+        profile_id=profile_id, group_title=group_title
+    )
+    ws = open_resp.ws or (
+        f"http://{open_resp.debugging_address}" if open_resp.debugging_address else None
+    )
     if not ws:
         raise RuntimeError("ixBrowser 打开窗口成功，但未返回 ws/debugging_address")
 
@@ -340,11 +364,16 @@ async def test_sora_nurture_e2e_post_like_and_follow():
             assert like_ok_or_already, "帖子赞未成功（既未点到也未检测到已点赞）"
             # 部分版本 Escape 退出后 URL 不一定立刻变更，但 dialog 应该消失
             dialog_left = await page.locator('[role="dialog"]').count()
-            assert dialog_left == 0 or "/explore" in (page.url or ""), f"未返回 Explore 且 dialog 未关闭：url={page.url} dialog={dialog_left}"
+            assert dialog_left == 0 or "/explore" in (page.url or ""), (
+                f"未返回 Explore 且 dialog 未关闭：url={page.url} dialog={dialog_left}"
+            )
     except Exception:
         if page:
             try:
-                await page.screenshot(path=f"/private/tmp/sora-nurture-e2e-fail-{int(time.time())}.png", full_page=True)
+                await page.screenshot(
+                    path=f"/private/tmp/sora-nurture-e2e-fail-{int(time.time())}.png",
+                    full_page=True,
+                )
             except Exception:
                 pass
         raise

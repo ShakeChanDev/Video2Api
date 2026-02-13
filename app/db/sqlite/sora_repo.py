@@ -13,7 +13,7 @@ class SQLiteSoraRepo:
         cursor = conn.cursor()
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         cursor.execute(
-            '''
+            """
             INSERT INTO sora_jobs (
                 profile_id, window_name, group_title, prompt, image_url, duration, aspect_ratio,
                 status, phase, progress_pct, task_id, generation_id, publish_url, publish_post_id, publish_permalink,
@@ -22,7 +22,7 @@ class SQLiteSoraRepo:
                 error,
                 started_at, finished_at, operator_user_id, operator_username, created_at, updated_at
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ''',
+            """,
             (
                 int(data.get("profile_id") or 0),
                 data.get("window_name"),
@@ -54,7 +54,7 @@ class SQLiteSoraRepo:
                 data.get("operator_username"),
                 now,
                 now,
-            )
+            ),
         )
         job_id = int(cursor.lastrowid)
         conn.commit()
@@ -133,7 +133,7 @@ class SQLiteSoraRepo:
     def get_sora_job(self, job_id: int) -> Optional[Dict[str, Any]]:
         conn = self._get_conn()
         cursor = conn.cursor()
-        cursor.execute('SELECT * FROM sora_jobs WHERE id = ?', (int(job_id),))
+        cursor.execute("SELECT * FROM sora_jobs WHERE id = ?", (int(job_id),))
         row = cursor.fetchone()
         conn.close()
         return dict(row) if row else None
@@ -142,14 +142,14 @@ class SQLiteSoraRepo:
         conn = self._get_conn()
         cursor = conn.cursor()
         cursor.execute(
-            '''
+            """
             SELECT *
             FROM sora_jobs
             WHERE id = ?
                OR retry_root_job_id = ?
             ORDER BY id DESC
             LIMIT 1
-            ''',
+            """,
             (int(root_job_id), int(root_job_id)),
         )
         row = cursor.fetchone()
@@ -195,12 +195,12 @@ class SQLiteSoraRepo:
         conn = self._get_conn()
         cursor = conn.cursor()
         cursor.execute(
-            '''
+            """
             SELECT MAX(COALESCE(retry_index, 0)) AS max_idx
             FROM sora_jobs
             WHERE id = ?
                OR retry_root_job_id = ?
-            ''',
+            """,
             (int(root_job_id), int(root_job_id)),
         )
         row = cursor.fetchone()
@@ -258,7 +258,9 @@ class SQLiteSoraRepo:
         conn.close()
         return [dict(row) for row in rows]
 
-    def list_sora_jobs_recent_by_profiles(self, profile_ids: List[int], window: int = 30) -> List[Dict[str, Any]]:
+    def list_sora_jobs_recent_by_profiles(
+        self, profile_ids: List[int], window: int = 30
+    ) -> List[Dict[str, Any]]:
         normalized_set = set()
         for pid_raw in profile_ids:
             try:
@@ -276,7 +278,7 @@ class SQLiteSoraRepo:
         conn = self._get_conn()
         cursor = conn.cursor()
         cursor.execute(
-            f'''
+            f"""
             WITH ranked AS (
                 SELECT
                     profile_id,
@@ -295,7 +297,7 @@ class SQLiteSoraRepo:
             FROM ranked
             WHERE rn <= ?
             ORDER BY profile_id ASC, id DESC
-            ''',
+            """,
             [*normalized_ids, safe_window],
         )
         rows = cursor.fetchall()
@@ -306,13 +308,13 @@ class SQLiteSoraRepo:
         conn = self._get_conn()
         cursor = conn.cursor()
         cursor.execute(
-            '''
+            """
             SELECT *
             FROM sora_jobs
             WHERE group_title = ?
               AND COALESCE(finished_at, updated_at, created_at) >= ?
             ORDER BY id DESC
-            ''',
+            """,
             (str(group_title or ""), str(since_at or "")),
         )
         rows = cursor.fetchall()
@@ -323,7 +325,7 @@ class SQLiteSoraRepo:
         conn = self._get_conn()
         cursor = conn.cursor()
         cursor.execute(
-            '''
+            """
             SELECT
               e.id,
               CAST(e.resource_id AS INTEGER) AS job_id,
@@ -341,7 +343,7 @@ class SQLiteSoraRepo:
               AND e.event = 'fail'
               AND e.created_at >= ?
             ORDER BY e.id DESC
-            ''',
+            """,
             (str(group_title or ""), str(since_at or "")),
         )
         rows = cursor.fetchall()
@@ -352,13 +354,13 @@ class SQLiteSoraRepo:
         conn = self._get_conn()
         cursor = conn.cursor()
         cursor.execute(
-            '''
+            """
             SELECT profile_id, COUNT(*) AS cnt
             FROM sora_jobs
             WHERE group_title = ?
               AND status IN ('queued', 'running')
             GROUP BY profile_id
-            ''',
+            """,
             (str(group_title or ""),),
         )
         rows = cursor.fetchall()
@@ -384,14 +386,14 @@ class SQLiteSoraRepo:
         conn = self._get_conn()
         cursor = conn.cursor()
         cursor.execute(
-            '''
+            """
             SELECT profile_id, COUNT(*) AS cnt
             FROM sora_jobs
             WHERE group_title = ?
               AND status IN ('queued', 'running')
               AND (task_id IS NULL OR TRIM(task_id) = '')
             GROUP BY profile_id
-            ''',
+            """,
             (str(group_title or ""),),
         )
         rows = cursor.fetchall()
@@ -408,20 +410,22 @@ class SQLiteSoraRepo:
     def claim_next_sora_job(self, owner: str, lease_seconds: int = 120) -> Optional[Dict[str, Any]]:
         safe_owner = str(owner or "").strip() or "unknown"
         now = self._now_str()
-        lease_until = (datetime.now() + timedelta(seconds=max(10, int(lease_seconds)))).strftime("%Y-%m-%d %H:%M:%S")
+        lease_until = (datetime.now() + timedelta(seconds=max(10, int(lease_seconds)))).strftime(
+            "%Y-%m-%d %H:%M:%S"
+        )
         conn = self._get_conn()
         cursor = conn.cursor()
         try:
             cursor.execute("BEGIN IMMEDIATE")
             cursor.execute(
-                '''
+                """
                 SELECT id
                 FROM sora_jobs
                 WHERE status = 'queued'
                   AND (lease_until IS NULL OR lease_until < ?)
                 ORDER BY id ASC
                 LIMIT 1
-                ''',
+                """,
                 (now,),
             )
             row = cursor.fetchone()
@@ -430,7 +434,7 @@ class SQLiteSoraRepo:
                 return None
             job_id = int(row["id"])
             cursor.execute(
-                '''
+                """
                 UPDATE sora_jobs
                 SET lease_owner = ?,
                     lease_until = ?,
@@ -440,7 +444,7 @@ class SQLiteSoraRepo:
                 WHERE id = ?
                   AND status = 'queued'
                   AND (lease_until IS NULL OR lease_until < ?)
-                ''',
+                """,
                 (safe_owner, lease_until, now, job_id, now),
             )
             if cursor.rowcount <= 0:
@@ -458,15 +462,17 @@ class SQLiteSoraRepo:
 
     def heartbeat_sora_job_lease(self, job_id: int, owner: str, lease_seconds: int = 120) -> bool:
         now = self._now_str()
-        lease_until = (datetime.now() + timedelta(seconds=max(10, int(lease_seconds)))).strftime("%Y-%m-%d %H:%M:%S")
+        lease_until = (datetime.now() + timedelta(seconds=max(10, int(lease_seconds)))).strftime(
+            "%Y-%m-%d %H:%M:%S"
+        )
         conn = self._get_conn()
         cursor = conn.cursor()
         cursor.execute(
-            '''
+            """
             UPDATE sora_jobs
             SET heartbeat_at = ?, lease_until = ?
             WHERE id = ? AND lease_owner = ?
-            ''',
+            """,
             (now, lease_until, int(job_id), str(owner or "")),
         )
         success = cursor.rowcount > 0
@@ -478,13 +484,13 @@ class SQLiteSoraRepo:
         conn = self._get_conn()
         cursor = conn.cursor()
         cursor.execute(
-            '''
+            """
             UPDATE sora_jobs
             SET lease_owner = NULL,
                 lease_until = NULL,
                 heartbeat_at = NULL
             WHERE id = ? AND lease_owner = ?
-            ''',
+            """,
             (int(job_id), str(owner or "")),
         )
         success = cursor.rowcount > 0
@@ -498,7 +504,7 @@ class SQLiteSoraRepo:
         conn = self._get_conn()
         cursor = conn.cursor()
         cursor.execute(
-            '''
+            """
             UPDATE sora_jobs
             SET status = 'failed',
                 error = ?,
@@ -510,7 +516,7 @@ class SQLiteSoraRepo:
                 updated_at = ?
             WHERE status = 'running'
               AND (lease_until IS NULL OR lease_until < ?)
-            ''',
+            """,
             (reason, now, reason, now, now),
         )
         count = int(cursor.rowcount or 0)
@@ -522,23 +528,27 @@ class SQLiteSoraRepo:
         # 兼容旧调用方：原“回队”行为已调整为“失败收敛”。
         return self.fail_stale_running_sora_jobs()
 
-    def claim_next_sora_nurture_batch(self, owner: str, lease_seconds: int = 180) -> Optional[Dict[str, Any]]:
+    def claim_next_sora_nurture_batch(
+        self, owner: str, lease_seconds: int = 180
+    ) -> Optional[Dict[str, Any]]:
         safe_owner = str(owner or "").strip() or "unknown"
         now = self._now_str()
-        lease_until = (datetime.now() + timedelta(seconds=max(10, int(lease_seconds)))).strftime("%Y-%m-%d %H:%M:%S")
+        lease_until = (datetime.now() + timedelta(seconds=max(10, int(lease_seconds)))).strftime(
+            "%Y-%m-%d %H:%M:%S"
+        )
         conn = self._get_conn()
         cursor = conn.cursor()
         try:
             cursor.execute("BEGIN IMMEDIATE")
             cursor.execute(
-                '''
+                """
                 SELECT id
                 FROM sora_nurture_batches
                 WHERE status = 'queued'
                   AND (lease_until IS NULL OR lease_until < ?)
                 ORDER BY id ASC
                 LIMIT 1
-                ''',
+                """,
                 (now,),
             )
             row = cursor.fetchone()
@@ -547,7 +557,7 @@ class SQLiteSoraRepo:
                 return None
             batch_id = int(row["id"])
             cursor.execute(
-                '''
+                """
                 UPDATE sora_nurture_batches
                 SET lease_owner = ?,
                     lease_until = ?,
@@ -557,7 +567,7 @@ class SQLiteSoraRepo:
                 WHERE id = ?
                   AND status = 'queued'
                   AND (lease_until IS NULL OR lease_until < ?)
-                ''',
+                """,
                 (safe_owner, lease_until, now, batch_id, now),
             )
             if cursor.rowcount <= 0:
@@ -584,17 +594,21 @@ class SQLiteSoraRepo:
         finally:
             conn.close()
 
-    def heartbeat_sora_nurture_batch_lease(self, batch_id: int, owner: str, lease_seconds: int = 180) -> bool:
+    def heartbeat_sora_nurture_batch_lease(
+        self, batch_id: int, owner: str, lease_seconds: int = 180
+    ) -> bool:
         now = self._now_str()
-        lease_until = (datetime.now() + timedelta(seconds=max(10, int(lease_seconds)))).strftime("%Y-%m-%d %H:%M:%S")
+        lease_until = (datetime.now() + timedelta(seconds=max(10, int(lease_seconds)))).strftime(
+            "%Y-%m-%d %H:%M:%S"
+        )
         conn = self._get_conn()
         cursor = conn.cursor()
         cursor.execute(
-            '''
+            """
             UPDATE sora_nurture_batches
             SET heartbeat_at = ?, lease_until = ?
             WHERE id = ? AND lease_owner = ?
-            ''',
+            """,
             (now, lease_until, int(batch_id), str(owner or "")),
         )
         success = cursor.rowcount > 0
@@ -606,13 +620,13 @@ class SQLiteSoraRepo:
         conn = self._get_conn()
         cursor = conn.cursor()
         cursor.execute(
-            '''
+            """
             UPDATE sora_nurture_batches
             SET lease_owner = NULL,
                 lease_until = NULL,
                 heartbeat_at = NULL
             WHERE id = ? AND lease_owner = ?
-            ''',
+            """,
             (int(batch_id), str(owner or "")),
         )
         success = cursor.rowcount > 0
@@ -626,12 +640,12 @@ class SQLiteSoraRepo:
         cursor = conn.cursor()
         cursor.execute("BEGIN IMMEDIATE")
         cursor.execute(
-            '''
+            """
             SELECT id
             FROM sora_nurture_batches
             WHERE status = 'running'
               AND (lease_until IS NULL OR lease_until < ?)
-            ''',
+            """,
             (now,),
         )
         rows = cursor.fetchall()
@@ -643,7 +657,7 @@ class SQLiteSoraRepo:
 
         placeholders = ",".join(["?"] * len(batch_ids))
         cursor.execute(
-            f'''
+            f"""
             UPDATE sora_nurture_batches
             SET status = 'queued',
                 lease_owner = NULL,
@@ -651,19 +665,19 @@ class SQLiteSoraRepo:
                 heartbeat_at = NULL,
                 run_last_error = 'startup recovered stale running batch'
             WHERE id IN ({placeholders})
-            ''',
+            """,
             batch_ids,
         )
         # 回收中断中的子任务，避免批次重跑时卡在 running。
         cursor.execute(
-            f'''
+            f"""
             UPDATE sora_nurture_jobs
             SET status = 'queued',
                 phase = 'queue',
                 error = COALESCE(error, 'startup recovered stale running batch')
             WHERE batch_id IN ({placeholders})
               AND status = 'running'
-            ''',
+            """,
             batch_ids,
         )
         count = len(batch_ids)

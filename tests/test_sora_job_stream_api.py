@@ -1,6 +1,6 @@
+import asyncio
 import json
 import os
-import asyncio
 
 import pytest
 from fastapi.testclient import TestClient
@@ -100,7 +100,9 @@ def _seed_user_token(username="stream-user") -> str:
     return create_access_token({"sub": username})
 
 
-def _seed_job(*, status="running", phase="progress", progress_pct=10.0, group_title="Sora", image_url=None) -> int:
+def _seed_job(
+    *, status="running", phase="progress", progress_pct=10.0, group_title="Sora", image_url=None
+) -> int:
     return sqlite_db.create_sora_job(
         {
             "profile_id": 1,
@@ -156,7 +158,10 @@ async def test_sora_job_stream_snapshot_contains_image_url():
         event_name, payload = await _next_event(resp, expected={"snapshot"})
         assert event_name == "snapshot"
         data = json.loads(payload or "{}")
-        matched = next((item for item in data.get("jobs", []) if int(item.get("job_id") or 0) == int(job_id)), None)
+        matched = next(
+            (item for item in data.get("jobs", []) if int(item.get("job_id") or 0) == int(job_id)),
+            None,
+        )
         assert matched is not None
         assert matched.get("image_url") == "https://example.com/snapshot.png"
     finally:
@@ -171,7 +176,9 @@ async def test_sora_job_stream_emits_job_change_after_update():
     resp = await _open_stream(token=token, with_events=False)
     try:
         await _next_event(resp, expected={"snapshot"})
-        sqlite_db.update_sora_job(job_id, {"progress_pct": 55, "phase": "progress", "status": "running"})
+        sqlite_db.update_sora_job(
+            job_id, {"progress_pct": 55, "phase": "progress", "status": "running"}
+        )
         event_name, payload = await _next_event(resp, expected={"job"})
         assert event_name == "job"
         data = json.loads(payload or "{}")
@@ -209,7 +216,9 @@ async def test_sora_job_stream_emits_remove_when_filtered_out():
     resp = await _open_stream(token=token, status="running", with_events=False)
     try:
         await _next_event(resp, expected={"snapshot"})
-        sqlite_db.update_sora_job(job_id, {"status": "completed", "phase": "done", "progress_pct": 100})
+        sqlite_db.update_sora_job(
+            job_id, {"status": "completed", "phase": "done", "progress_pct": 100}
+        )
         event_name, payload = await _next_event(resp, expected={"remove"})
         assert event_name == "remove"
         data = json.loads(payload or "{}")

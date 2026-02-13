@@ -1,4 +1,5 @@
 """应用配置"""
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 

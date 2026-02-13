@@ -2,7 +2,6 @@ import pytest
 
 from app.db.sqlite import sqlite_db
 
-
 pytestmark = pytest.mark.unit
 
 

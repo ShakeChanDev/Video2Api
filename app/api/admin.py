@@ -1,4 +1,5 @@
 """后台管理接口"""
+
 from __future__ import annotations
 
 import asyncio
@@ -150,7 +151,9 @@ async def stream_system_logs(
         idle_ticks = 0
         try:
             while True:
-                rows = sqlite_db.list_event_logs_since(after_id=last_id, source=source_value, limit=200)
+                rows = sqlite_db.list_event_logs_since(
+                    after_id=last_id, source=source_value, limit=200
+                )
                 if rows:
                     idle_ticks = 0
                     for row in rows:

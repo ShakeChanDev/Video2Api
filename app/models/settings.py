@@ -1,4 +1,5 @@
 """系统设置模型"""
+
 from __future__ import annotations
 
 from typing import List, Optional
@@ -27,7 +28,9 @@ class SoraSettings(BaseModel):
     default_duration: str = "10s"
     default_aspect_ratio: str = "landscape"
     submit_priority: str = "playwright_action_first"
-    account_dispatch: "AccountDispatchSettings" = Field(default_factory=lambda: AccountDispatchSettings())
+    account_dispatch: "AccountDispatchSettings" = Field(
+        default_factory=lambda: AccountDispatchSettings()
+    )
 
     @field_validator("submit_priority")
     @classmethod
@@ -133,9 +136,15 @@ class AccountDispatchSettings(BaseModel):
     default_quality_score: float = Field(70, ge=0, le=100)
     active_job_penalty: float = Field(8, ge=0, le=100)
     plus_bonus: float = Field(5, ge=0, le=100)
-    quality_ignore_rules: List[AccountDispatchIgnoreRule] = Field(default_factory=_default_quality_ignore_rules)
-    quality_error_rules: List[AccountDispatchErrorRule] = Field(default_factory=_default_quality_error_rules)
-    default_error_rule: AccountDispatchDefaultErrorRule = Field(default_factory=AccountDispatchDefaultErrorRule)
+    quality_ignore_rules: List[AccountDispatchIgnoreRule] = Field(
+        default_factory=_default_quality_ignore_rules
+    )
+    quality_error_rules: List[AccountDispatchErrorRule] = Field(
+        default_factory=_default_quality_error_rules
+    )
+    default_error_rule: AccountDispatchDefaultErrorRule = Field(
+        default_factory=AccountDispatchDefaultErrorRule
+    )
 
     @field_validator("auto_scan_group_title")
     @classmethod

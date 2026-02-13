@@ -1,4 +1,5 @@
 """ixBrowser 业务接口"""
+
 import asyncio
 import time
 from typing import List, Optional
@@ -19,17 +20,18 @@ from app.models.ixbrowser import (
     IXBrowserOpenProfileResponse,
     IXBrowserRandomSwitchProxyRequest,
     IXBrowserRandomSwitchProxyResponse,
-    IXBrowserSilentRefreshCreateResponse,
-    IXBrowserSilentRefreshJob,
     IXBrowserScanRequest,
     IXBrowserScanRunSummary,
     IXBrowserSessionScanResponse,
+    IXBrowserSilentRefreshCreateResponse,
+    IXBrowserSilentRefreshJob,
 )
 from app.services.ixbrowser_service import (
     ixbrowser_service,
 )
 
 router = APIRouter(prefix="/api/v1/ixbrowser", tags=["ixBrowser"])
+
 
 def _silent_refresh_payload(job: IXBrowserSilentRefreshJob) -> dict:
     return {
@@ -50,7 +52,9 @@ def _silent_refresh_payload(job: IXBrowserSilentRefreshJob) -> dict:
     }
 
 
-def _apply_profile_proxy_binding(scan_response: IXBrowserSessionScanResponse) -> IXBrowserSessionScanResponse:
+def _apply_profile_proxy_binding(
+    scan_response: IXBrowserSessionScanResponse,
+) -> IXBrowserSessionScanResponse:
     """
     用当前 ixBrowser 绑定关系覆盖扫描结果的 proxy 字段（只读透传）。
 
@@ -113,7 +117,11 @@ async def open_ixbrowser_profile_window(
                 message="打开窗口",
                 resource_type="profile",
                 resource_id=str(profile_id),
-                extra={"group_title": group_title, "window_name": result.window_name, "target_url": target_url},
+                extra={
+                    "group_title": group_title,
+                    "window_name": result.window_name,
+                    "target_url": target_url,
+                },
             )
         return result
     except Exception as exc:  # noqa: BLE001
@@ -191,7 +199,9 @@ async def get_sora_session_accounts(
     current_user: dict = Depends(get_current_active_user),
 ):
     try:
-        requested_profile_ids = scan_request.profile_ids if scan_request and scan_request.profile_ids else None
+        requested_profile_ids = (
+            scan_request.profile_ids if scan_request and scan_request.profile_ids else None
+        )
         result = await ixbrowser_service.scan_group_sora_sessions(
             group_title=group_title,
             operator_user=current_user,
@@ -201,7 +211,9 @@ async def get_sora_session_accounts(
         if request:
             requested_count = len(requested_profile_ids) if requested_profile_ids else 0
             requested_set = set(requested_profile_ids) if requested_profile_ids else set()
-            effective_count = len([item for item in result.results if int(item.profile_id) in requested_set])
+            effective_count = len(
+                [item for item in result.results if int(item.profile_id) in requested_set]
+            )
             log_audit(
                 request=request,
                 current_user=current_user,
@@ -236,7 +248,9 @@ async def get_sora_session_accounts(
         raise
 
 
-@router.post("/sora-session-accounts/silent-refresh", response_model=IXBrowserSilentRefreshCreateResponse)
+@router.post(
+    "/sora-session-accounts/silent-refresh", response_model=IXBrowserSilentRefreshCreateResponse
+)
 async def create_sora_session_accounts_silent_refresh_job(
     request: Request,
     group_title: str = Query("Sora", description="要更新的分组名称"),
@@ -348,7 +362,9 @@ async def stream_sora_session_accounts_silent_refresh(
     )
 
 
-@router.get("/sora-session-accounts/silent-refresh/{job_id}", response_model=IXBrowserSilentRefreshJob)
+@router.get(
+    "/sora-session-accounts/silent-refresh/{job_id}", response_model=IXBrowserSilentRefreshJob
+)
 async def get_sora_session_accounts_silent_refresh_job(
     job_id: int,
     current_user: dict = Depends(get_current_active_user),
@@ -368,7 +384,9 @@ async def get_latest_sora_session_accounts(
         await ixbrowser_service.ensure_proxy_bindings()
     except Exception:  # noqa: BLE001
         pass
-    data = ixbrowser_service.get_latest_sora_scan(group_title=group_title, with_fallback=with_fallback)
+    data = ixbrowser_service.get_latest_sora_scan(
+        group_title=group_title, with_fallback=with_fallback
+    )
     return _apply_profile_proxy_binding(data)
 
 
@@ -394,7 +412,9 @@ async def stream_sora_session_accounts(
                     if payload_group and payload_group != group_title:
                         continue
                 try:
-                    data = ixbrowser_service.get_latest_sora_scan(group_title=group_title, with_fallback=True)
+                    data = ixbrowser_service.get_latest_sora_scan(
+                        group_title=group_title, with_fallback=True
+                    )
                 except Exception:  # noqa: BLE001
                     continue
                 try:
@@ -436,7 +456,9 @@ async def create_sora_generate_job(
     current_user: dict = Depends(get_current_active_user),
 ):
     try:
-        result = await ixbrowser_service.create_sora_generate_job(request=request, operator_user=current_user)
+        result = await ixbrowser_service.create_sora_generate_job(
+            request=request, operator_user=current_user
+        )
         if http_request:
             log_audit(
                 request=http_request,
@@ -553,4 +575,6 @@ async def list_sora_generate_jobs(
     current_user: dict = Depends(get_current_active_user),
 ):
     del current_user
-    return ixbrowser_service.list_sora_generate_jobs(group_title=group_title, limit=limit, profile_id=profile_id)
+    return ixbrowser_service.list_sora_generate_jobs(
+        group_title=group_title, limit=limit, profile_id=profile_id
+    )

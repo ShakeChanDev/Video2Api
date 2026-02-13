@@ -5,8 +5,8 @@ import pytest
 import app.services.proxy_service as proxy_service_module
 from app.db.sqlite import sqlite_db
 from app.models.proxy import ProxyBatchCheckRequest, ProxyBatchImportRequest, ProxySyncPushRequest
-from app.services.proxy_service import ProxyService
 from app.services.ixbrowser_service import ixbrowser_service
+from app.services.proxy_service import ProxyService
 
 pytestmark = pytest.mark.unit
 
@@ -95,7 +95,9 @@ async def test_proxy_sync_push_creates_and_binds_ix_id(monkeypatch):
 
     # seed local proxy
     import_resp = svc.batch_import(
-        ProxyBatchImportRequest(text="2.2.2.2:3128:user:pass", default_type="http", tag=None, note=None)
+        ProxyBatchImportRequest(
+            text="2.2.2.2:3128:user:pass", default_type="http", tag=None, note=None
+        )
     )
     assert int(import_resp.created) == 1
     local = sqlite_db.list_proxies(page=1, limit=10).get("items", [])[0]
@@ -401,10 +403,14 @@ async def test_proxy_batch_check_success_with_ipapi_and_proxycheck(monkeypatch):
         }
 
     monkeypatch.setattr(proxy_service_module, "_fetch_ipapi", fake_fetch_ipapi, raising=True)
-    monkeypatch.setattr(proxy_service_module, "_fetch_proxycheck", fake_fetch_proxycheck, raising=True)
+    monkeypatch.setattr(
+        proxy_service_module, "_fetch_proxycheck", fake_fetch_proxycheck, raising=True
+    )
 
     resp = await svc.batch_check(
-        ProxyBatchCheckRequest(proxy_ids=[proxy_id], concurrency=5, timeout_sec=8.0, force_refresh=True)
+        ProxyBatchCheckRequest(
+            proxy_ids=[proxy_id], concurrency=5, timeout_sec=8.0, force_refresh=True
+        )
     )
     assert len(resp.results) == 1
     result = resp.results[0]
@@ -470,7 +476,9 @@ async def test_proxy_batch_check_reuses_recent_result_when_force_refresh_false(m
     monkeypatch.setattr(proxy_service_module, "_fetch_proxycheck", fail_if_called, raising=True)
 
     resp = await svc.batch_check(
-        ProxyBatchCheckRequest(proxy_ids=[proxy_id], concurrency=5, timeout_sec=8.0, force_refresh=False)
+        ProxyBatchCheckRequest(
+            proxy_ids=[proxy_id], concurrency=5, timeout_sec=8.0, force_refresh=False
+        )
     )
     assert len(resp.results) == 1
     result = resp.results[0]
@@ -522,7 +530,9 @@ async def test_proxy_batch_check_quota_limited_does_not_override_existing_result
     monkeypatch.setattr(proxy_service_module, "_fetch_ipapi", raise_quota, raising=True)
 
     resp = await svc.batch_check(
-        ProxyBatchCheckRequest(proxy_ids=[proxy_id], concurrency=5, timeout_sec=8.0, force_refresh=True)
+        ProxyBatchCheckRequest(
+            proxy_ids=[proxy_id], concurrency=5, timeout_sec=8.0, force_refresh=True
+        )
     )
     assert len(resp.results) == 1
     result = resp.results[0]
@@ -547,7 +557,9 @@ async def test_proxy_batch_check_fails_for_ssh_proxy_without_host_port_fetch():
     assert proxy_id > 0
 
     resp = await svc.batch_check(
-        ProxyBatchCheckRequest(proxy_ids=[proxy_id], concurrency=5, timeout_sec=8.0, force_refresh=True)
+        ProxyBatchCheckRequest(
+            proxy_ids=[proxy_id], concurrency=5, timeout_sec=8.0, force_refresh=True
+        )
     )
     assert len(resp.results) == 1
     result = resp.results[0]

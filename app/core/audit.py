@@ -35,7 +35,9 @@ def log_audit(
         user_agent = request.headers.get("user-agent") if request else None
         payload_extra = dict(extra or {})
         trace_id = getattr(getattr(request, "state", None), "trace_id", None) if request else None
-        request_id = getattr(getattr(request, "state", None), "request_id", None) if request else None
+        request_id = (
+            getattr(getattr(request, "state", None), "request_id", None) if request else None
+        )
         if trace_id and "trace_id" not in payload_extra:
             payload_extra["trace_id"] = trace_id
         if request_id and "request_id" not in payload_extra:

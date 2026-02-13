@@ -236,7 +236,11 @@ class ProxiesMixin:
             for item in valid_records
             if str(item.get("check_status") or "").strip().lower() == "success"
         ]
-        proxy_pool = preferred_records if len(preferred_records) >= len(normalized_profile_ids) else valid_records
+        proxy_pool = (
+            preferred_records
+            if len(preferred_records) >= len(normalized_profile_ids)
+            else valid_records
+        )
 
         indexed_results: Dict[int, IXBrowserRandomSwitchProxyItem] = {}
         execution_jobs: List[tuple[int, IXBrowserWindow, Dict[str, Any], Optional[str]]] = []
@@ -316,7 +320,9 @@ class ProxiesMixin:
                         message=f"关闭窗口失败：{exc}",
                     )
 
-                proxy_type = self._normalize_custom_proxy_type(record.get("proxy_type"), default="http")
+                proxy_type = self._normalize_custom_proxy_type(
+                    record.get("proxy_type"), default="http"
+                )
                 proxy_ip = str(record.get("proxy_ip") or "").strip()
                 proxy_port = str(record.get("proxy_port") or "").strip()
                 proxy_user = str(record.get("proxy_user") or "")
@@ -370,7 +376,11 @@ class ProxiesMixin:
             for idx, item in done_items:
                 indexed_results[idx] = item
 
-        ordered_results = [indexed_results[idx] for idx in range(len(normalized_profile_ids)) if idx in indexed_results]
+        ordered_results = [
+            indexed_results[idx]
+            for idx in range(len(normalized_profile_ids))
+            if idx in indexed_results
+        ]
         success_count = sum(1 for item in ordered_results if item.ok)
         failed_count = len(ordered_results) - success_count
 

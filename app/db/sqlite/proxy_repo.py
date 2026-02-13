@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import json
-from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 
@@ -117,7 +115,9 @@ class SQLiteProxyRepo:
                 result[ix_id] = local_id
         return result
 
-    def update_proxy_ix_binding(self, proxy_id: int, ix_id: int, ix_type: Optional[int] = None) -> bool:
+    def update_proxy_ix_binding(
+        self, proxy_id: int, ix_id: int, ix_type: Optional[int] = None
+    ) -> bool:
         try:
             pid = int(proxy_id)
             ix_id_int = int(ix_id)
@@ -340,11 +340,11 @@ class SQLiteProxyRepo:
         conn = self._get_conn()
         cursor = conn.cursor()
         cursor.execute(
-            '''
+            """
             INSERT INTO proxy_cf_events (
                 proxy_id, profile_id, source, endpoint, status_code, error_text, is_cf, created_at
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            ''',
+            """,
             (
                 safe_proxy_id,
                 safe_profile_id,
@@ -360,7 +360,7 @@ class SQLiteProxyRepo:
 
         if safe_proxy_id is None:
             cursor.execute(
-                '''
+                """
                 DELETE FROM proxy_cf_events
                 WHERE proxy_id IS NULL
                   AND id NOT IN (
@@ -370,12 +370,12 @@ class SQLiteProxyRepo:
                     ORDER BY id DESC
                     LIMIT ?
                   )
-                ''',
+                """,
                 (safe_keep,),
             )
         else:
             cursor.execute(
-                '''
+                """
                 DELETE FROM proxy_cf_events
                 WHERE proxy_id = ?
                   AND id NOT IN (
@@ -385,7 +385,7 @@ class SQLiteProxyRepo:
                     ORDER BY id DESC
                     LIMIT ?
                   )
-                ''',
+                """,
                 (safe_proxy_id, safe_proxy_id, safe_keep),
             )
 
@@ -393,7 +393,9 @@ class SQLiteProxyRepo:
         conn.close()
         return event_id
 
-    def get_proxy_cf_recent_stats(self, proxy_ids: List[int], window: int = 30) -> Dict[int, Dict[str, Any]]:
+    def get_proxy_cf_recent_stats(
+        self, proxy_ids: List[int], window: int = 30
+    ) -> Dict[int, Dict[str, Any]]:
         ids: List[int] = []
         seen = set()
         for raw in proxy_ids or []:
@@ -413,7 +415,7 @@ class SQLiteProxyRepo:
         conn = self._get_conn()
         cursor = conn.cursor()
         cursor.execute(
-            f'''
+            f"""
             SELECT
               proxy_id,
               SUM(CASE WHEN is_cf = 1 THEN 1 ELSE 0 END) AS cf_count,
@@ -428,7 +430,7 @@ class SQLiteProxyRepo:
             ) t
             WHERE rn <= ?
             GROUP BY proxy_id
-            ''',
+            """,
             [*ids, safe_window],
         )
         rows = cursor.fetchall()
@@ -457,7 +459,7 @@ class SQLiteProxyRepo:
         conn = self._get_conn()
         cursor = conn.cursor()
         cursor.execute(
-            '''
+            """
             SELECT
               SUM(CASE WHEN is_cf = 1 THEN 1 ELSE 0 END) AS cf_count,
               COUNT(*) AS total_count
@@ -468,7 +470,7 @@ class SQLiteProxyRepo:
               ORDER BY id DESC
               LIMIT ?
             ) t
-            ''',
+            """,
             (safe_window,),
         )
         row = cursor.fetchone()
@@ -482,7 +484,9 @@ class SQLiteProxyRepo:
             "cf_recent_ratio": float(ratio),
         }
 
-    def get_proxy_cf_recent_flags(self, proxy_ids: List[int], window: int = 30) -> Dict[int, List[int]]:
+    def get_proxy_cf_recent_flags(
+        self, proxy_ids: List[int], window: int = 30
+    ) -> Dict[int, List[int]]:
         ids: List[int] = []
         seen = set()
         for raw in proxy_ids or []:
@@ -502,7 +506,7 @@ class SQLiteProxyRepo:
         conn = self._get_conn()
         cursor = conn.cursor()
         cursor.execute(
-            f'''
+            f"""
             SELECT proxy_id, is_cf
             FROM (
               SELECT
@@ -514,7 +518,7 @@ class SQLiteProxyRepo:
             ) t
             WHERE rn <= ?
             ORDER BY proxy_id ASC, rn ASC
-            ''',
+            """,
             [*ids, safe_window],
         )
         rows = cursor.fetchall()
@@ -537,13 +541,13 @@ class SQLiteProxyRepo:
         conn = self._get_conn()
         cursor = conn.cursor()
         cursor.execute(
-            '''
+            """
             SELECT is_cf
             FROM proxy_cf_events
             WHERE proxy_id IS NULL
             ORDER BY id DESC
             LIMIT ?
-            ''',
+            """,
             (safe_window,),
         )
         rows = cursor.fetchall()
@@ -561,13 +565,13 @@ class SQLiteProxyRepo:
         conn = self._get_conn()
         cursor = conn.cursor()
         cursor.execute(
-            '''
+            """
             SELECT id, proxy_id, source, endpoint, status_code, error_text, is_cf, created_at
             FROM proxy_cf_events
             WHERE proxy_id = ?
             ORDER BY id DESC
             LIMIT ?
-            ''',
+            """,
             (pid, safe_window),
         )
         rows = cursor.fetchall()
@@ -579,13 +583,13 @@ class SQLiteProxyRepo:
         conn = self._get_conn()
         cursor = conn.cursor()
         cursor.execute(
-            '''
+            """
             SELECT id, proxy_id, source, endpoint, status_code, error_text, is_cf, created_at
             FROM proxy_cf_events
             WHERE proxy_id IS NULL
             ORDER BY id DESC
             LIMIT ?
-            ''',
+            """,
             (safe_window,),
         )
         rows = cursor.fetchall()
@@ -616,24 +620,24 @@ class SQLiteProxyRepo:
                 continue
 
             cursor.execute(
-                '''
+                """
                 SELECT id FROM proxies
                 WHERE proxy_type = ? AND proxy_ip = ? AND proxy_port = ? AND proxy_user = ?
                 LIMIT 1
-                ''',
+                """,
                 (ptype, ip, port, user),
             )
             existing = cursor.fetchone()
             if existing:
                 cursor.execute(
-                    '''
+                    """
                     UPDATE proxies
                     SET proxy_password = ?,
                         tag = ?,
                         note = ?,
                         updated_at = ?
                     WHERE id = ?
-                    ''',
+                    """,
                     (
                         password,
                         rec.get("tag"),
@@ -646,13 +650,13 @@ class SQLiteProxyRepo:
                 continue
 
             cursor.execute(
-                '''
+                """
                 INSERT INTO proxies (
                     ix_id, proxy_type, proxy_ip, proxy_port, proxy_user, proxy_password,
                     tag, note,
                     created_at, updated_at
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ''',
+                """,
                 (
                     None,
                     ptype,
@@ -704,18 +708,18 @@ class SQLiteProxyRepo:
             if not row:
                 # 2) key 兜底匹配
                 cursor.execute(
-                    '''
+                    """
                     SELECT id FROM proxies
                     WHERE proxy_type = ? AND proxy_ip = ? AND proxy_port = ? AND proxy_user = ?
                     LIMIT 1
-                    ''',
+                    """,
                     (ptype, ip, port, user),
                 )
                 row = cursor.fetchone()
 
             if row:
                 cursor.execute(
-                    '''
+                    """
                     UPDATE proxies
                     SET ix_id = ?,
                         proxy_type = ?,
@@ -735,7 +739,7 @@ class SQLiteProxyRepo:
                         ix_active_window = ?,
                         updated_at = ?
                     WHERE id = ?
-                    ''',
+                    """,
                     (
                         ix_id,
                         ptype,
@@ -761,14 +765,14 @@ class SQLiteProxyRepo:
                 continue
 
             cursor.execute(
-                '''
+                """
                 INSERT INTO proxies (
                     ix_id, proxy_type, proxy_ip, proxy_port, proxy_user, proxy_password,
                     tag, note,
                     ix_type, ix_tag_id, ix_tag_name, ix_country, ix_city, ix_timezone, ix_query, ix_active_window,
                     created_at, updated_at
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ''',
+                """,
                 (
                     ix_id,
                     ptype,

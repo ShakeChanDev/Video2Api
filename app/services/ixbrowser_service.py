@@ -1,62 +1,47 @@
 """
 ixBrowser 本地 API 服务
 """
+
 from __future__ import annotations
 
 import asyncio
-import base64
-import json
-import inspect
 import logging
-import re
-import time
 from dataclasses import dataclass
-from datetime import datetime
-from typing import Any, Callable, Dict, List, Optional, Tuple
-from uuid import uuid4
+from typing import Any, Callable, Dict, List, Optional
 
 import httpx
-from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 from playwright.async_api import async_playwright
 
 from app.core.config import settings
 from app.db.sqlite import sqlite_db
 from app.models.ixbrowser import (
-    IXBrowserGenerateJob,
-    IXBrowserGroup,
     IXBrowserGroupWindows,
     IXBrowserOpenProfileResponse,
-    IXBrowserGenerateRequest,
-    IXBrowserGenerateJobCreateResponse,
-    IXBrowserScanRunSummary,
-    IXBrowserSessionScanItem,
-    IXBrowserSessionScanResponse,
-    IXBrowserSilentRefreshCreateResponse,
-    IXBrowserSilentRefreshJob,
-    IXBrowserWindow,
-    SoraJob,
-    SoraJobCreateResponse,
-    SoraJobEvent,
-    SoraJobRequest,
 )
-from app.services.account_dispatch_service import AccountDispatchNoAvailableError, account_dispatch_service
+from app.services.account_dispatch_service import account_dispatch_service
 from app.services.ixbrowser.browser_prep import BrowserPrepMixin
-from app.services.ixbrowser.groups import GroupsMixin
-from app.services.ixbrowser.profiles import ProfilesMixin
-from app.services.ixbrowser.proxies import ProxiesMixin
-from app.services.ixbrowser.scan import ScanMixin
-from app.services.ixbrowser.sora_api import SoraApiMixin
-from app.services.ixbrowser.sora_jobs import SoraJobsMixin
-from app.services.ixbrowser.silent_refresh import SilentRefreshMixin
 from app.services.ixbrowser.errors import (
     IXBrowserAPIError,
     IXBrowserConnectionError,
     IXBrowserNotFoundError,
     IXBrowserServiceError,
 )
-from app.services.task_runtime import spawn
+from app.services.ixbrowser.groups import GroupsMixin
+from app.services.ixbrowser.profiles import ProfilesMixin
+from app.services.ixbrowser.proxies import ProxiesMixin
+from app.services.ixbrowser.scan import ScanMixin
+from app.services.ixbrowser.silent_refresh import SilentRefreshMixin
+from app.services.ixbrowser.sora_api import SoraApiMixin
+from app.services.ixbrowser.sora_jobs import SoraJobsMixin
 
 logger = logging.getLogger(__name__)
+
+__all__ = [
+    "IXBrowserServiceDeps",
+    "IXBrowserService",
+    "ixbrowser_service",
+    "account_dispatch_service",
+]
 
 
 @dataclass
@@ -111,10 +96,14 @@ class IXBrowserService(
         self._service_error_cls = IXBrowserServiceError
         self._api_error_cls = IXBrowserAPIError
         self._connection_error_cls = IXBrowserConnectionError
-        from app.services.ixbrowser.sora_publish_workflow import SoraPublishWorkflow  # noqa: WPS433
-        from app.services.ixbrowser.sora_generation_workflow import SoraGenerationWorkflow  # noqa: WPS433
-        from app.services.ixbrowser.realtime_quota_service import RealtimeQuotaService  # noqa: WPS433
-        from app.services.ixbrowser.sora_job_runner import SoraJobRunner  # noqa: WPS433
+        from app.services.ixbrowser.realtime_quota_service import (
+            RealtimeQuotaService,
+        )
+        from app.services.ixbrowser.sora_generation_workflow import (
+            SoraGenerationWorkflow,
+        )
+        from app.services.ixbrowser.sora_job_runner import SoraJobRunner
+        from app.services.ixbrowser.sora_publish_workflow import SoraPublishWorkflow
 
         self._sora_publish_workflow = SoraPublishWorkflow(service=self)
         self._sora_generation_workflow = SoraGenerationWorkflow(service=self, db=sqlite_db)
@@ -241,7 +230,9 @@ class IXBrowserService(
     async def _post(self, path: str, payload: dict) -> dict:
         base = settings.ixbrowser_api_base.rstrip("/")
         url = f"{base}{path}"
-        timeout = httpx.Timeout(self._resolve_request_timeout_seconds(path, self.request_timeout_ms))
+        timeout = httpx.Timeout(
+            self._resolve_request_timeout_seconds(path, self.request_timeout_ms)
+        )
 
         if self._is_ixbrowser_read_path(path):
             if self._ixbrowser_read_semaphore is None:
@@ -249,7 +240,9 @@ class IXBrowserService(
             semaphore = self._ixbrowser_read_semaphore
         else:
             if self._ixbrowser_write_semaphore is None:
-                self._ixbrowser_write_semaphore = asyncio.Semaphore(max(1, int(self.ixbrowser_write_max_concurrency)))
+                self._ixbrowser_write_semaphore = asyncio.Semaphore(
+                    max(1, int(self.ixbrowser_write_max_concurrency))
+                )
             semaphore = self._ixbrowser_write_semaphore
 
         async with semaphore:
@@ -286,7 +279,7 @@ class IXBrowserService(
                             code_int = -1
                         if code_int != 0:
                             if code_int == 1008 and attempt < self.ixbrowser_busy_retry_max:
-                                delay = self.ixbrowser_busy_retry_delay_seconds * (2 ** attempt)
+                                delay = self.ixbrowser_busy_retry_delay_seconds * (2**attempt)
                                 logger.warning(
                                     "ixBrowser busy (code=1008), retry in %.1fs (attempt %s/%s)",
                                     delay,

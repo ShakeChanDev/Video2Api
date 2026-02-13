@@ -279,7 +279,9 @@ def test_get_video_failed_status_maps_progress_message(monkeypatch, client):
     settings.video_api_bearer_token = "video-token"
 
     def _fake_get(_job_id: int, **_kwargs):
-        return _mock_job(status="failed", phase="submit", progress_pct=0, error="Sora生成超时，请检查")
+        return _mock_job(
+            status="failed", phase="submit", progress_pct=0, error="Sora生成超时，请检查"
+        )
 
     monkeypatch.setattr(ixbrowser_service, "get_sora_job", _fake_get, raising=True)
 

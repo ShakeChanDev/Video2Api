@@ -146,7 +146,9 @@ class BrowserPrepMixin:
                     await Stealth().apply_stealth_async(page)
                     plugin_applied = True
                 except Exception as exc:  # noqa: BLE001
-                    logger.warning("Playwright stealth 插件应用失败，将继续注入内置兜底脚本: %s", str(exc))
+                    logger.warning(
+                        "Playwright stealth 插件应用失败，将继续注入内置兜底脚本: %s", str(exc)
+                    )
 
         for script in get_stealth_init_scripts(stage=stage):
             try:
@@ -267,7 +269,9 @@ class BrowserPrepMixin:
 
         try:
             setattr(page, "_cf_nav_listener_attached", True)
-            setattr(page, "_cf_nav_listener_deadline", time.monotonic() + float(CF_NAV_LISTENER_TTL_SEC))
+            setattr(
+                page, "_cf_nav_listener_deadline", time.monotonic() + float(CF_NAV_LISTENER_TTL_SEC)
+            )
         except Exception:  # noqa: BLE001
             # 监听器状态写不进去时，为避免重复注册，直接放弃挂载。
             return
@@ -347,8 +351,12 @@ class BrowserPrepMixin:
     async def _notify_realtime_update(self, group_title: str) -> None:
         await self._realtime_quota_service.notify_update(group_title)
 
-    async def _attach_realtime_quota_listener(self, page, profile_id: int, group_title: str) -> None:
-        await self._realtime_quota_service.attach_realtime_quota_listener(page, profile_id, group_title)
+    async def _attach_realtime_quota_listener(
+        self, page, profile_id: int, group_title: str
+    ) -> None:
+        await self._realtime_quota_service.attach_realtime_quota_listener(
+            page, profile_id, group_title
+        )
 
     async def _record_realtime_quota(
         self,

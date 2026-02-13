@@ -24,7 +24,9 @@ pytestmark = pytest.mark.e2e
 
 
 @pytest.mark.asyncio
-async def test_heavy_load_submit_auto_retry_spawns_new_job_and_visible_in_tasks(monkeypatch, tmp_path):
+async def test_heavy_load_submit_auto_retry_spawns_new_job_and_visible_in_tasks(
+    monkeypatch, tmp_path
+):
     if os.getenv("HEAVY_LOAD_E2E") != "1":
         pytest.skip("跳过 E2E：需要设置环境变量 HEAVY_LOAD_E2E=1")
 
@@ -36,7 +38,9 @@ async def test_heavy_load_submit_auto_retry_spawns_new_job_and_visible_in_tasks(
         apply_runtime_settings()
 
         if not sqlite_db.get_user_by_username("Admin"):
-            sqlite_db.create_user(username="Admin", password_hash=get_password_hash("Admin"), role="admin")
+            sqlite_db.create_user(
+                username="Admin", password_hash=get_password_hash("Admin"), role="admin"
+            )
 
         async def _fake_list_group_windows():
             return [
@@ -67,13 +71,17 @@ async def test_heavy_load_submit_auto_retry_spawns_new_job_and_visible_in_tasks(
             )
 
         monkeypatch.setattr(ixbrowser_service, "list_group_windows", _fake_list_group_windows)
-        monkeypatch.setattr(ixbrowser_service._sora_generation_workflow, "run_sora_submit_and_progress", _fake_submit_and_progress)
+        monkeypatch.setattr(
+            ixbrowser_service._sora_generation_workflow,
+            "run_sora_submit_and_progress",
+            _fake_submit_and_progress,
+        )
         monkeypatch.setattr(account_dispatch_service, "pick_best_account", _fake_pick_best_account)
 
         port = find_free_port()
 
         # 延迟 import，避免在模块加载时就启动 app 并读取默认 DB
-        from app.main import app as fastapi_app  # noqa: WPS433
+        from app.main import app as fastapi_app
 
         # app.main import 时会调用 apply_runtime_settings，这里覆盖为测试值
         ixbrowser_service.heavy_load_retry_max_attempts = 2

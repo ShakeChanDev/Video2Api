@@ -111,7 +111,9 @@ async def test_admin_selftest_ui_smoke(monkeypatch, tmp_path):
         apply_runtime_settings()
 
         if not sqlite_db.get_user_by_username("Admin"):
-            sqlite_db.create_user(username="Admin", password_hash=get_password_hash("Admin"), role="admin")
+            sqlite_db.create_user(
+                username="Admin", password_hash=get_password_hash("Admin"), role="admin"
+            )
 
         async def _fake_list_group_windows():
             return fake_groups
@@ -136,13 +138,15 @@ async def test_admin_selftest_ui_smoke(monkeypatch, tmp_path):
             return None
 
         monkeypatch.setattr(ixbrowser_service, "list_group_windows", _fake_list_group_windows)
-        monkeypatch.setattr(ixbrowser_service, "scan_group_sora_sessions", _fake_scan_group_sora_sessions)
+        monkeypatch.setattr(
+            ixbrowser_service, "scan_group_sora_sessions", _fake_scan_group_sora_sessions
+        )
         monkeypatch.setattr(ixbrowser_service, "get_latest_sora_scan", _fake_get_latest_sora_scan)
         monkeypatch.setattr(ixbrowser_service, "_run_sora_job", _noop_run_sora_job)
         monkeypatch.setattr(sora_nurture_service, "run_batch", _noop_run_batch)
 
         port = find_free_port()
-        from app.main import app as fastapi_app  # noqa: WPS433
+        from app.main import app as fastapi_app
 
         server, thread, base_url = start_uvicorn(fastapi_app, port=port, host="127.0.0.1")
 
@@ -162,7 +166,10 @@ async def test_admin_selftest_ui_smoke(monkeypatch, tmp_path):
 
                 # 账号页：扫描并看到结果行
                 async with page.expect_response(
-                    lambda r: "/api/v1/ixbrowser/sora-session-accounts" in r.url and r.request.method == "POST"
+                    lambda r: (
+                        "/api/v1/ixbrowser/sora-session-accounts" in r.url
+                        and r.request.method == "POST"
+                    )
                 ):
                     await page.get_by_role("button", name="扫描账号与次数").click()
 
@@ -194,7 +201,9 @@ async def test_admin_selftest_ui_smoke(monkeypatch, tmp_path):
                 )
 
                 # 养号页：创建 batch 并取消
-                await page.goto(f"{base_url}/nurture", wait_until="domcontentloaded", timeout=20_000)
+                await page.goto(
+                    f"{base_url}/nurture", wait_until="domcontentloaded", timeout=20_000
+                )
                 await page.wait_for_function(
                     "() => document.body && document.body.innerText.includes('养号任务')",
                     timeout=15_000,
@@ -208,11 +217,15 @@ async def test_admin_selftest_ui_smoke(monkeypatch, tmp_path):
                 await group_checkbox.click()
 
                 async with page.expect_response(
-                    lambda r: r.url.endswith("/api/v1/nurture/batches") and r.request.method == "POST"
+                    lambda r: (
+                        r.url.endswith("/api/v1/nurture/batches") and r.request.method == "POST"
+                    )
                 ):
-                    await page.locator(
-                        '.nurture-page .step-card:has-text("步骤 2：配置策略并创建")'
-                    ).get_by_role("button", name="创建并开始").click()
+                    await (
+                        page.locator('.nurture-page .step-card:has-text("步骤 2：配置策略并创建")')
+                        .get_by_role("button", name="创建并开始")
+                        .click()
+                    )
 
                 batch_card = page.locator('.nurture-page .table-card:has-text("任务组列表")').first
                 batch_row = batch_card.locator(".el-table__body-wrapper tbody tr").first
@@ -223,7 +236,11 @@ async def test_admin_selftest_ui_smoke(monkeypatch, tmp_path):
                 confirm = page.locator('.el-message-box:has-text("取消确认")')
                 await confirm.wait_for(state="visible", timeout=8000)
                 async with page.expect_response(
-                    lambda r: "/api/v1/nurture/batches/" in r.url and r.url.endswith("/cancel") and r.request.method == "POST"
+                    lambda r: (
+                        "/api/v1/nurture/batches/" in r.url
+                        and r.url.endswith("/cancel")
+                        and r.request.method == "POST"
+                    )
                 ):
                     await confirm.get_by_role("button", name="取消任务组").click()
 

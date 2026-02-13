@@ -1,4 +1,5 @@
 """Sora 发布工作流：承接发布、草稿检索、页面请求与 URL 捕获链路。"""
+
 from __future__ import annotations
 
 import asyncio
@@ -15,7 +16,6 @@ from urllib.parse import unquote, urlparse
 from uuid import uuid4
 
 import httpx
-from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 
 from app.db.sqlite import sqlite_db
 from app.services.task_runtime import spawn
@@ -42,7 +42,9 @@ class SoraPublishWorkflow:
         return self._connection_error_cls(message)
 
     @staticmethod
-    def _build_create_task_payload_base(prompt: str, aspect_ratio: str, n_frames: int) -> Dict[str, Any]:
+    def _build_create_task_payload_base(
+        prompt: str, aspect_ratio: str, n_frames: int
+    ) -> Dict[str, Any]:
         try:
             n_frames_int = int(n_frames)
         except (TypeError, ValueError):
@@ -150,12 +152,22 @@ class SoraPublishWorkflow:
                 await self._prepare_sora_page(page, profile_id)
                 publish_future = self._watch_publish_url(page, task_id=task_id)
                 draft_generation = None
-                if isinstance(generation_id, str) and generation_id.strip() and generation_id.strip().startswith("gen_"):
+                if (
+                    isinstance(generation_id, str)
+                    and generation_id.strip()
+                    and generation_id.strip().startswith("gen_")
+                ):
                     draft_generation = generation_id.strip()
                 if not draft_generation:
                     draft_future = self._watch_draft_item_by_task_id(page, task_id)
-                    logger.info("发布重试进入 drafts 等待: profile=%s task_id=%s", profile_id, task_id)
-                    await page.goto("https://sora.chatgpt.com/drafts", wait_until="domcontentloaded", timeout=40_000)
+                    logger.info(
+                        "发布重试进入 drafts 等待: profile=%s task_id=%s", profile_id, task_id
+                    )
+                    await page.goto(
+                        "https://sora.chatgpt.com/drafts",
+                        wait_until="domcontentloaded",
+                        timeout=40_000,
+                    )
                     await page.wait_for_timeout(1500)
 
                     draft_started = time.perf_counter()
@@ -222,7 +234,9 @@ class SoraPublishWorkflow:
                     page.url,
                 )
                 await self._clear_caption_input(page)
-                existing_publish = await self._fetch_publish_result_from_posts(page, draft_generation)
+                existing_publish = await self._fetch_publish_result_from_posts(
+                    page, draft_generation
+                )
                 if existing_publish.get("publish_url"):
                     logger.info(
                         "发布重试命中已发布内容: profile=%s task_id=%s generation_id=%s publish_url=%s",
@@ -243,7 +257,9 @@ class SoraPublishWorkflow:
                     profile_id=profile_id,
                 )
                 if api_publish and api_publish.get("publish_url"):
-                    await self._maybe_auto_delete_published_post(page, api_publish, generation_id=draft_generation)
+                    await self._maybe_auto_delete_published_post(
+                        page, api_publish, generation_id=draft_generation
+                    )
                     await self._refresh_nf_check_after_publish(page, profile_id=profile_id)
                     return api_publish.get("publish_url")
                 error_text = self._publish_result_error_text(api_publish)
@@ -256,13 +272,17 @@ class SoraPublishWorkflow:
                     )
                     if self._is_duplicate_publish_error(api_publish):
                         try:
-                            existing = await self._wait_for_publish_url(publish_future, page, timeout_seconds=20)
+                            existing = await self._wait_for_publish_url(
+                                publish_future, page, timeout_seconds=20
+                            )
                         except Exception:  # noqa: BLE001
                             existing = None
                         if existing:
                             await self._refresh_nf_check_after_publish(page, profile_id=profile_id)
                             return existing
-                        draft_item = await self._fetch_draft_item_by_generation_id(page, draft_generation)
+                        draft_item = await self._fetch_draft_item_by_generation_id(
+                            page, draft_generation
+                        )
                         if draft_item is None:
                             draft_item = await self._fetch_draft_item_by_task_id(
                                 page=page,
@@ -283,7 +303,9 @@ class SoraPublishWorkflow:
                             except Exception:  # noqa: BLE001
                                 payload = str(draft_item)[:500]
                             logger.info("发布重试 草稿信息: %s", payload)
-                        existing_link = self._extract_publish_url(str(draft_item)) if draft_item else None
+                        existing_link = (
+                            self._extract_publish_url(str(draft_item)) if draft_item else None
+                        )
                         if existing_link:
                             await self._refresh_nf_check_after_publish(page, profile_id=profile_id)
                             return existing_link
@@ -291,11 +313,15 @@ class SoraPublishWorkflow:
                         if share_id:
                             await self._refresh_nf_check_after_publish(page, profile_id=profile_id)
                             return f"https://sora.chatgpt.com/p/{share_id}"
-                        post_result = await self._fetch_publish_result_from_posts(page, draft_generation)
+                        post_result = await self._fetch_publish_result_from_posts(
+                            page, draft_generation
+                        )
                         if post_result.get("publish_url"):
                             await self._refresh_nf_check_after_publish(page, profile_id=profile_id)
                             return post_result.get("publish_url")
-                        gen_result = await self._fetch_publish_result_from_generation(page, draft_generation)
+                        gen_result = await self._fetch_publish_result_from_generation(
+                            page, draft_generation
+                        )
                         if gen_result.get("publish_url"):
                             await self._refresh_nf_check_after_publish(page, profile_id=profile_id)
                             return gen_result.get("publish_url")
@@ -310,11 +336,15 @@ class SoraPublishWorkflow:
                 clicked = await self._wait_and_click_publish_button(page, timeout_seconds=60)
                 if clicked:
                     await page.wait_for_timeout(800)
-                    await self._click_by_keywords(page, ["确认", "Confirm", "继续", "Continue", "发布", "Publish"])
+                    await self._click_by_keywords(
+                        page, ["确认", "Confirm", "继续", "Continue", "发布", "Publish"]
+                    )
                 else:
                     raise self._service_error("未找到发布按钮")
 
-                publish_url = await self._wait_for_publish_url(publish_future, page, timeout_seconds=45)
+                publish_url = await self._wait_for_publish_url(
+                    publish_future, page, timeout_seconds=45
+                )
                 if publish_url:
                     await self._refresh_nf_check_after_publish(page, profile_id=profile_id)
             finally:
@@ -345,13 +375,19 @@ class SoraPublishWorkflow:
         )
         publish_future = self._watch_publish_url(page, task_id=task_id)
         draft_generation = None
-        if isinstance(generation_id, str) and generation_id.strip() and generation_id.strip().startswith("gen_"):
+        if (
+            isinstance(generation_id, str)
+            and generation_id.strip()
+            and generation_id.strip().startswith("gen_")
+        ):
             draft_generation = generation_id.strip()
         if not draft_generation:
             draft_future = self._watch_draft_item_by_task_id(page, task_id)
 
             logger.info("发布流程进入 drafts 等待: task_id=%s", task_id)
-            await page.goto("https://sora.chatgpt.com/drafts", wait_until="domcontentloaded", timeout=40_000)
+            await page.goto(
+                "https://sora.chatgpt.com/drafts", wait_until="domcontentloaded", timeout=40_000
+            )
             await page.wait_for_timeout(1500)
 
             draft_started = time.perf_counter()
@@ -434,7 +470,9 @@ class SoraPublishWorkflow:
             profile_id=profile_id,
         )
         if api_publish.get("publish_url"):
-            await self._maybe_auto_delete_published_post(page, api_publish, generation_id=draft_generation)
+            await self._maybe_auto_delete_published_post(
+                page, api_publish, generation_id=draft_generation
+            )
             await self._refresh_nf_check_after_publish(page, profile_id=profile_id)
             return api_publish.get("publish_url")
         error_text = self._publish_result_error_text(api_publish)
@@ -442,7 +480,9 @@ class SoraPublishWorkflow:
             logger.info("发布流程 API 发布失败: task_id=%s error=%s", task_id, error_text)
             if self._is_duplicate_publish_error(api_publish):
                 try:
-                    existing = await self._wait_for_publish_url(publish_future, page, timeout_seconds=20)
+                    existing = await self._wait_for_publish_url(
+                        publish_future, page, timeout_seconds=20
+                    )
                 except Exception:  # noqa: BLE001
                     existing = None
                 if existing:
@@ -457,7 +497,9 @@ class SoraPublishWorkflow:
                         max_pages=20,
                     )
                 if draft_item is None:
-                    draft_item = await self._fetch_draft_item(page, task_id, prompt, created_after=created_after)
+                    draft_item = await self._fetch_draft_item(
+                        page, task_id, prompt, created_after=created_after
+                    )
                 if draft_item:
                     try:
                         payload = json.dumps(draft_item, ensure_ascii=False)[:500]
@@ -476,7 +518,9 @@ class SoraPublishWorkflow:
                 if post_result.get("publish_url"):
                     await self._refresh_nf_check_after_publish(page, profile_id=profile_id)
                     return post_result.get("publish_url")
-                gen_result = await self._fetch_publish_result_from_generation(page, draft_generation)
+                gen_result = await self._fetch_publish_result_from_generation(
+                    page, draft_generation
+                )
                 if gen_result.get("publish_url"):
                     await self._refresh_nf_check_after_publish(page, profile_id=profile_id)
                     return gen_result.get("publish_url")
@@ -491,7 +535,9 @@ class SoraPublishWorkflow:
         clicked = await self._wait_and_click_publish_button(page, timeout_seconds=60)
         if clicked:
             await page.wait_for_timeout(800)
-            await self._click_by_keywords(page, ["确认", "Confirm", "继续", "Continue", "发布", "Publish"])
+            await self._click_by_keywords(
+                page, ["确认", "Confirm", "继续", "Continue", "发布", "Publish"]
+            )
         else:
             raise self._service_error("未找到发布按钮")
 
@@ -511,7 +557,9 @@ class SoraPublishWorkflow:
         try:
             access_token = None
             try:
-                access_token = await asyncio.wait_for(self._get_access_token_from_page(page), timeout=6.0)
+                access_token = await asyncio.wait_for(
+                    self._get_access_token_from_page(page), timeout=6.0
+                )
             except Exception:  # noqa: BLE001
                 access_token = None
 
@@ -653,7 +701,9 @@ class SoraPublishWorkflow:
             return f"https://sora.chatgpt.com/p/{sid}"
         return None
 
-    def _extract_publish_error_code(self, raw_text: Optional[str], parsed: Any = None) -> Optional[str]:
+    def _extract_publish_error_code(
+        self, raw_text: Optional[str], parsed: Any = None
+    ) -> Optional[str]:
         candidates: List[str] = []
         if isinstance(parsed, dict):
             error_obj = parsed.get("error")
@@ -673,8 +723,8 @@ class SoraPublishWorkflow:
                 return "duplicate"
             if (
                 "invalid_request_error" in blob
-                or "\"code\": \"invalid_request\"" in blob
-                or "\"code\":\"invalid_request\"" in blob
+                or '"code": "invalid_request"' in blob
+                or '"code":"invalid_request"' in blob
             ):
                 return "invalid_request"
 
@@ -688,7 +738,9 @@ class SoraPublishWorkflow:
             return item
         return None
 
-    def _extract_publish_error_message(self, raw_text: Optional[str], parsed: Any = None) -> Optional[str]:
+    def _extract_publish_error_message(
+        self, raw_text: Optional[str], parsed: Any = None
+    ) -> Optional[str]:
         if isinstance(parsed, dict):
             error_obj = parsed.get("error")
             if isinstance(error_obj, dict):
@@ -851,9 +903,21 @@ class SoraPublishWorkflow:
                 return data
             return None
         if isinstance(data, dict):
-            for key in ("share_id", "shareId", "public_id", "publicId", "publish_id", "publishId", "id"):
+            for key in (
+                "share_id",
+                "shareId",
+                "public_id",
+                "publicId",
+                "publish_id",
+                "publishId",
+                "id",
+            ):
                 value = data.get(key)
-                if isinstance(value, str) and re.fullmatch(r"s_[a-zA-Z0-9]{8,}", value) and re.search(r"\d", value):
+                if (
+                    isinstance(value, str)
+                    and re.fullmatch(r"s_[a-zA-Z0-9]{8,}", value)
+                    and re.search(r"\d", value)
+                ):
                     return value
             for value in data.values():
                 found = self._find_share_id(value)
@@ -1134,7 +1198,7 @@ class SoraPublishWorkflow:
               }
             }
             """,
-            {"taskId": task_id, "prompt": prompt, "createdAfter": created_after}
+            {"taskId": task_id, "prompt": prompt, "createdAfter": created_after},
         )
         return data if isinstance(data, dict) else None
 
@@ -1266,7 +1330,7 @@ class SoraPublishWorkflow:
                     "taskId": task_id,
                     "limit": int(limit) if isinstance(limit, int) else 15,
                     "maxPages": int(max_pages) if isinstance(max_pages, int) else 3,
-                }
+                },
             )
             if isinstance(data, dict):
                 return data
@@ -1278,7 +1342,9 @@ class SoraPublishWorkflow:
             return None
         generation_id = item.get("generation_id") or item.get("generationId")
         if not generation_id and isinstance(item.get("generation"), dict):
-            generation_id = item.get("generation", {}).get("id") or item.get("generation", {}).get("generation_id")
+            generation_id = item.get("generation", {}).get("id") or item.get("generation", {}).get(
+                "generation_id"
+            )
         if not generation_id:
             item_id = item.get("id")
             if isinstance(item_id, str) and item_id.startswith("gen_"):
@@ -1332,7 +1398,13 @@ class SoraPublishWorkflow:
         timeout_ms_int = int(timeout_ms) if int(timeout_ms or 0) > 0 else 20_000
         retries_int = int(retries) if int(retries or 0) > 0 else 0
 
-        last_result: Dict[str, Any] = {"status": None, "raw": None, "json": None, "error": None, "is_cf": False}
+        last_result: Dict[str, Any] = {
+            "status": None,
+            "raw": None,
+            "json": None,
+            "error": None,
+            "is_cf": False,
+        }
         for attempt in range(retries_int + 1):
             try:
                 resp = await page.evaluate(
@@ -1384,10 +1456,22 @@ class SoraPublishWorkflow:
                     {"endpoint": endpoint, "headers": safe_headers, "timeoutMs": timeout_ms_int},
                 )
             except Exception as exc:  # noqa: BLE001
-                resp = {"status": None, "raw": None, "json": None, "error": str(exc), "is_cf": False}
+                resp = {
+                    "status": None,
+                    "raw": None,
+                    "json": None,
+                    "error": str(exc),
+                    "is_cf": False,
+                }
 
             if not isinstance(resp, dict):
-                resp = {"status": None, "raw": None, "json": None, "error": "返回格式异常", "is_cf": False}
+                resp = {
+                    "status": None,
+                    "raw": None,
+                    "json": None,
+                    "error": "返回格式异常",
+                    "is_cf": False,
+                }
 
             status = resp.get("status")
             raw_text = resp.get("raw") if isinstance(resp.get("raw"), str) else None
@@ -1486,7 +1570,9 @@ class SoraPublishWorkflow:
             timeout_ms=20_000,
             retries=2,
         )
-        if int(session_result.get("status") or 0) == 200 and isinstance(session_result.get("json"), dict):
+        if int(session_result.get("status") or 0) == 200 and isinstance(
+            session_result.get("json"), dict
+        ):
             token = self._service._extract_access_token(session_result.get("json"))  # noqa: SLF001
             if isinstance(token, str) and token.strip():
                 headers["Authorization"] = f"Bearer {token.strip()}"
@@ -1529,13 +1615,19 @@ class SoraPublishWorkflow:
             if not isinstance(items, list):
                 break
             for item in items:
-                if isinstance(item, dict) and task_id_norm and self._match_task_id_in_item(item, task_id_norm):
+                if (
+                    isinstance(item, dict)
+                    and task_id_norm
+                    and self._match_task_id_in_item(item, task_id_norm)
+                ):
                     generation_id = self._extract_generation_id(item)
                     if generation_id and "generation_id" not in item:
                         item["generation_id"] = generation_id
                     return item
 
-            next_cursor = payload.get("next_cursor") or payload.get("nextCursor") or payload.get("cursor")
+            next_cursor = (
+                payload.get("next_cursor") or payload.get("nextCursor") or payload.get("cursor")
+            )
             next_url = payload.get("next") if isinstance(payload.get("next"), str) else None
             if next_url:
                 cursor = str(next_url)
@@ -1567,13 +1659,21 @@ class SoraPublishWorkflow:
                 items2 = pick_items(payload2)
                 if isinstance(items2, list):
                     for item in items2:
-                        if isinstance(item, dict) and task_id_norm and self._match_task_id_in_item(item, task_id_norm):
+                        if (
+                            isinstance(item, dict)
+                            and task_id_norm
+                            and self._match_task_id_in_item(item, task_id_norm)
+                        ):
                             generation_id = self._extract_generation_id(item)
                             if generation_id and "generation_id" not in item:
                                 item["generation_id"] = generation_id
                             return item
 
-                cursor = payload2.get("next_cursor") or payload2.get("nextCursor") or payload2.get("cursor")
+                cursor = (
+                    payload2.get("next_cursor")
+                    or payload2.get("nextCursor")
+                    or payload2.get("cursor")
+                )
                 cursor = str(cursor) if cursor else None
 
         return None
@@ -1610,14 +1710,22 @@ class SoraPublishWorkflow:
                 max_pages=max_pages,
             )
 
-        generation_id = self._extract_generation_id(draft_item) if isinstance(draft_item, dict) else None
+        generation_id = (
+            self._extract_generation_id(draft_item) if isinstance(draft_item, dict) else None
+        )
         if generation_id and isinstance(draft_item, dict) and "generation_id" not in draft_item:
             draft_item["generation_id"] = generation_id
         return generation_id, draft_item if isinstance(draft_item, dict) else None
 
-    async def _fetch_publish_result_from_posts(self, page, generation_id: str) -> Dict[str, Optional[str]]:
+    async def _fetch_publish_result_from_posts(
+        self, page, generation_id: str
+    ) -> Dict[str, Optional[str]]:
         if not generation_id:
-            return self._build_publish_result(status="not_found", raw_error="缺少 generation_id", error_code="missing_generation_id")
+            return self._build_publish_result(
+                status="not_found",
+                raw_error="缺少 generation_id",
+                error_code="missing_generation_id",
+            )
         data = await page.evaluate(
             """
             async ({generationId}) => {
@@ -1699,19 +1807,27 @@ class SoraPublishWorkflow:
               return null;
             }
             """,
-            {"generationId": generation_id}
+            {"generationId": generation_id},
         )
         if isinstance(data, str) and data.strip():
             return self._parse_publish_result_payload(data, status="published")
-        return self._build_publish_result(status="not_found", raw_error="未命中已发布内容", error_code="not_found")
+        return self._build_publish_result(
+            status="not_found", raw_error="未命中已发布内容", error_code="not_found"
+        )
 
     async def _fetch_publish_url_from_posts(self, page, generation_id: str) -> Optional[str]:
         result = await self._fetch_publish_result_from_posts(page, generation_id)
         return result.get("publish_url")
 
-    async def _fetch_publish_result_from_generation(self, page, generation_id: str) -> Dict[str, Optional[str]]:
+    async def _fetch_publish_result_from_generation(
+        self, page, generation_id: str
+    ) -> Dict[str, Optional[str]]:
         if not generation_id:
-            return self._build_publish_result(status="not_found", raw_error="缺少 generation_id", error_code="missing_generation_id")
+            return self._build_publish_result(
+                status="not_found",
+                raw_error="缺少 generation_id",
+                error_code="missing_generation_id",
+            )
         data = await page.evaluate(
             """
             async ({generationId}) => {
@@ -1763,11 +1879,13 @@ class SoraPublishWorkflow:
               return null;
             }
             """,
-            {"generationId": generation_id}
+            {"generationId": generation_id},
         )
         if isinstance(data, str) and data.strip():
             return self._parse_publish_result_payload(data, status="published")
-        return self._build_publish_result(status="not_found", raw_error="未命中 generation 详情", error_code="not_found")
+        return self._build_publish_result(
+            status="not_found", raw_error="未命中 generation 详情", error_code="not_found"
+        )
 
     async def _fetch_publish_url_from_generation(self, page, generation_id: str) -> Optional[str]:
         result = await self._fetch_publish_result_from_generation(page, generation_id)
@@ -1833,7 +1951,7 @@ class SoraPublishWorkflow:
               }
             }
             """,
-            {"generationId": generation_id}
+            {"generationId": generation_id},
         )
         return data if isinstance(data, dict) else None
 
@@ -1842,7 +1960,7 @@ class SoraPublishWorkflow:
             return None
         norm = str(value).strip().lower()
         if norm.startswith("task_"):
-            norm = norm[len("task_"):]
+            norm = norm[len("task_") :]
         return norm or None
 
     def _match_task_id_in_item(self, item: dict, task_id_norm: str) -> bool:
@@ -1853,8 +1971,12 @@ class SoraPublishWorkflow:
             item.get("taskId"),
             (item.get("task") or {}).get("id") if isinstance(item.get("task"), dict) else None,
             (item.get("task") or {}).get("task_id") if isinstance(item.get("task"), dict) else None,
-            (item.get("generation") or {}).get("task_id") if isinstance(item.get("generation"), dict) else None,
-            (item.get("generation") or {}).get("taskId") if isinstance(item.get("generation"), dict) else None,
+            (item.get("generation") or {}).get("task_id")
+            if isinstance(item.get("generation"), dict)
+            else None,
+            (item.get("generation") or {}).get("taskId")
+            if isinstance(item.get("generation"), dict)
+            else None,
             item.get("id"),
         ]
         for cand in candidates:
@@ -2108,7 +2230,7 @@ class SoraPublishWorkflow:
               return false;
             }
             """,
-            {"taskId": task_id, "prompt": prompt}
+            {"taskId": task_id, "prompt": prompt},
         )
         await page.wait_for_timeout(800)
         return bool(clicked)
@@ -2119,11 +2241,15 @@ class SoraPublishWorkflow:
             await page.wait_for_timeout(300)
         except Exception:  # noqa: BLE001
             pass
-        if await self._click_by_keywords(page, ["发布", "Publish", "公开", "Share", "分享", "Post"]):
+        if await self._click_by_keywords(
+            page, ["发布", "Publish", "公开", "Share", "分享", "Post"]
+        ):
             return True
         if await self._click_by_keywords(page, ["复制链接", "Copy link", "Share link", "Get link"]):
             return True
-        if await self._click_by_keywords(page, ["更多", "More", "Menu", "Actions", "Options", "···", "..."]):
+        if await self._click_by_keywords(
+            page, ["更多", "More", "Menu", "Actions", "Options", "···", "..."]
+        ):
             await page.wait_for_timeout(600)
             if await self._click_by_keywords(page, ["发布", "Publish", "公开", "Share", "分享"]):
                 return True
@@ -2159,7 +2285,9 @@ class SoraPublishWorkflow:
             await page.wait_for_timeout(400)
         except Exception:  # noqa: BLE001
             pass
-        if await self._click_by_keywords(page, ["发布", "Publish", "公开", "Share", "分享", "Post"]):
+        if await self._click_by_keywords(
+            page, ["发布", "Publish", "公开", "Share", "分享", "Post"]
+        ):
             return True
         return False
 
@@ -2214,7 +2342,7 @@ class SoraPublishWorkflow:
               return false;
             }
             """,
-            keywords
+            keywords,
         )
         return bool(data)
 
@@ -2359,7 +2487,9 @@ class SoraPublishWorkflow:
         safe_name = re.sub(r"[^A-Za-z0-9._-]", "_", raw_name) if raw_name else ""
         root, ext = os.path.splitext(safe_name)
         if not ext:
-            guessed_ext = mimetypes.guess_extension(str(content_type or "").strip().lower()) or ".png"
+            guessed_ext = (
+                mimetypes.guess_extension(str(content_type or "").strip().lower()) or ".png"
+            )
             safe_name = f"{(root or 'reference').strip() or 'reference'}{guessed_ext}"
         return safe_name or "reference.png"
 
@@ -2385,7 +2515,9 @@ class SoraPublishWorkflow:
         if len(image_bytes) > 20 * 1024 * 1024:
             raise self._service_error("下载图片失败: 图片体积超过 20MB")
 
-        content_type = str(response.headers.get("content-type") or "").split(";", 1)[0].strip().lower()
+        content_type = (
+            str(response.headers.get("content-type") or "").split(";", 1)[0].strip().lower()
+        )
         if content_type and not content_type.startswith("image/"):
             raise self._service_error(f"下载图片失败: 非图片内容 ({content_type})")
         if not content_type:
@@ -2450,7 +2582,16 @@ class SoraPublishWorkflow:
                     async with page.expect_file_chooser(timeout=4000) as chooser_info:
                         clicked = await self._click_by_keywords(
                             page,
-                            ["上传", "Upload", "图片", "Image", "参考", "Reference", "Add media", "Media"],
+                            [
+                                "上传",
+                                "Upload",
+                                "图片",
+                                "Image",
+                                "参考",
+                                "Reference",
+                                "Add media",
+                                "Media",
+                            ],
                         )
                         if not clicked:
                             clicked = await page.evaluate(
@@ -2505,7 +2646,9 @@ class SoraPublishWorkflow:
         image_payload: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Optional[str]]:
         try:
-            await page.goto("https://sora.chatgpt.com/", wait_until="domcontentloaded", timeout=40_000)
+            await page.goto(
+                "https://sora.chatgpt.com/", wait_until="domcontentloaded", timeout=40_000
+            )
             await page.wait_for_timeout(1500)
         except Exception:  # noqa: BLE001
             pass
@@ -2515,18 +2658,32 @@ class SoraPublishWorkflow:
 
         filled = await self._fill_prompt_input(page, prompt)
         if not filled:
-            return {"task_id": None, "task_url": None, "access_token": None, "error": "未找到提示词输入框"}
+            return {
+                "task_id": None,
+                "task_url": None,
+                "access_token": None,
+                "error": "未找到提示词输入框",
+            }
 
         await self._select_aspect_ratio(page, aspect_ratio)
         await self._select_duration(page, n_frames)
         if isinstance(image_payload, dict):
             uploaded = await self._upload_image_via_ui(page, image_payload=image_payload)
             if not uploaded:
-                return {"task_id": None, "task_url": None, "access_token": None, "error": "图片上传失败（UI 降级）"}
+                return {
+                    "task_id": None,
+                    "task_url": None,
+                    "access_token": None,
+                    "error": "图片上传失败（UI 降级）",
+                }
 
         try:
-            async with page.expect_response(lambda resp: "/backend/nf/create" in resp.url, timeout=40_000) as resp_info:
-                clicked = await self._click_by_keywords(page, ["生成", "Generate", "Create", "提交", "Run"])
+            async with page.expect_response(
+                lambda resp: "/backend/nf/create" in resp.url, timeout=40_000
+            ) as resp_info:
+                clicked = await self._click_by_keywords(
+                    page, ["生成", "Generate", "Create", "提交", "Run"]
+                )
                 if not clicked:
                     clicked = await page.evaluate(
                         """
@@ -2544,11 +2701,21 @@ class SoraPublishWorkflow:
                         """
                     )
                 if not clicked:
-                    return {"task_id": None, "task_url": None, "access_token": None, "error": "未找到生成按钮"}
+                    return {
+                        "task_id": None,
+                        "task_url": None,
+                        "access_token": None,
+                        "error": "未找到生成按钮",
+                    }
             resp = await resp_info.value
             text = await resp.text()
         except Exception as exc:  # noqa: BLE001
-            return {"task_id": None, "task_url": None, "access_token": None, "error": f"等待生成请求失败: {exc}"}
+            return {
+                "task_id": None,
+                "task_url": None,
+                "access_token": None,
+                "error": f"等待生成请求失败: {exc}",
+            }
 
         json_payload = None
         try:
@@ -2557,13 +2724,24 @@ class SoraPublishWorkflow:
             json_payload = None
         task_id = None
         if isinstance(json_payload, dict):
-            task_id = json_payload.get("id") or json_payload.get("task_id") or (json_payload.get("task") or {}).get("id")
+            task_id = (
+                json_payload.get("id")
+                or json_payload.get("task_id")
+                or (json_payload.get("task") or {}).get("id")
+            )
         if not task_id:
             message = None
             if isinstance(json_payload, dict):
-                message = (json_payload.get("error") or {}).get("message") or json_payload.get("message")
+                message = (json_payload.get("error") or {}).get("message") or json_payload.get(
+                    "message"
+                )
             message = message or text or "生成请求未返回 task_id"
-            return {"task_id": None, "task_url": None, "access_token": None, "error": str(message)[:300]}
+            return {
+                "task_id": None,
+                "task_url": None,
+                "access_token": None,
+                "error": str(message)[:300],
+            }
 
         access_token = await self._get_access_token_from_page(page)
         return {
@@ -2574,7 +2752,9 @@ class SoraPublishWorkflow:
         }
 
     @staticmethod
-    def _normalize_submit_priority(value: Optional[str], *, default: str = "server_request_first") -> str:
+    def _normalize_submit_priority(
+        value: Optional[str], *, default: str = "server_request_first"
+    ) -> str:
         text = str(value or "").strip().lower()
         if text in {"playwright_action_first", "server_request_first"}:
             return text
@@ -2621,9 +2801,16 @@ class SoraPublishWorkflow:
                 )
                 if fallback.get("task_id") or fallback.get("error"):
                     return fallback
-            return {"task_id": None, "task_url": None, "access_token": None, "error": "页面未加载 SentinelSDK，无法提交生成请求"}
+            return {
+                "task_id": None,
+                "task_url": None,
+                "access_token": None,
+                "error": "页面未加载 SentinelSDK，无法提交生成请求",
+            }
 
-        create_payload_base = self._build_create_task_payload_base(prompt=prompt, aspect_ratio=aspect_ratio, n_frames=n_frames)
+        create_payload_base = self._build_create_task_payload_base(
+            prompt=prompt, aspect_ratio=aspect_ratio, n_frames=n_frames
+        )
         create_task_flows = list(self.CREATE_TASK_SENTINEL_FLOWS)
 
         data = await page.evaluate(
@@ -2799,15 +2986,26 @@ class SoraPublishWorkflow:
                 "aspectRatio": aspect_ratio,
                 "nFrames": n_frames,
                 "deviceId": device_id,
-                "imageBase64": image_payload.get("base64") if isinstance(image_payload, dict) else None,
-                "imageMime": image_payload.get("content_type") if isinstance(image_payload, dict) else None,
-                "imageFilename": image_payload.get("filename") if isinstance(image_payload, dict) else None,
+                "imageBase64": image_payload.get("base64")
+                if isinstance(image_payload, dict)
+                else None,
+                "imageMime": image_payload.get("content_type")
+                if isinstance(image_payload, dict)
+                else None,
+                "imageFilename": image_payload.get("filename")
+                if isinstance(image_payload, dict)
+                else None,
                 "createTaskFlows": create_task_flows,
                 "createPayloadBase": create_payload_base,
-            }
+            },
         )
         if not isinstance(data, dict):
-            return {"task_id": None, "task_url": None, "access_token": None, "error": "提交返回格式异常"}
+            return {
+                "task_id": None,
+                "task_url": None,
+                "access_token": None,
+                "error": "提交返回格式异常",
+            }
         return {
             "task_id": data.get("task_id"),
             "task_url": data.get("task_url"),
@@ -2835,7 +3033,12 @@ class SoraPublishWorkflow:
                 try:
                     image_payload = await self._download_submit_image(normalized_image_url)
                 except Exception as exc:  # noqa: BLE001
-                    return {"task_id": None, "task_url": None, "access_token": None, "error": str(exc)}
+                    return {
+                        "task_id": None,
+                        "task_url": None,
+                        "access_token": None,
+                        "error": str(exc),
+                    }
             return await self._submit_video_request_via_ui(
                 page=page,
                 prompt=prompt,
@@ -2891,8 +3094,12 @@ class SoraPublishWorkflow:
         except Exception:  # noqa: BLE001
             cookies = []
         device_id = next(
-            (cookie.get("value") for cookie in cookies if cookie.get("name") == "oai-did" and cookie.get("value")),
-            None
+            (
+                cookie.get("value")
+                for cookie in cookies
+                if cookie.get("name") == "oai-did" and cookie.get("value")
+            ),
+            None,
         )
         if isinstance(device_id, str) and device_id.strip():
             resolved = device_id.strip()
@@ -3022,7 +3229,7 @@ class SoraPublishWorkflow:
               }
             }
             """,
-            {"generationId": generation_id, "deviceId": device_id}
+            {"generationId": generation_id, "deviceId": device_id},
         )
         if not isinstance(data, dict):
             return self._build_publish_result(
@@ -3140,7 +3347,11 @@ class SoraPublishWorkflow:
                     generation_id=generation_id,
                 )
             except Exception as exc:  # noqa: BLE001
-                if attempt_idx < attempts - 1 and self._is_execution_context_destroyed(exc) and generation_id:
+                if (
+                    attempt_idx < attempts - 1
+                    and self._is_execution_context_destroyed(exc)
+                    and generation_id
+                ):
                     try:
                         await page.goto(
                             f"https://sora.chatgpt.com/d/{generation_id}",
@@ -3177,7 +3388,12 @@ class SoraPublishWorkflow:
             if self._is_duplicate_publish_error(last_result):
                 return last_result
 
-            if self._is_sora_publish_not_ready_error(error, error_code=last_result.get("error_code")) and attempt_idx < attempts - 1:
+            if (
+                self._is_sora_publish_not_ready_error(
+                    error, error_code=last_result.get("error_code")
+                )
+                and attempt_idx < attempts - 1
+            ):
                 next_delay_ms = delays_ms[attempt_idx + 1]
                 try:
                     url = page.url
@@ -3197,7 +3413,9 @@ class SoraPublishWorkflow:
 
         return last_result
 
-    def _is_sora_publish_not_ready_error(self, text: str, *, error_code: Optional[str] = None) -> bool:
+    def _is_sora_publish_not_ready_error(
+        self, text: str, *, error_code: Optional[str] = None
+    ) -> bool:
         code = str(error_code or "").strip().lower()
         if code in {"invalid_request", "invalid_request_error"}:
             return True
@@ -3207,9 +3425,9 @@ class SoraPublishWorkflow:
         lower = message.lower()
         if "invalid_request_error" in lower:
             return True
-        if "\"code\": \"invalid_request\"" in lower:
+        if '"code": "invalid_request"' in lower:
             return True
-        if "\"code\":\"invalid_request\"" in lower:
+        if '"code":"invalid_request"' in lower:
             return True
         return False
 
@@ -3303,13 +3521,20 @@ class SoraPublishWorkflow:
         try:
             deleted = await self._delete_published_post_from_page(page, post_id)
         except Exception as exc:  # noqa: BLE001
-            logger.info("发布后清理失败(忽略): generation_id=%s post_id=%s error=%s", generation_id, post_id, exc)
+            logger.info(
+                "发布后清理失败(忽略): generation_id=%s post_id=%s error=%s",
+                generation_id,
+                post_id,
+                exc,
+            )
             return
 
         if deleted:
             logger.info("发布后清理成功: generation_id=%s post_id=%s", generation_id, post_id)
         else:
-            logger.info("发布后清理未成功(忽略): generation_id=%s post_id=%s", generation_id, post_id)
+            logger.info(
+                "发布后清理未成功(忽略): generation_id=%s post_id=%s", generation_id, post_id
+            )
 
     def _pick_progress(self, obj: Any) -> Any:
         if not isinstance(obj, dict):
@@ -3369,7 +3594,9 @@ class SoraPublishWorkflow:
             "source": source,
         }
 
-    def _state_failed(self, message: Any, *, progress: Any = None, source: Optional[str] = None) -> Dict[str, Any]:
+    def _state_failed(
+        self, message: Any, *, progress: Any = None, source: Optional[str] = None
+    ) -> Dict[str, Any]:
         return {
             "state": "failed",
             "error": self._normalize_error_text(message) or "任务失败",
@@ -3545,16 +3772,22 @@ class SoraPublishWorkflow:
             )
             status = str(found_pending.get("status") or found_pending.get("state") or "").lower()
             if self._normalize_error_text(failure_reason) or status == "failed":
-                return self._state_failed(failure_reason or "任务失败", progress=pending_progress, source="page")
+                return self._state_failed(
+                    failure_reason or "任务失败", progress=pending_progress, source="page"
+                )
 
             if self._is_progress_finished(pending_progress):
                 pending_missing = True
             else:
-                return self._state_processing(progress=pending_progress, pending_missing=False, source="page")
+                return self._state_processing(
+                    progress=pending_progress, pending_missing=False, source="page"
+                )
 
         should_fetch_drafts = bool(fetch_drafts) or pending_missing
         if not should_fetch_drafts:
-            return self._state_processing(progress=pending_progress, pending_missing=False, source="page")
+            return self._state_processing(
+                progress=pending_progress, pending_missing=False, source="page"
+            )
 
         pending_from_draft = pending_progress
         delays = self.DRAFT_RETRY_BACKOFF_SECONDS
@@ -3588,11 +3821,17 @@ class SoraPublishWorkflow:
             if self._normalize_error_text(reason):
                 return self._state_failed(reason, progress=pending_from_draft, source="page")
             if kind == "sora_content_violation":
-                return self._state_failed("内容审核未通过", progress=pending_from_draft, source="page")
+                return self._state_failed(
+                    "内容审核未通过", progress=pending_from_draft, source="page"
+                )
             if generation_id:
-                return self._state_completed(task_url=task_url, generation_id=generation_id, source="page")
+                return self._state_completed(
+                    task_url=task_url, generation_id=generation_id, source="page"
+                )
 
-        return self._state_processing(progress=pending_from_draft, pending_missing=True, source="page")
+        return self._state_processing(
+            progress=pending_from_draft, pending_missing=True, source="page"
+        )
 
     async def _poll_sora_task_via_proxy_api(
         self,
@@ -3645,15 +3884,21 @@ class SoraPublishWorkflow:
             )
             status = str(found_pending.get("status") or found_pending.get("state") or "").lower()
             if self._normalize_error_text(failure_reason) or status == "failed":
-                return self._state_failed(failure_reason or "任务失败", progress=pending_progress, source="proxy_api")
+                return self._state_failed(
+                    failure_reason or "任务失败", progress=pending_progress, source="proxy_api"
+                )
             if self._is_progress_finished(pending_progress):
                 pending_missing = True
             else:
-                return self._state_processing(progress=pending_progress, pending_missing=False, source="proxy_api")
+                return self._state_processing(
+                    progress=pending_progress, pending_missing=False, source="proxy_api"
+                )
 
         should_fetch_drafts = bool(fetch_drafts) or pending_missing
         if not should_fetch_drafts:
-            return self._state_processing(progress=pending_progress, pending_missing=False, source="proxy_api")
+            return self._state_processing(
+                progress=pending_progress, pending_missing=False, source="proxy_api"
+            )
 
         task_id_norm = self._normalize_task_id(task_id)
         pending_from_draft = pending_progress
@@ -3684,7 +3929,11 @@ class SoraPublishWorkflow:
 
             target = None
             for item in items:
-                if isinstance(item, dict) and task_id_norm and self._match_task_id_in_item(item, task_id_norm):
+                if (
+                    isinstance(item, dict)
+                    and task_id_norm
+                    and self._match_task_id_in_item(item, task_id_norm)
+                ):
                     target = item
                     break
             if not isinstance(target, dict):
@@ -3700,8 +3949,14 @@ class SoraPublishWorkflow:
             if self._normalize_error_text(reason):
                 return self._state_failed(reason, progress=pending_from_draft, source="proxy_api")
             if kind == "sora_content_violation":
-                return self._state_failed("内容审核未通过", progress=pending_from_draft, source="proxy_api")
+                return self._state_failed(
+                    "内容审核未通过", progress=pending_from_draft, source="proxy_api"
+                )
             if generation_id:
-                return self._state_completed(task_url=task_url, generation_id=generation_id, source="proxy_api")
+                return self._state_completed(
+                    task_url=task_url, generation_id=generation_id, source="proxy_api"
+                )
 
-        return self._state_processing(progress=pending_from_draft, pending_missing=True, source="proxy_api")
+        return self._state_processing(
+            progress=pending_from_draft, pending_missing=True, source="proxy_api"
+        )

@@ -1,4 +1,5 @@
 """进程内 Worker：从 SQLite 队列领取任务并执行。"""
+
 from __future__ import annotations
 
 import asyncio
@@ -53,7 +54,11 @@ class WorkerRunner:
                     status="success",
                     level="INFO",
                     message=f"Worker 启动，恢复任务 sora_failed={sora_failed_cnt} nurture={nurture_cnt}",
-                    metadata={"owner": self.owner, "sora_failed_recovered": sora_failed_cnt, "nurture_requeued": nurture_cnt},
+                    metadata={
+                        "owner": self.owner,
+                        "sora_failed_recovered": sora_failed_cnt,
+                        "nurture_requeued": nurture_cnt,
+                    },
                 )
             except Exception:  # noqa: BLE001
                 logger.exception("Worker 启动恢复失败")
@@ -127,10 +132,14 @@ class WorkerRunner:
             for job_id in done_ids:
                 self._sora_running.pop(job_id, None)
 
-            max_parallel = max(1, int(getattr(ixbrowser_service, "sora_job_max_concurrency", 2) or 2))
+            max_parallel = max(
+                1, int(getattr(ixbrowser_service, "sora_job_max_concurrency", 2) or 2)
+            )
             while len(self._sora_running) < max_parallel:
                 try:
-                    row = sqlite_db.claim_next_sora_job(owner=self.owner, lease_seconds=self._sora_lease_seconds)
+                    row = sqlite_db.claim_next_sora_job(
+                        owner=self.owner, lease_seconds=self._sora_lease_seconds
+                    )
                 except Exception as exc:  # noqa: BLE001
                     self._log_event(
                         action="worker.sora.claim",
@@ -248,7 +257,9 @@ class WorkerRunner:
                 continue
 
             try:
-                row = sqlite_db.claim_next_sora_nurture_batch(owner=self.owner, lease_seconds=self._nurture_lease_seconds)
+                row = sqlite_db.claim_next_sora_nurture_batch(
+                    owner=self.owner, lease_seconds=self._nurture_lease_seconds
+                )
             except Exception as exc:  # noqa: BLE001
                 self._log_event(
                     action="worker.nurture.claim",

@@ -15,6 +15,7 @@ from app.db.sqlite import sqlite_db
 from app.models.proxy import (
     ProxyActionResult,
     ProxyBatchCheckItem,
+    ProxyBatchCheckRequest,
     ProxyBatchCheckResponse,
     ProxyBatchImportRequest,
     ProxyBatchImportResponse,
@@ -27,7 +28,7 @@ from app.models.proxy import (
     ProxySyncPushRequest,
     ProxySyncPushResponse,
 )
-from app.services.ixbrowser_service import IXBrowserServiceError, ixbrowser_service
+from app.services.ixbrowser_service import ixbrowser_service
 
 logger = logging.getLogger(__name__)
 
@@ -212,7 +213,9 @@ def _is_recent_success_check(row: Dict[str, Any], *, now: datetime) -> bool:
     return check_at >= now - timedelta(days=CHECK_REUSE_DAYS)
 
 
-def _extract_ipapi_geo(payload: Dict[str, Any]) -> Tuple[Optional[str], Optional[str], Optional[str]]:
+def _extract_ipapi_geo(
+    payload: Dict[str, Any],
+) -> Tuple[Optional[str], Optional[str], Optional[str]]:
     location = payload.get("location") if isinstance(payload, dict) else {}
     if not isinstance(location, dict):
         location = {}
@@ -418,7 +421,9 @@ class ProxyService:
             event_id = 0
 
         try:
-            status_code = int(raw.get("status_code")) if raw.get("status_code") is not None else None
+            status_code = (
+                int(raw.get("status_code")) if raw.get("status_code") is not None else None
+            )
         except Exception:
             status_code = None
 
@@ -465,7 +470,9 @@ class ProxyService:
             item["cf_recent_count"] = int(stat.get("cf_recent_count") or 0)
             item["cf_recent_total"] = int(stat.get("cf_recent_total") or 0)
             item["cf_recent_ratio"] = float(stat.get("cf_recent_ratio") or 0.0)
-            item["cf_recent_heat"] = self._build_cf_heat(flags_by_proxy.get(pid, []), CF_RECENT_WINDOW)
+            item["cf_recent_heat"] = self._build_cf_heat(
+                flags_by_proxy.get(pid, []), CF_RECENT_WINDOW
+            )
 
         raw["cf_recent_window"] = CF_RECENT_WINDOW
         raw["unknown_cf_recent_count"] = int(unknown_stats.get("cf_recent_count") or 0)
@@ -474,7 +481,9 @@ class ProxyService:
         raw["unknown_cf_recent_heat"] = self._build_cf_heat(unknown_flags, CF_RECENT_WINDOW)
         return ProxyListResponse.model_validate(raw)
 
-    def get_proxy_cf_events(self, *, proxy_id: int, window: int = CF_RECENT_WINDOW) -> ProxyCfEventListResponse:
+    def get_proxy_cf_events(
+        self, *, proxy_id: int, window: int = CF_RECENT_WINDOW
+    ) -> ProxyCfEventListResponse:
         safe_window = self._safe_cf_window(window)
         try:
             pid = int(proxy_id)
@@ -487,7 +496,9 @@ class ProxyService:
         events = [self._build_cf_event_item(item) for item in rows if isinstance(item, dict)]
         return ProxyCfEventListResponse(window=safe_window, proxy_id=pid, events=events)
 
-    def get_unknown_proxy_cf_events(self, *, window: int = CF_RECENT_WINDOW) -> ProxyCfEventListResponse:
+    def get_unknown_proxy_cf_events(
+        self, *, window: int = CF_RECENT_WINDOW
+    ) -> ProxyCfEventListResponse:
         safe_window = self._safe_cf_window(window)
         rows = sqlite_db.list_unknown_proxy_cf_recent_events(window=safe_window)
         events = [self._build_cf_event_item(item) for item in rows if isinstance(item, dict)]
@@ -585,7 +596,12 @@ class ProxyService:
                     sqlite_db.update_proxy_ix_binding(local_id, ix_id, ix_type=ix_type)
                 except Exception as exc:  # noqa: BLE001
                     results.append(
-                        ProxyActionResult(proxy_id=local_id, ok=False, ix_id=ix_id, message=f"绑定 ix_id 失败: {exc}")
+                        ProxyActionResult(
+                            proxy_id=local_id,
+                            ok=False,
+                            ix_id=ix_id,
+                            message=f"绑定 ix_id 失败: {exc}",
+                        )
                     )
                     continue
 
@@ -604,7 +620,11 @@ class ProxyService:
                 try:
                     ok = await ixbrowser_service.update_proxy(payload_with_id)
                 except Exception as exc:  # noqa: BLE001
-                    results.append(ProxyActionResult(proxy_id=local_id, ok=False, ix_id=ix_id, message=str(exc)))
+                    results.append(
+                        ProxyActionResult(
+                            proxy_id=local_id, ok=False, ix_id=ix_id, message=str(exc)
+                        )
+                    )
                     continue
                 results.append(
                     ProxyActionResult(
@@ -620,9 +640,15 @@ class ProxyService:
             try:
                 ix_id = await ixbrowser_service.create_proxy(payload)
                 sqlite_db.update_proxy_ix_binding(local_id, ix_id, ix_type=1)
-                results.append(ProxyActionResult(proxy_id=local_id, ok=True, ix_id=ix_id, message="已创建并绑定"))
+                results.append(
+                    ProxyActionResult(
+                        proxy_id=local_id, ok=True, ix_id=ix_id, message="已创建并绑定"
+                    )
+                )
             except Exception as exc:  # noqa: BLE001
-                results.append(ProxyActionResult(proxy_id=local_id, ok=False, ix_id=None, message=str(exc)))
+                results.append(
+                    ProxyActionResult(proxy_id=local_id, ok=False, ix_id=None, message=str(exc))
+                )
 
         return ProxySyncPushResponse(results=results)
 
@@ -634,7 +660,9 @@ class ProxyService:
         changed = sqlite_db.batch_update_proxies(request.proxy_ids, fields)
 
         if request.sync_to_ixbrowser:
-            push_resp = await self.sync_push_to_ixbrowser(ProxySyncPushRequest(proxy_ids=request.proxy_ids))
+            push_resp = await self.sync_push_to_ixbrowser(
+                ProxySyncPushRequest(proxy_ids=request.proxy_ids)
+            )
             return ProxyBatchUpdateResponse(results=push_resp.results)
 
         existing_rows = sqlite_db.get_proxies_by_ids(request.proxy_ids)
@@ -690,7 +718,9 @@ class ProxyService:
                         "check_at": checked_at,
                     },
                 )
-                return ProxyBatchCheckItem(proxy_id=proxy_id, ok=False, error="不支持检测", checked_at=checked_at)
+                return ProxyBatchCheckItem(
+                    proxy_id=proxy_id, ok=False, error="不支持检测", checked_at=checked_at
+                )
 
             if not force_refresh and _is_recent_success_check(row, now=now):
                 risk_flags = _parse_risk_flags(row.get("check_risk_flags"))
@@ -711,7 +741,9 @@ class ProxyService:
 
             async with sem:
                 try:
-                    async with httpx.AsyncClient(proxy=proxy_url, timeout=timeout, follow_redirects=True) as client:
+                    async with httpx.AsyncClient(
+                        proxy=proxy_url, timeout=timeout, follow_redirects=True
+                    ) as client:
                         ipapi_payload = await _fetch_ipapi(client)
                     exit_ip = str(ipapi_payload.get("ip") or "").strip()
                     if not exit_ip:
@@ -724,7 +756,9 @@ class ProxyService:
                     is_datacenter = _parse_optional_bool(ipapi_payload.get("is_datacenter"))
                     is_abuser = _parse_optional_bool(ipapi_payload.get("is_abuser"))
 
-                    async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as direct_client:
+                    async with httpx.AsyncClient(
+                        timeout=timeout, follow_redirects=True
+                    ) as direct_client:
                         proxycheck_payload = await _fetch_proxycheck(direct_client, exit_ip)
                     proxycheck_node = _extract_proxycheck_node(proxycheck_payload, exit_ip)
                     proxycheck_proxy = str(proxycheck_node.get("proxy") or "").strip().lower()
@@ -810,7 +844,9 @@ class ProxyService:
                             "check_at": checked_at,
                         },
                     )
-                    return ProxyBatchCheckItem(proxy_id=proxy_id, ok=False, error=str(exc), checked_at=checked_at)
+                    return ProxyBatchCheckItem(
+                        proxy_id=proxy_id, ok=False, error=str(exc), checked_at=checked_at
+                    )
 
         tasks = [check_one(int(pid)) for pid in request.proxy_ids]
         results = await asyncio.gather(*tasks, return_exceptions=False)

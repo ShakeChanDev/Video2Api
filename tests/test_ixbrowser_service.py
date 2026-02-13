@@ -239,7 +239,7 @@ async def test_scan_group_sora_sessions_silent_api_uses_curl_when_token_present(
     async def _fake_fetch_session(token, *, proxy_url=None, user_agent=None, profile_id=None):
         del proxy_url, user_agent, profile_id
         assert token == "t"
-        return 200, {"user": {"email": "x@example.com"}, "accessToken": "t"}, "{\"ok\":true}"
+        return 200, {"user": {"email": "x@example.com"}, "accessToken": "t"}, '{"ok":true}'
 
     async def _fake_fetch_sub(token, *, proxy_url=None, user_agent=None, profile_id=None):
         del proxy_url, user_agent, profile_id
@@ -247,7 +247,7 @@ async def test_scan_group_sora_sessions_silent_api_uses_curl_when_token_present(
         return {
             "plan": "plus",
             "status": 200,
-            "raw": "{\"data\":[]}",
+            "raw": '{"data":[]}',
             "payload": {"data": [{"plan": {"id": "plus"}}]},
             "error": None,
             "source": "https://sora.chatgpt.com/backend/billing/subscriptions",
@@ -264,11 +264,15 @@ async def test_scan_group_sora_sessions_silent_api_uses_curl_when_token_present(
             "payload": {"ok": True},
             "error": None,
             "status": 200,
-            "raw": "{\"ok\":true}",
+            "raw": '{"ok":true}',
         }
 
-    monkeypatch.setattr(service, "_fetch_sora_session_via_curl_cffi", _fake_fetch_session, raising=True)
-    monkeypatch.setattr(service, "_fetch_sora_subscription_plan_via_curl_cffi", _fake_fetch_sub, raising=True)
+    monkeypatch.setattr(
+        service, "_fetch_sora_session_via_curl_cffi", _fake_fetch_session, raising=True
+    )
+    monkeypatch.setattr(
+        service, "_fetch_sora_subscription_plan_via_curl_cffi", _fake_fetch_sub, raising=True
+    )
     monkeypatch.setattr(service, "_fetch_sora_quota_via_curl_cffi", _fake_fetch_quota, raising=True)
 
     def _boom_playwright():
@@ -288,7 +292,9 @@ async def test_scan_group_sora_sessions_silent_api_uses_curl_when_token_present(
     )
     service._apply_fallback_from_history = lambda _response: None
 
-    result = await service.scan_group_sora_sessions_silent_api(group_title="Sora", with_fallback=False)
+    result = await service.scan_group_sora_sessions_silent_api(
+        group_title="Sora", with_fallback=False
+    )
 
     assert result.group_title == "Sora"
     assert result.total_windows == 2
@@ -406,7 +412,9 @@ async def test_scan_group_sora_sessions_with_profile_ids_only_scans_selected(mon
         lambda _run_id: {"scanned_at": "2026-02-06 12:00:00"},
     )
 
-    result = await service.scan_group_sora_sessions(group_title="Sora", profile_ids=[12, 12, 999], with_fallback=False)
+    result = await service.scan_group_sora_sessions(
+        group_title="Sora", profile_ids=[12, 12, 999], with_fallback=False
+    )
 
     assert open_calls == [12]
     assert result.total_windows == 3
@@ -444,11 +452,15 @@ async def test_scan_group_sora_sessions_with_profile_ids_not_found(monkeypatch):
     service._deps.playwright_factory = lambda: _FakePlaywrightContext()  # noqa: SLF001
 
     with pytest.raises(IXBrowserNotFoundError):
-        await service.scan_group_sora_sessions(group_title="Sora", profile_ids=[999], with_fallback=False)
+        await service.scan_group_sora_sessions(
+            group_title="Sora", profile_ids=[999], with_fallback=False
+        )
 
 
 @pytest.mark.asyncio
-async def test_scan_group_sora_sessions_with_profile_ids_without_history_keeps_placeholders(monkeypatch):
+async def test_scan_group_sora_sessions_with_profile_ids_without_history_keeps_placeholders(
+    monkeypatch,
+):
     service = IXBrowserService()
 
     async def _fake_list_group_windows():
@@ -502,7 +514,9 @@ async def test_scan_group_sora_sessions_with_profile_ids_without_history_keeps_p
 
     service._list_opened_profile_ids = _fake_list_opened_profile_ids
     service._save_scan_response = lambda *_args, **_kwargs: 202
-    service.get_latest_sora_scan = lambda *_args, **_kwargs: (_ for _ in ()).throw(IXBrowserNotFoundError("no history"))
+    service.get_latest_sora_scan = lambda *_args, **_kwargs: (_ for _ in ()).throw(
+        IXBrowserNotFoundError("no history")
+    )
 
     service._deps.playwright_factory = lambda: _FakePlaywrightContext()  # noqa: SLF001
     monkeypatch.setattr(
@@ -510,7 +524,9 @@ async def test_scan_group_sora_sessions_with_profile_ids_without_history_keeps_p
         lambda _run_id: {"scanned_at": "2026-02-06 12:00:00"},
     )
 
-    result = await service.scan_group_sora_sessions(group_title="Sora", profile_ids=[12], with_fallback=False)
+    result = await service.scan_group_sora_sessions(
+        group_title="Sora", profile_ids=[12], with_fallback=False
+    )
 
     assert result.total_windows == 2
     assert len(result.results) == 2
@@ -909,7 +925,7 @@ async def test_scan_group_sora_sessions_does_not_preclose_opened_profiles(monkey
         return (
             200,
             {"user": {"email": "scan@example.com"}, "accessToken": _build_access_token("free")},
-            "{\"ok\":true}",
+            '{"ok":true}',
         )
 
     async def _fake_fetch_sora_quota(_browser, _profile_id=None, _session_obj=None):
@@ -965,7 +981,7 @@ async def test_scan_single_window_via_browser_always_closes_profile():
         return (
             200,
             {"user": {"email": "fallback@example.com"}, "accessToken": _build_access_token("plus")},
-            "{\"ok\":true}",
+            '{"ok":true}',
         )
 
     async def _fake_fetch_sora_quota(_browser, _profile_id=None, _session_obj=None):
@@ -1261,8 +1277,13 @@ async def test_create_sora_job_persists_image_url(monkeypatch):
         captured.update(dict(data))
         return 88
 
-    monkeypatch.setattr("app.services.ixbrowser_service.sqlite_db.create_sora_job", _fake_create_sora_job)
-    monkeypatch.setattr("app.services.ixbrowser_service.sqlite_db.create_sora_job_event", lambda *_args, **_kwargs: 1)
+    monkeypatch.setattr(
+        "app.services.ixbrowser_service.sqlite_db.create_sora_job", _fake_create_sora_job
+    )
+    monkeypatch.setattr(
+        "app.services.ixbrowser_service.sqlite_db.create_sora_job_event",
+        lambda *_args, **_kwargs: 1,
+    )
     service._get_window_from_group = _fake_get_window_from_group
     service.get_sora_job = lambda jid: {
         "job_id": jid,
@@ -1276,7 +1297,9 @@ async def test_create_sora_job_persists_image_url(monkeypatch):
         "updated_at": "2026-02-09 10:00:00",
     }
 
-    result = await service.create_sora_job(request=request, operator_user={"id": 1, "username": "admin"})
+    result = await service.create_sora_job(
+        request=request, operator_user={"id": 1, "username": "admin"}
+    )
     assert result.job.job_id == 88
     assert captured["image_url"] == "https://example.com/ref.png"
 
@@ -1323,7 +1346,9 @@ async def test_retry_sora_job_overload_creates_new_job(monkeypatch):
     )
     monkeypatch.setattr(
         "app.services.ixbrowser_service.sqlite_db.update_sora_job",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("should not update old job in overload path")),
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("should not update old job in overload path")
+        ),
     )
 
     created_payload = {}
@@ -1340,7 +1365,9 @@ async def test_retry_sora_job_overload_creates_new_job(monkeypatch):
     job_events = []
     monkeypatch.setattr(
         "app.services.ixbrowser_service.sqlite_db.create_sora_job_event",
-        lambda job_id, phase, event, message=None: job_events.append((job_id, phase, event, message)) or 1,
+        lambda job_id, phase, event, message=None: (
+            job_events.append((job_id, phase, event, message)) or 1
+        ),
     )
 
     called = {}
@@ -1420,7 +1447,9 @@ async def test_retry_sora_job_overload_respects_max(monkeypatch):
     )
     monkeypatch.setattr(
         "app.services.ixbrowser_service.sqlite_db.create_sora_job",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("should not create new job when max reached")),
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("should not create new job when max reached")
+        ),
     )
 
     with pytest.raises(IXBrowserServiceError) as exc:
@@ -1461,13 +1490,17 @@ async def test_retry_sora_job_non_overload_keeps_old_behavior(monkeypatch):
     )
     monkeypatch.setattr(
         "app.services.ixbrowser_service.sqlite_db.create_sora_job",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("should not create new job for non-overload")),
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("should not create new job for non-overload")
+        ),
     )
 
     job_events = []
     monkeypatch.setattr(
         "app.services.ixbrowser_service.sqlite_db.create_sora_job_event",
-        lambda job_id, phase, event, message=None: job_events.append((job_id, phase, event, message)) or 1,
+        lambda job_id, phase, event, message=None: (
+            job_events.append((job_id, phase, event, message)) or 1
+        ),
     )
 
     service.get_sora_job = lambda jid: SimpleNamespace(job_id=jid)
@@ -1517,7 +1550,10 @@ def test_get_sora_job_follow_retry_returns_latest_child(monkeypatch):
         "updated_at": "2026-02-09 10:10:00",
     }
 
-    monkeypatch.setattr("app.services.ixbrowser_service.sqlite_db.get_sora_job", lambda job_id: root_row if int(job_id) == root_job_id else None)
+    monkeypatch.setattr(
+        "app.services.ixbrowser_service.sqlite_db.get_sora_job",
+        lambda job_id: root_row if int(job_id) == root_job_id else None,
+    )
     monkeypatch.setattr(
         "app.services.ixbrowser_service.sqlite_db.get_sora_job_latest_by_root",
         lambda root_id: child_row if int(root_id) == root_job_id else None,
@@ -1545,7 +1581,9 @@ async def test_retry_sora_watermark_resets_state_and_schedules(monkeypatch):
         "watermark_status": "failed",
     }
 
-    monkeypatch.setattr("app.services.ixbrowser_service.sqlite_db.get_sora_job", lambda _job_id: row)
+    monkeypatch.setattr(
+        "app.services.ixbrowser_service.sqlite_db.get_sora_job", lambda _job_id: row
+    )
 
     patched = {}
     monkeypatch.setattr(
@@ -1780,7 +1818,9 @@ async def test_overload_spawn_is_idempotent_when_child_exists(monkeypatch):
     )
     monkeypatch.setattr(
         "app.services.ixbrowser_service.sqlite_db.create_sora_job",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("should not create new job when child exists")),
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("should not create new job when child exists")
+        ),
     )
 
     async def _fake_pick_best_account(*_args, **_kwargs):
@@ -1807,11 +1847,11 @@ async def test_run_sora_job_submit_overload_auto_spawns_new_job(monkeypatch):
         "id": old_job_id,
         "profile_id": old_profile_id,
         "window_name": "win-1",
-            "group_title": "Sora",
-            "prompt": "hello sora",
-            "image_url": "https://example.com/auto-retry.png",
-            "duration": "10s",
-            "aspect_ratio": "landscape",
+        "group_title": "Sora",
+        "prompt": "hello sora",
+        "image_url": "https://example.com/auto-retry.png",
+        "duration": "10s",
+        "aspect_ratio": "landscape",
         "status": "queued",
         "phase": "queue",
         "error": None,
@@ -1828,9 +1868,16 @@ async def test_run_sora_job_submit_overload_auto_spawns_new_job(monkeypatch):
         return True
 
     monkeypatch.setattr("app.services.ixbrowser_service.sqlite_db.get_sora_job", _fake_get_sora_job)
-    monkeypatch.setattr("app.services.ixbrowser_service.sqlite_db.update_sora_job", _fake_update_sora_job)
-    monkeypatch.setattr("app.services.ixbrowser_service.sqlite_db.get_sora_job_max_retry_index", lambda _root: 0)
-    monkeypatch.setattr("app.services.ixbrowser_service.sqlite_db.get_sora_job_latest_retry_child", lambda _pid: None)
+    monkeypatch.setattr(
+        "app.services.ixbrowser_service.sqlite_db.update_sora_job", _fake_update_sora_job
+    )
+    monkeypatch.setattr(
+        "app.services.ixbrowser_service.sqlite_db.get_sora_job_max_retry_index", lambda _root: 0
+    )
+    monkeypatch.setattr(
+        "app.services.ixbrowser_service.sqlite_db.get_sora_job_latest_retry_child",
+        lambda _pid: None,
+    )
     monkeypatch.setattr(
         "app.services.ixbrowser_service.sqlite_db.list_sora_retry_chain_profile_ids",
         lambda _root: [old_profile_id],
@@ -1842,12 +1889,16 @@ async def test_run_sora_job_submit_overload_auto_spawns_new_job(monkeypatch):
         created_payload.update(dict(data))
         return 11
 
-    monkeypatch.setattr("app.services.ixbrowser_service.sqlite_db.create_sora_job", _fake_create_sora_job)
+    monkeypatch.setattr(
+        "app.services.ixbrowser_service.sqlite_db.create_sora_job", _fake_create_sora_job
+    )
 
     job_events = []
     monkeypatch.setattr(
         "app.services.ixbrowser_service.sqlite_db.create_sora_job_event",
-        lambda job_id, phase, event, message=None: job_events.append((job_id, phase, event, message)) or 1,
+        lambda job_id, phase, event, message=None: (
+            job_events.append((job_id, phase, event, message)) or 1
+        ),
     )
 
     called = {}
@@ -1927,7 +1978,7 @@ async def test_publish_sora_post_with_backoff_retries_invalid_request():
         if calls["count"] <= 2:
             return {
                 "publish_url": None,
-                "error": "{\"error\":{\"type\":\"invalid_request_error\",\"code\":\"invalid_request\"}}",
+                "error": '{"error":{"type":"invalid_request_error","code":"invalid_request"}}',
             }
         return {"publish_url": "https://sora.chatgpt.com/p/s_12345678", "error": None}
 
@@ -2044,7 +2095,9 @@ async def test_submit_video_request_from_page_server_first_strict_does_not_fallb
         ui_calls["count"] += 1
         return {"task_id": "task_ui", "task_url": None, "access_token": "token_ui", "error": None}
 
-    monkeypatch.setattr(publish_workflow, "_submit_video_request_via_ui", _fake_submit_via_ui, raising=True)
+    monkeypatch.setattr(
+        publish_workflow, "_submit_video_request_via_ui", _fake_submit_via_ui, raising=True
+    )
 
     class _FakePage:
         async def evaluate(self, script, _arg=None):
@@ -2071,7 +2124,9 @@ async def test_submit_video_request_from_page_server_first_strict_does_not_fallb
 
 
 @pytest.mark.asyncio
-async def test_submit_video_request_from_page_playwright_first_strict_skips_server_request(monkeypatch):
+async def test_submit_video_request_from_page_playwright_first_strict_skips_server_request(
+    monkeypatch,
+):
     service = IXBrowserService()
     publish_workflow = service._sora_publish_workflow  # noqa: SLF001
     ui_calls = {"count": 0}
@@ -2080,7 +2135,9 @@ async def test_submit_video_request_from_page_playwright_first_strict_skips_serv
         ui_calls["count"] += 1
         return {"task_id": "task_ui", "task_url": None, "access_token": "token_ui", "error": None}
 
-    monkeypatch.setattr(publish_workflow, "_submit_video_request_via_ui", _fake_submit_via_ui, raising=True)
+    monkeypatch.setattr(
+        publish_workflow, "_submit_video_request_via_ui", _fake_submit_via_ui, raising=True
+    )
 
     class _FakePage:
         async def evaluate(self, *_args, **_kwargs):
@@ -2163,8 +2220,15 @@ async def test_publish_sora_post_with_backoff_passes_profile_id_to_device_resolv
     async def _fake_publish_sora_post_from_page(*_args, **_kwargs):
         return {"publish_url": "https://sora.chatgpt.com/p/s_87654321", "error": None}
 
-    monkeypatch.setattr(publish_workflow, "_get_device_id_from_context", _fake_get_device_id, raising=True)
-    monkeypatch.setattr(publish_workflow, "_publish_sora_post_from_page", _fake_publish_sora_post_from_page, raising=True)
+    monkeypatch.setattr(
+        publish_workflow, "_get_device_id_from_context", _fake_get_device_id, raising=True
+    )
+    monkeypatch.setattr(
+        publish_workflow,
+        "_publish_sora_post_from_page",
+        _fake_publish_sora_post_from_page,
+        raising=True,
+    )
 
     result = await publish_workflow._publish_sora_post_with_backoff(  # noqa: SLF001
         _DummyPage(),
@@ -2249,7 +2313,12 @@ async def test_publish_from_page_prefers_existing_post_before_create(monkeypatch
     async def _fake_refresh_nf_check(_page, *, profile_id):
         refreshed.append(profile_id)
 
-    monkeypatch.setattr(publish_workflow, "_watch_publish_url", lambda *_args, **_kwargs: asyncio.Future(), raising=True)
+    monkeypatch.setattr(
+        publish_workflow,
+        "_watch_publish_url",
+        lambda *_args, **_kwargs: asyncio.Future(),
+        raising=True,
+    )
     monkeypatch.setattr(publish_workflow, "_clear_caption_input", _fake_clear_caption, raising=True)
     monkeypatch.setattr(
         publish_workflow,
@@ -2312,7 +2381,7 @@ async def test_sora_fetch_json_via_page_retries_on_cf_then_succeeds():
             },
             {
                 "status": 200,
-                "raw": "{\"ok\":true}",
+                "raw": '{"ok":true}',
                 "json": {"ok": True},
                 "error": None,
                 "is_cf": False,
@@ -2372,10 +2441,16 @@ async def test_fetch_draft_item_by_task_id_via_context_does_not_use_context_requ
     async def _fake_fetch(page_obj, url, **_kwargs):
         del page_obj
         if "api/auth/session" in str(url):
-            return {"status": 200, "raw": "{\"accessToken\":\"t\"}", "json": {"accessToken": "t"}, "error": None, "is_cf": False}
+            return {
+                "status": 200,
+                "raw": '{"accessToken":"t"}',
+                "json": {"accessToken": "t"},
+                "error": None,
+                "is_cf": False,
+            }
         return {
             "status": 200,
-            "raw": "{\"items\":[{\"id\":\"task_123\",\"generation_id\":\"gen_abc\"}]}",
+            "raw": '{"items":[{"id":"task_123","generation_id":"gen_abc"}]}',
             "json": {"items": [{"id": "task_123", "generation_id": "gen_abc"}]},
             "error": None,
             "is_cf": False,
@@ -2396,7 +2471,9 @@ async def test_fetch_draft_item_by_task_id_via_context_does_not_use_context_requ
 
 
 @pytest.mark.asyncio
-async def test_fetch_draft_item_by_task_id_via_context_accepts_session_access_token_snake_case(monkeypatch):
+async def test_fetch_draft_item_by_task_id_via_context_accepts_session_access_token_snake_case(
+    monkeypatch,
+):
     service = IXBrowserService()
     publish_workflow = service._sora_publish_workflow  # noqa: SLF001
 
@@ -2426,7 +2503,7 @@ async def test_fetch_draft_item_by_task_id_via_context_accepts_session_access_to
         if "api/auth/session" in str(url):
             return {
                 "status": 200,
-                "raw": "{\"access_token\":\"snake_t\"}",
+                "raw": '{"access_token":"snake_t"}',
                 "json": {"access_token": "snake_t"},
                 "error": None,
                 "is_cf": False,
@@ -2434,7 +2511,7 @@ async def test_fetch_draft_item_by_task_id_via_context_accepts_session_access_to
         seen_headers["drafts"] = kwargs.get("headers")
         return {
             "status": 200,
-            "raw": "{\"items\":[{\"id\":\"task_123\",\"generation_id\":\"gen_abc\"}]}",
+            "raw": '{"items":[{"id":"task_123","generation_id":"gen_abc"}]}',
             "json": {"items": [{"id": "task_123", "generation_id": "gen_abc"}]},
             "error": None,
             "is_cf": False,
@@ -2477,7 +2554,13 @@ async def test_poll_sora_task_from_page_does_not_use_context_request(monkeypatch
         calls.append(str(url))
         # pending 命中并返回 progress，函数应直接返回 processing，不走 drafts
         if "backend/nf/pending/v2" in str(url):
-            return {"status": 200, "raw": "[]", "json": [{"id": "task_1", "progress": 0.5}], "error": None, "is_cf": False}
+            return {
+                "status": 200,
+                "raw": "[]",
+                "json": [{"id": "task_1", "progress": 0.5}],
+                "error": None,
+                "is_cf": False,
+            }
         raise AssertionError("不应请求 drafts")
 
     monkeypatch.setattr(publish_workflow, "_sora_fetch_json_via_page", _fake_fetch, raising=True)
@@ -2522,7 +2605,9 @@ async def test_poll_sora_task_from_page_uses_stair_backoff_for_drafts(monkeypatc
         return None
 
     monkeypatch.setattr(publish_workflow, "_sora_fetch_json_via_page", _fake_fetch, raising=True)
-    monkeypatch.setattr(publish_workflow, "_fetch_draft_item_by_task_id", _fake_fetch_draft, raising=True)
+    monkeypatch.setattr(
+        publish_workflow, "_fetch_draft_item_by_task_id", _fake_fetch_draft, raising=True
+    )
 
     page = _FakePage()
     result = await publish_workflow.poll_sora_task_from_page(
@@ -2560,14 +2645,20 @@ async def test_poll_sora_task_from_page_stops_backoff_after_draft_hit(monkeypatc
 
     drafts = [
         None,
-        {"task_id": "task_1", "generation_id": "gen_ready", "url": "https://sora.chatgpt.com/d/gen_ready"},
+        {
+            "task_id": "task_1",
+            "generation_id": "gen_ready",
+            "url": "https://sora.chatgpt.com/d/gen_ready",
+        },
     ]
 
     async def _fake_fetch_draft(*_args, **_kwargs):
         return drafts.pop(0)
 
     monkeypatch.setattr(publish_workflow, "_sora_fetch_json_via_page", _fake_fetch, raising=True)
-    monkeypatch.setattr(publish_workflow, "_fetch_draft_item_by_task_id", _fake_fetch_draft, raising=True)
+    monkeypatch.setattr(
+        publish_workflow, "_fetch_draft_item_by_task_id", _fake_fetch_draft, raising=True
+    )
 
     page = _FakePage()
     result = await publish_workflow.poll_sora_task_from_page(
@@ -2642,7 +2733,7 @@ async def test_poll_sora_task_via_proxy_api_uses_stair_backoff_for_drafts(monkey
             draft_calls.append(1)
             return {
                 "status": 200,
-                "raw": "{\"items\":[]}",
+                "raw": '{"items":[]}',
                 "json": {"items": []},
                 "error": None,
                 "source": url,
@@ -2697,14 +2788,14 @@ async def test_poll_sora_task_via_proxy_api_stops_backoff_after_draft_hit(monkey
             if len(draft_calls) == 1:
                 return {
                     "status": 200,
-                    "raw": "{\"items\":[]}",
+                    "raw": '{"items":[]}',
                     "json": {"items": []},
                     "error": None,
                     "source": url,
                 }
             return {
                 "status": 200,
-                "raw": "{\"items\":[{\"id\":\"task_1\",\"generation_id\":\"gen_ready\"}]}",
+                "raw": '{"items":[{"id":"task_1","generation_id":"gen_ready"}]}',
                 "json": {"items": [{"id": "task_1", "generation_id": "gen_ready"}]},
                 "error": None,
                 "source": url,
@@ -2756,7 +2847,7 @@ async def test_poll_sora_task_via_proxy_api_failed_draft_stops_long_wait(monkeyp
         if "profile/drafts" in str(url):
             return {
                 "status": 200,
-                "raw": "{\"items\":[{\"id\":\"task_1\",\"reason_str\":\"failed_reason\"}]}",
+                "raw": '{"items":[{"id":"task_1","reason_str":"failed_reason"}]}',
                 "json": {"items": [{"id": "task_1", "reason_str": "failed_reason"}]},
                 "error": None,
                 "source": url,
@@ -2801,11 +2892,17 @@ async def test_prepare_sora_page_applies_mobile_ua_on_create_stage(monkeypatch):
     async def _fake_attach_cf(_page, _profile_id):
         return None
 
-    monkeypatch.setattr("app.services.ixbrowser.browser_prep.settings.playwright_ua_mode", "create_only")
-    monkeypatch.setattr("app.services.ixbrowser.browser_prep.settings.playwright_stealth_enabled", False)
+    monkeypatch.setattr(
+        "app.services.ixbrowser.browser_prep.settings.playwright_ua_mode", "create_only"
+    )
+    monkeypatch.setattr(
+        "app.services.ixbrowser.browser_prep.settings.playwright_stealth_enabled", False
+    )
     monkeypatch.setattr(service, "_apply_ua_override", _fake_apply_ua, raising=True)
     monkeypatch.setattr(service, "_apply_request_blocking", _fake_apply_blocking, raising=True)
-    monkeypatch.setattr(service, "_attach_realtime_quota_listener", _fake_attach_realtime, raising=True)
+    monkeypatch.setattr(
+        service, "_attach_realtime_quota_listener", _fake_attach_realtime, raising=True
+    )
     monkeypatch.setattr(service, "_attach_cf_nav_listener", _fake_attach_cf, raising=True)
 
     await service._prepare_sora_page(SimpleNamespace(), 9, stage="create")  # noqa: SLF001
@@ -2830,11 +2927,17 @@ async def test_prepare_sora_page_skips_mobile_ua_on_default_stage(monkeypatch):
     async def _fake_attach_cf(_page, _profile_id):
         return None
 
-    monkeypatch.setattr("app.services.ixbrowser.browser_prep.settings.playwright_ua_mode", "create_only")
-    monkeypatch.setattr("app.services.ixbrowser.browser_prep.settings.playwright_stealth_enabled", False)
+    monkeypatch.setattr(
+        "app.services.ixbrowser.browser_prep.settings.playwright_ua_mode", "create_only"
+    )
+    monkeypatch.setattr(
+        "app.services.ixbrowser.browser_prep.settings.playwright_stealth_enabled", False
+    )
     monkeypatch.setattr(service, "_apply_ua_override", _fake_apply_ua, raising=True)
     monkeypatch.setattr(service, "_apply_request_blocking", _fake_apply_blocking, raising=True)
-    monkeypatch.setattr(service, "_attach_realtime_quota_listener", _fake_attach_realtime, raising=True)
+    monkeypatch.setattr(
+        service, "_attach_realtime_quota_listener", _fake_attach_realtime, raising=True
+    )
     monkeypatch.setattr(service, "_attach_cf_nav_listener", _fake_attach_cf, raising=True)
 
     await service._prepare_sora_page(SimpleNamespace(), 9, stage="default")  # noqa: SLF001
@@ -2872,7 +2975,9 @@ async def test_apply_request_blocking_light_mode_only_blocks_media(monkeypatch):
         async def route(self, _pattern, handler):
             self.handler = handler
 
-    monkeypatch.setattr("app.services.ixbrowser.browser_prep.settings.playwright_resource_blocking_mode", "light")
+    monkeypatch.setattr(
+        "app.services.ixbrowser.browser_prep.settings.playwright_resource_blocking_mode", "light"
+    )
 
     page = _FakePage()
     await service._apply_request_blocking(page)  # noqa: SLF001
@@ -2904,8 +3009,12 @@ async def test_apply_stealth_plugin_failure_keeps_fallback_scripts(monkeypatch):
         async def add_init_script(self, script):
             self.scripts.append(str(script))
 
-    monkeypatch.setattr("app.services.ixbrowser.browser_prep.settings.playwright_stealth_enabled", True)
-    monkeypatch.setattr("app.services.ixbrowser.browser_prep.settings.playwright_stealth_plugin_enabled", True)
+    monkeypatch.setattr(
+        "app.services.ixbrowser.browser_prep.settings.playwright_stealth_enabled", True
+    )
+    monkeypatch.setattr(
+        "app.services.ixbrowser.browser_prep.settings.playwright_stealth_plugin_enabled", True
+    )
     monkeypatch.setattr("app.services.ixbrowser.browser_prep.Stealth", _BrokenStealth)
 
     page = _FakePage()
@@ -2989,14 +3098,22 @@ async def test_run_sora_submit_and_progress_not_finished_by_pending_missing(monk
         prepare_stages.append(str(stage))
 
     service._deps.playwright_factory = lambda: _FakePlaywrightContext()  # noqa: SLF001
-    monkeypatch.setattr("app.services.ixbrowser.sora_generation_workflow.asyncio.sleep", _fake_sleep)
+    monkeypatch.setattr(
+        "app.services.ixbrowser.sora_generation_workflow.asyncio.sleep", _fake_sleep
+    )
     monkeypatch.setattr(workflow, "_open_profile_with_retry", _fake_open_profile, raising=True)
     monkeypatch.setattr(workflow, "_close_profile", _fake_close_profile, raising=True)
     monkeypatch.setattr(workflow, "_is_sora_job_canceled", lambda _job_id: False, raising=True)
     monkeypatch.setattr(service, "_prepare_sora_page", _fake_prepare_page, raising=True)
-    monkeypatch.setattr(publish_workflow, "_get_device_id_from_context", _fake_device_id, raising=True)
-    monkeypatch.setattr(publish_workflow, "_submit_video_request_from_page", _fake_submit, raising=True)
-    monkeypatch.setattr(publish_workflow, "poll_sora_task_via_proxy_api", _fake_proxy_poll, raising=True)
+    monkeypatch.setattr(
+        publish_workflow, "_get_device_id_from_context", _fake_device_id, raising=True
+    )
+    monkeypatch.setattr(
+        publish_workflow, "_submit_video_request_from_page", _fake_submit, raising=True
+    )
+    monkeypatch.setattr(
+        publish_workflow, "poll_sora_task_via_proxy_api", _fake_proxy_poll, raising=True
+    )
 
     task_id, generation_id = await workflow.run_sora_submit_and_progress(
         job_id=999999,
@@ -3089,8 +3206,12 @@ async def test_submit_and_monitor_sora_video_prepare_uses_create_stage(monkeypat
         "app.services.ixbrowser.sora_generation_workflow.sqlite_db.update_ixbrowser_generate_job",
         lambda *_args, **_kwargs: True,
     )
-    monkeypatch.setattr(publish_workflow, "_submit_video_request_from_page", _fake_submit, raising=True)
-    monkeypatch.setattr(publish_workflow, "poll_sora_task_via_proxy_api", _fake_proxy_poll, raising=True)
+    monkeypatch.setattr(
+        publish_workflow, "_submit_video_request_from_page", _fake_submit, raising=True
+    )
+    monkeypatch.setattr(
+        publish_workflow, "poll_sora_task_via_proxy_api", _fake_proxy_poll, raising=True
+    )
 
     result = await workflow.submit_and_monitor_sora_video(
         profile_id=1,
@@ -3125,7 +3246,10 @@ async def test_cf_nav_listener_records_on_cdn_cgi_url(monkeypatch):
     async def _fake_to_thread(func, *args, **kwargs):
         return func(*args, **kwargs)
 
-    monkeypatch.setattr("app.services.ixbrowser_service.sqlite_db.create_proxy_cf_event", _fake_create_proxy_cf_event)
+    monkeypatch.setattr(
+        "app.services.ixbrowser_service.sqlite_db.create_proxy_cf_event",
+        _fake_create_proxy_cf_event,
+    )
     monkeypatch.setattr("app.services.ixbrowser.browser_prep.asyncio.to_thread", _fake_to_thread)
 
     class _FakeFrame:
@@ -3151,7 +3275,9 @@ async def test_cf_nav_listener_records_on_cdn_cgi_url(monkeypatch):
 
     page = _FakePage(title_text="Sora")
     await service._attach_cf_nav_listener(page, profile_id=77)  # noqa: SLF001
-    page.main_frame.url = "https://sora.chatgpt.com/cdn-cgi/challenge-platform/h/g/orchestrate/chl_page"
+    page.main_frame.url = (
+        "https://sora.chatgpt.com/cdn-cgi/challenge-platform/h/g/orchestrate/chl_page"
+    )
     page.emit("framenavigated", page.main_frame)
     await asyncio.wait_for(done.wait(), timeout=1)
 
@@ -3177,7 +3303,10 @@ async def test_cf_nav_listener_records_on_just_a_moment_title(monkeypatch):
     async def _fake_to_thread(func, *args, **kwargs):
         return func(*args, **kwargs)
 
-    monkeypatch.setattr("app.services.ixbrowser_service.sqlite_db.create_proxy_cf_event", _fake_create_proxy_cf_event)
+    monkeypatch.setattr(
+        "app.services.ixbrowser_service.sqlite_db.create_proxy_cf_event",
+        _fake_create_proxy_cf_event,
+    )
     monkeypatch.setattr("app.services.ixbrowser.browser_prep.asyncio.to_thread", _fake_to_thread)
     monkeypatch.setattr("app.services.ixbrowser.browser_prep.CF_NAV_TITLE_CHECK_DELAY_SEC", 0.0)
 
@@ -3229,7 +3358,10 @@ async def test_cf_nav_listener_dedupes_within_cooldown(monkeypatch):
     async def _fake_to_thread(func, *args, **kwargs):
         return func(*args, **kwargs)
 
-    monkeypatch.setattr("app.services.ixbrowser_service.sqlite_db.create_proxy_cf_event", _fake_create_proxy_cf_event)
+    monkeypatch.setattr(
+        "app.services.ixbrowser_service.sqlite_db.create_proxy_cf_event",
+        _fake_create_proxy_cf_event,
+    )
     monkeypatch.setattr("app.services.ixbrowser.browser_prep.asyncio.to_thread", _fake_to_thread)
 
     class _FakeFrame:

@@ -23,5 +23,6 @@ admin/.vite/
 
 # Test
 .pytest_cache/
+.ruff_cache/
 .coverage
 htmlcov/

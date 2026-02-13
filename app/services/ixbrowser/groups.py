@@ -34,7 +34,9 @@ class GroupsMixin:
         - 优先复用最近一次 list_group_windows 的缓存
         - 若缓存缺失或过期，则主动刷新一次
         """
-        ttl = float(max_age_sec) if max_age_sec is not None else float(self._group_windows_cache_ttl)
+        ttl = (
+            float(max_age_sec) if max_age_sec is not None else float(self._group_windows_cache_ttl)
+        )
         now = time.time()
         if (
             self._group_windows_cache
@@ -43,7 +45,10 @@ class GroupsMixin:
         ):
             return
         # 若最近刷新失败过，避免每次都打到 ixBrowser（尤其是 unit test / 离线场景）
-        if self._proxy_binding_last_failed_at and (now - float(self._proxy_binding_last_failed_at)) < ttl:
+        if (
+            self._proxy_binding_last_failed_at
+            and (now - float(self._proxy_binding_last_failed_at)) < ttl
+        ):
             return
         try:
             await self.list_group_windows()
@@ -200,7 +205,10 @@ class GroupsMixin:
             groups = await self.list_groups()
             profiles = await self._list_profiles()
         except Exception as exc:  # noqa: BLE001
-            if self._group_windows_cache and (time.time() - self._group_windows_cache_at) < self._group_windows_cache_ttl:
+            if (
+                self._group_windows_cache
+                and (time.time() - self._group_windows_cache_at) < self._group_windows_cache_ttl
+            ):
                 logger.warning("使用分组缓存兜底：%s", exc)
                 return self._group_windows_cache
             raise
@@ -292,7 +300,9 @@ class GroupsMixin:
         self._profile_proxy_map = proxy_map
         return result
 
-    async def list_group_windows_cached(self, max_age_sec: float = 3.0) -> List[IXBrowserGroupWindows]:
+    async def list_group_windows_cached(
+        self, max_age_sec: float = 3.0
+    ) -> List[IXBrowserGroupWindows]:
         """
         在极短时间窗口内优先复用内存缓存，减少重复请求 ixBrowser。
         """
@@ -306,7 +316,9 @@ class GroupsMixin:
             return self._group_windows_cache
         return await self.list_group_windows()
 
-    def _find_group_by_title(self, groups: List[IXBrowserGroupWindows], group_title: str) -> Optional[IXBrowserGroupWindows]:
+    def _find_group_by_title(
+        self, groups: List[IXBrowserGroupWindows], group_title: str
+    ) -> Optional[IXBrowserGroupWindows]:
         normalized = str(group_title or "").strip().lower()
         for group in groups:
             if str(group.title or "").strip().lower() == normalized:
@@ -316,7 +328,9 @@ class GroupsMixin:
     async def _get_window_from_sora_group(self, profile_id: int) -> Optional[IXBrowserWindow]:
         return await self._get_window_from_group(profile_id, "Sora")
 
-    async def _get_window_from_group(self, profile_id: int, group_title: str) -> Optional[IXBrowserWindow]:
+    async def _get_window_from_group(
+        self, profile_id: int, group_title: str
+    ) -> Optional[IXBrowserWindow]:
         groups = await self.list_group_windows_cached(max_age_sec=3.0)
         target_group = self._find_group_by_title(groups, group_title)
         if not target_group:

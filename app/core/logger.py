@@ -1,4 +1,5 @@
 """日志初始化"""
+
 from __future__ import annotations
 
 import logging
@@ -33,7 +34,9 @@ class EventLogIngestHandler(logging.Handler):
 
     def __init__(self, max_queue_size: int = 10000):
         super().__init__(level=logging.DEBUG)
-        self._queue: queue.Queue[Optional[Dict[str, Any]]] = queue.Queue(maxsize=max(1000, int(max_queue_size)))
+        self._queue: queue.Queue[Optional[Dict[str, Any]]] = queue.Queue(
+            maxsize=max(1000, int(max_queue_size))
+        )
         self._dropped_count = 0
         self._worker = threading.Thread(target=self._run, name="event-log-ingest", daemon=True)
         self._worker.start()
@@ -45,7 +48,9 @@ class EventLogIngestHandler(logging.Handler):
             if str(record.name or "").startswith("app.core.logger"):
                 return
 
-            ingest_threshold = _normalize_level(getattr(settings, "system_logger_ingest_level", "DEBUG"))
+            ingest_threshold = _normalize_level(
+                getattr(settings, "system_logger_ingest_level", "DEBUG")
+            )
             if int(record.levelno) < int(ingest_threshold):
                 return
 

@@ -1,4 +1,5 @@
 """初始化默认管理员"""
+
 import os
 import sys
 
@@ -18,7 +19,9 @@ def main():
         print(f"管理员已存在: {username}")
         return
 
-    user_id = sqlite_db.create_user(username=username, password_hash=get_password_hash(password), role="admin")
+    user_id = sqlite_db.create_user(
+        username=username, password_hash=get_password_hash(password), role="admin"
+    )
     print(f"管理员创建成功: id={user_id}, username={username}, password={password}")
 
 

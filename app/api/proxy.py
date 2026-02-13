@@ -153,7 +153,10 @@ async def batch_update_proxies(
             message="批量更新代理",
             resource_type="proxy",
             resource_id=None,
-            extra={"count": len(payload.proxy_ids), "sync_to_ixbrowser": bool(payload.sync_to_ixbrowser)},
+            extra={
+                "count": len(payload.proxy_ids),
+                "sync_to_ixbrowser": bool(payload.sync_to_ixbrowser),
+            },
         )
     except Exception:  # noqa: BLE001
         pass

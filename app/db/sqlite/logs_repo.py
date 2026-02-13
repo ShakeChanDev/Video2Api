@@ -181,19 +181,21 @@ class SQLiteLogsRepo:
         )
 
         created_at_text = created_at or datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        metadata_json = json.dumps(masked_metadata, ensure_ascii=False) if masked_metadata is not None else None
+        metadata_json = (
+            json.dumps(masked_metadata, ensure_ascii=False) if masked_metadata is not None else None
+        )
 
         conn = self._get_conn()
         cursor = conn.cursor()
         cursor.execute(
-            '''
+            """
             INSERT INTO event_logs (
                 created_at, source, action, event, phase, status, level, message,
                 trace_id, request_id, method, path, query_text, status_code, duration_ms,
                 is_slow, operator_user_id, operator_username, ip, user_agent,
                 resource_type, resource_id, error_type, error_code, metadata_json
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ''',
+            """,
             (
                 created_at_text,
                 str(source or "system").strip().lower(),
@@ -351,13 +353,13 @@ class SQLiteLogsRepo:
         cursor_obj = conn.cursor()
 
         cursor_obj.execute(
-            f'''
+            f"""
             SELECT
               COUNT(*) AS total_count,
               SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS failed_count,
               SUM(CASE WHEN is_slow = 1 THEN 1 ELSE 0 END) AS slow_count
             FROM event_logs {where_clause}
-            ''',
+            """,
             params,
         )
         row = cursor_obj.fetchone()
@@ -366,29 +368,33 @@ class SQLiteLogsRepo:
         slow_count = int(row["slow_count"] or 0) if row else 0
         failure_rate = round((failed_count / total_count) * 100, 2) if total_count > 0 else 0.0
 
-        duration_where = f"{where_clause} {'AND' if where_clause else 'WHERE'} duration_ms IS NOT NULL"
+        duration_where = (
+            f"{where_clause} {'AND' if where_clause else 'WHERE'} duration_ms IS NOT NULL"
+        )
         cursor_obj.execute(
-            f'''
+            f"""
             SELECT duration_ms
             FROM event_logs {duration_where}
             ORDER BY duration_ms ASC
-            ''',
+            """,
             params,
         )
         duration_rows = cursor_obj.fetchall()
-        durations = [int(item["duration_ms"]) for item in duration_rows if item["duration_ms"] is not None]
+        durations = [
+            int(item["duration_ms"]) for item in duration_rows if item["duration_ms"] is not None
+        ]
         p95_duration_ms = None
         if durations:
             idx = max(0, math.ceil(len(durations) * 0.95) - 1)
             p95_duration_ms = int(durations[idx])
 
         cursor_obj.execute(
-            f'''
+            f"""
             SELECT source AS key, COUNT(*) AS count
             FROM event_logs {where_clause}
             GROUP BY source
             ORDER BY count DESC, key ASC
-            ''',
+            """,
             params,
         )
         source_distribution = [
@@ -397,13 +403,13 @@ class SQLiteLogsRepo:
         ]
 
         cursor_obj.execute(
-            f'''
+            f"""
             SELECT action AS key, COUNT(*) AS count
             FROM event_logs {where_clause}
             GROUP BY action
             ORDER BY count DESC, key ASC
             LIMIT 5
-            ''',
+            """,
             params,
         )
         top_actions = [
@@ -413,13 +419,13 @@ class SQLiteLogsRepo:
 
         failed_where = f"{where_clause} {'AND' if where_clause else 'WHERE'} status = 'failed'"
         cursor_obj.execute(
-            f'''
+            f"""
             SELECT COALESCE(NULLIF(TRIM(message), ''), '(无消息)') AS key, COUNT(*) AS count
             FROM event_logs {failed_where}
             GROUP BY key
             ORDER BY count DESC, key ASC
             LIMIT 5
-            ''',
+            """,
             params,
         )
         top_failed_reasons = [
@@ -460,7 +466,7 @@ class SQLiteLogsRepo:
 
     def _estimate_event_logs_size_bytes(self, cursor_obj: sqlite3.Cursor) -> int:
         cursor_obj.execute(
-            '''
+            """
             SELECT COALESCE(SUM(
                 LENGTH(COALESCE(created_at, '')) +
                 LENGTH(COALESCE(source, '')) +
@@ -490,7 +496,7 @@ class SQLiteLogsRepo:
                 64
             ), 0) AS approx_size
             FROM event_logs
-            '''
+            """
         )
         row = cursor_obj.fetchone()
         return int(row["approx_size"] or 0) if row else 0
@@ -508,14 +514,14 @@ class SQLiteLogsRepo:
         batch_size = 500
         while estimated_size > max_bytes:
             cursor_obj.execute(
-                '''
+                """
                 DELETE FROM event_logs
                 WHERE id IN (
                     SELECT id FROM event_logs
                     ORDER BY id ASC
                     LIMIT ?
                 )
-                ''',
+                """,
                 (batch_size,),
             )
             step_deleted = int(cursor_obj.rowcount or 0)
@@ -535,7 +541,7 @@ class SQLiteLogsRepo:
         if retention_days > 0:
             cutoff = datetime.now() - timedelta(days=int(retention_days))
             cutoff_str = cutoff.strftime("%Y-%m-%d %H:%M:%S")
-            cursor_obj.execute('DELETE FROM event_logs WHERE created_at < ?', (cutoff_str,))
+            cursor_obj.execute("DELETE FROM event_logs WHERE created_at < ?", (cutoff_str,))
             deleted += int(cursor_obj.rowcount or 0)
 
         deleted += self._cleanup_event_logs_by_size(cursor_obj, int(max_bytes or 0))
@@ -544,7 +550,9 @@ class SQLiteLogsRepo:
         conn.close()
         return deleted
 
-    def create_sora_job_event(self, job_id: int, phase: str, event: str, message: Optional[str] = None) -> int:
+    def create_sora_job_event(
+        self, job_id: int, phase: str, event: str, message: Optional[str] = None
+    ) -> int:
         row = self.get_sora_job(int(job_id)) or {}
         level = "ERROR" if str(event or "").strip().lower() == "fail" else "INFO"
         metadata = {
@@ -695,7 +703,7 @@ class SQLiteLogsRepo:
         cutoff_str = cutoff.strftime("%Y-%m-%d %H:%M:%S")
         conn = self._get_conn()
         cursor = conn.cursor()
-        cursor.execute('DELETE FROM audit_logs WHERE created_at < ?', (cutoff_str,))
+        cursor.execute("DELETE FROM audit_logs WHERE created_at < ?", (cutoff_str,))
         deleted = cursor.rowcount
         conn.commit()
         conn.close()
@@ -746,7 +754,9 @@ class SQLiteLogsRepo:
                     "resource_id": row.get("resource_id"),
                     "operator_user_id": row.get("operator_user_id"),
                     "operator_username": row.get("operator_username"),
-                    "extra_json": json.dumps(metadata, ensure_ascii=False) if metadata is not None else None,
+                    "extra_json": json.dumps(metadata, ensure_ascii=False)
+                    if metadata is not None
+                    else None,
                     "created_at": row.get("created_at"),
                 }
             )

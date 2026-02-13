@@ -1,4 +1,5 @@
 """系统设置服务"""
+
 from __future__ import annotations
 
 import json
@@ -110,13 +111,19 @@ def default_system_settings(mask_sensitive: bool = False) -> SystemSettings:
             "generate_poll_interval_sec": service_cls.generate_poll_interval_seconds,
             "generate_max_minutes": int(service_cls.generate_timeout_seconds // 60),
             "draft_wait_timeout_minutes": int(service_cls.draft_wait_timeout_seconds // 60),
-            "draft_manual_poll_interval_minutes": int(service_cls.draft_manual_poll_interval_seconds // 60),
-            "heavy_load_retry_max_attempts": int(getattr(service_cls, "heavy_load_retry_max_attempts", 4)),
+            "draft_manual_poll_interval_minutes": int(
+                service_cls.draft_manual_poll_interval_seconds // 60
+            ),
+            "heavy_load_retry_max_attempts": int(
+                getattr(service_cls, "heavy_load_retry_max_attempts", 4)
+            ),
             "blocked_resource_types": sorted(service_cls.sora_blocked_resource_types),
             "default_group_title": "Sora",
             "default_duration": "10s",
             "default_aspect_ratio": "landscape",
-            "submit_priority": str(getattr(service_cls, "sora_submit_priority", "playwright_action_first")),
+            "submit_priority": str(
+                getattr(service_cls, "sora_submit_priority", "playwright_action_first")
+            ),
         },
         "scan": {
             "history_limit": service_cls.scan_history_limit,
@@ -221,7 +228,7 @@ def update_scan_scheduler_settings(payload: ScanSchedulerSettings) -> ScanSchedu
     payload_json = json.dumps(payload.model_dump(), ensure_ascii=False)
     sqlite_db.upsert_scan_scheduler_settings(payload_json)
     try:
-        from app.services.scan_scheduler import scan_scheduler  # noqa: WPS433
+        from app.services.scan_scheduler import scan_scheduler
 
         scan_scheduler.apply_settings(payload)
     except Exception as exc:  # noqa: BLE001
@@ -250,12 +257,16 @@ def apply_runtime_settings(settings_data: Optional[SystemSettings] = None) -> No
     ixbrowser_service.ixbrowser_busy_retry_max = data.ixbrowser.busy_retry_max
     ixbrowser_service.ixbrowser_busy_retry_delay_seconds = data.ixbrowser.busy_retry_delay_seconds
     ixbrowser_service.set_group_windows_cache_ttl(float(data.ixbrowser.group_windows_cache_ttl_sec))
-    ixbrowser_service.set_realtime_quota_cache_ttl(float(data.ixbrowser.realtime_quota_cache_ttl_sec))
+    ixbrowser_service.set_realtime_quota_cache_ttl(
+        float(data.ixbrowser.realtime_quota_cache_ttl_sec)
+    )
     ixbrowser_service.set_sora_job_max_concurrency(int(data.sora.job_max_concurrency))
     ixbrowser_service.generate_poll_interval_seconds = data.sora.generate_poll_interval_sec
     ixbrowser_service.generate_timeout_seconds = data.sora.generate_max_minutes * 60
     ixbrowser_service.draft_wait_timeout_seconds = data.sora.draft_wait_timeout_minutes * 60
-    ixbrowser_service.draft_manual_poll_interval_seconds = data.sora.draft_manual_poll_interval_minutes * 60
+    ixbrowser_service.draft_manual_poll_interval_seconds = (
+        data.sora.draft_manual_poll_interval_minutes * 60
+    )
     ixbrowser_service.heavy_load_retry_max_attempts = data.sora.heavy_load_retry_max_attempts
     ixbrowser_service.sora_blocked_resource_types = set(data.sora.blocked_resource_types or [])
     ixbrowser_service.sora_submit_priority = data.sora.submit_priority
@@ -263,7 +274,9 @@ def apply_runtime_settings(settings_data: Optional[SystemSettings] = None) -> No
 
     # Account dispatch / recovery scheduler is runtime-configurable.
     try:
-        from app.services.account_recovery_scheduler import account_recovery_scheduler  # noqa: WPS433
+        from app.services.account_recovery_scheduler import (
+            account_recovery_scheduler,
+        )
 
         account_recovery_scheduler.apply_settings(data.sora.account_dispatch)
     except Exception as exc:  # noqa: BLE001

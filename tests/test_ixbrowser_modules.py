@@ -28,7 +28,9 @@ def test_sora_job_runner_watermark_helpers():
 
     assert runner.normalize_custom_parse_path("get-sora-link") == "/get-sora-link"
     assert runner.extract_share_id_from_url("https://sora.chatgpt.com/p/s_1234abcd") == "s_1234abcd"
-    assert runner.build_third_party_watermark_url("https://sora.chatgpt.com/p/s_1234abcd").endswith("/s_1234abcd.mp4")
+    assert runner.build_third_party_watermark_url("https://sora.chatgpt.com/p/s_1234abcd").endswith(
+        "/s_1234abcd.mp4"
+    )
 
 
 def test_ixbrowser_workflows_initialized():
@@ -71,8 +73,14 @@ async def test_sora_job_runner_delegates_watermark_parse(monkeypatch):
             "retry_max": 0,
         },
     )
-    monkeypatch.setattr("app.services.ixbrowser.sora_job_runner.sqlite_db.update_sora_job", lambda *_args, **_kwargs: True)
-    monkeypatch.setattr("app.services.ixbrowser.sora_job_runner.sqlite_db.create_sora_job_event", lambda *_args, **_kwargs: 1)
+    monkeypatch.setattr(
+        "app.services.ixbrowser.sora_job_runner.sqlite_db.update_sora_job",
+        lambda *_args, **_kwargs: True,
+    )
+    monkeypatch.setattr(
+        "app.services.ixbrowser.sora_job_runner.sqlite_db.create_sora_job_event",
+        lambda *_args, **_kwargs: 1,
+    )
 
     async def _fake_call_custom_watermark_parse(**kwargs):
         del kwargs
@@ -80,7 +88,9 @@ async def test_sora_job_runner_delegates_watermark_parse(monkeypatch):
 
     monkeypatch.setattr(runner, "call_custom_watermark_parse", _fake_call_custom_watermark_parse)
 
-    url = await runner.run_sora_watermark(job_id=1, publish_url="https://sora.chatgpt.com/p/s_1234abcd")
+    url = await runner.run_sora_watermark(
+        job_id=1, publish_url="https://sora.chatgpt.com/p/s_1234abcd"
+    )
     assert url == "http://example.com/wm.mp4"
 
 
@@ -110,7 +120,9 @@ async def test_sora_job_runner_watermark_retry_fallback_on_failure(monkeypatch):
         lambda _job_id, phase, event, message=None: events.append((phase, event, message)) or 1,
     )
 
-    await runner.run_sora_watermark_retry(job_id=7, publish_url="https://sora.chatgpt.com/p/s_1234abcd")
+    await runner.run_sora_watermark_retry(
+        job_id=7, publish_url="https://sora.chatgpt.com/p/s_1234abcd"
+    )
 
     assert patched["status"] == "completed"
     assert patched["phase"] == "done"
@@ -145,7 +157,9 @@ async def test_sora_job_runner_watermark_retry_share_link_error_wont_fallback(mo
         lambda _job_id, phase, event, message=None: events.append((phase, event, message)) or 1,
     )
 
-    await runner.run_sora_watermark_retry(job_id=9, publish_url="https://sora.chatgpt.com/p/s_1234abcd")
+    await runner.run_sora_watermark_retry(
+        job_id=9, publish_url="https://sora.chatgpt.com/p/s_1234abcd"
+    )
 
     assert patched["status"] == "failed"
     assert patched["phase"] == "watermark"
@@ -180,7 +194,9 @@ async def test_sora_job_runner_watermark_retry_fallback_disabled(monkeypatch):
         lambda _job_id, phase, event, message=None: events.append((phase, event, message)) or 1,
     )
 
-    await runner.run_sora_watermark_retry(job_id=8, publish_url="https://sora.chatgpt.com/p/s_1234abcd")
+    await runner.run_sora_watermark_retry(
+        job_id=8, publish_url="https://sora.chatgpt.com/p/s_1234abcd"
+    )
 
     assert patched["status"] == "failed"
     assert patched["phase"] == "watermark"

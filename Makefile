@@ -2,6 +2,7 @@
 
 .PHONY: help \
 	backend-install playwright-install init-admin backend-dev \
+	backend-lint backend-fmt \
 	test-unit test-e2e \
 	selftest-ui selftest-heavy-load selftest-nurture \
 	admin-install admin-dev admin-build
@@ -30,6 +31,10 @@ help:
 	@echo "  test-unit           运行单元测试 (默认离线)"
 	@echo "  test-e2e            运行 e2e (仅本地)"
 	@echo ""
+	@echo "质量:"
+	@echo "  backend-lint         后端 lint/格式检查 (ruff)"
+	@echo "  backend-fmt          后端自动格式化与修复 (ruff)"
+	@echo ""
 	@echo "自测 (Playwright):"
 	@echo "  selftest-ui         Level A：离线 UI 自测（需 admin/dist）"
 	@echo "  selftest-heavy-load heavy load 自动换号续跑（需 admin/dist）"
@@ -46,6 +51,14 @@ init-admin:
 
 backend-dev:
 	$(PY) -m uvicorn app.main:app --host $(HOST) --port $(PORT) --reload
+
+backend-lint:
+	$(PY) -m ruff format --check app tests scripts
+	$(PY) -m ruff check app tests scripts
+
+backend-fmt:
+	$(PY) -m ruff format app tests scripts
+	$(PY) -m ruff check --fix app tests scripts
 
 test-unit:
 	$(PY) -m pytest -m unit

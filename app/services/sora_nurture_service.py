@@ -1,4 +1,5 @@
 """Sora 养号执行服务（移动端 Agent + 节省流量）"""
+
 from __future__ import annotations
 
 import asyncio
@@ -77,7 +78,9 @@ class SoraNurtureService:
                 return g
         return None
 
-    async def create_batch(self, request: SoraNurtureBatchCreateRequest, operator_user: Optional[dict] = None) -> dict:
+    async def create_batch(
+        self, request: SoraNurtureBatchCreateRequest, operator_user: Optional[dict] = None
+    ) -> dict:
         group_title = str(request.group_title or "Sora").strip() or "Sora"
         normalized_targets: List[dict] = []
         seen_targets = set()
@@ -125,8 +128,7 @@ class SoraNurtureService:
         try:
             groups = await self._ix.list_group_windows()
             group_lookup = {
-                str(getattr(g, "title", "") or "").strip().lower(): g
-                for g in groups or []
+                str(getattr(g, "title", "") or "").strip().lower(): g for g in groups or []
             }
             for target in normalized_targets:
                 target_title = str(target.get("group_title") or "").strip()
@@ -160,8 +162,12 @@ class SoraNurtureService:
                 "max_follows_per_profile": max_follows,
                 "max_likes_per_profile": max_likes,
                 "status": "queued",
-                "operator_user_id": operator_user.get("id") if isinstance(operator_user, dict) else None,
-                "operator_username": operator_user.get("username") if isinstance(operator_user, dict) else None,
+                "operator_user_id": operator_user.get("id")
+                if isinstance(operator_user, dict)
+                else None,
+                "operator_username": operator_user.get("username")
+                if isinstance(operator_user, dict)
+                else None,
             }
         )
 
@@ -195,7 +201,9 @@ class SoraNurtureService:
         status: Optional[str] = None,
         limit: int = 50,
     ) -> List[dict]:
-        rows = self._db.list_sora_nurture_batches(group_title=group_title, status=status, limit=limit)
+        rows = self._db.list_sora_nurture_batches(
+            group_title=group_title, status=status, limit=limit
+        )
         return [self._normalize_batch_row(row) for row in rows]
 
     def get_batch(self, batch_id: int) -> dict:
@@ -204,7 +212,9 @@ class SoraNurtureService:
             raise IXBrowserNotFoundError(f"未找到养号任务组：{batch_id}")
         return self._normalize_batch_row(row)
 
-    def list_jobs(self, batch_id: int, status: Optional[str] = None, limit: int = 500) -> List[dict]:
+    def list_jobs(
+        self, batch_id: int, status: Optional[str] = None, limit: int = 500
+    ) -> List[dict]:
         rows = self._db.list_sora_nurture_jobs(batch_id=int(batch_id), status=status, limit=limit)
         return [self._normalize_job_row(row) for row in rows]
 
@@ -231,7 +241,10 @@ class SoraNurtureService:
             canceled = 0
             for job in jobs:
                 if str(job.get("status") or "").strip().lower() == "queued":
-                    self._db.update_sora_nurture_job(int(job["id"]), {"status": "canceled", "phase": "done", "finished_at": _now_str()})
+                    self._db.update_sora_nurture_job(
+                        int(job["id"]),
+                        {"status": "canceled", "phase": "done", "finished_at": _now_str()},
+                    )
                     canceled += 1
             self._db.update_sora_nurture_batch(
                 int(batch_id),
@@ -254,7 +267,9 @@ class SoraNurtureService:
             raise SoraNurtureServiceError("任务组正在执行，无法重试")
 
         jobs = self._db.list_sora_nurture_jobs(batch_id=int(batch_id), limit=5000)
-        failed_jobs = [job for job in jobs if str(job.get("status") or "").strip().lower() == "failed"]
+        failed_jobs = [
+            job for job in jobs if str(job.get("status") or "").strip().lower() == "failed"
+        ]
         if not failed_jobs:
             raise SoraNurtureServiceError("当前任务组没有可重试的失败任务")
 
@@ -334,7 +349,9 @@ class SoraNurtureService:
                 max_likes = int(batch.get("max_likes_per_profile") or 3)
 
                 started_at = _now_str()
-                self._db.update_sora_nurture_batch(batch_id, {"status": "running", "started_at": started_at, "error": None})
+                self._db.update_sora_nurture_batch(
+                    batch_id, {"status": "running", "started_at": started_at, "error": None}
+                )
 
                 jobs_to_run = self._db.list_sora_nurture_jobs(batch_id=int(batch_id), limit=5000)
                 if not jobs_to_run:
@@ -365,7 +382,10 @@ class SoraNurtureService:
 
                         job_id = int(job_row.get("id") or 0)
                         profile_id = int(job_row.get("profile_id") or 0)
-                        job_group_title = str(job_row.get("group_title") or batch_group_title).strip() or batch_group_title
+                        job_group_title = (
+                            str(job_row.get("group_title") or batch_group_title).strip()
+                            or batch_group_title
+                        )
                         if job_id <= 0 or profile_id <= 0:
                             failed_count += 1
                             first_error = first_error or "任务参数异常"
@@ -388,7 +408,9 @@ class SoraNurtureService:
                         try:
                             active_map = active_map_cache.get(job_group_title)
                             if active_map is None:
-                                active_map = self._db.count_sora_active_jobs_by_profile(job_group_title)
+                                active_map = self._db.count_sora_active_jobs_by_profile(
+                                    job_group_title
+                                )
                                 active_map_cache[job_group_title] = active_map
                         except Exception:  # noqa: BLE001
                             active_map = {}
@@ -403,7 +425,9 @@ class SoraNurtureService:
                                 },
                             )
                             failed_count += 1
-                            first_error = first_error or f"profile={profile_id} skipped: active sora job"
+                            first_error = (
+                                first_error or f"profile={profile_id} skipped: active sora job"
+                            )
                             self._db.update_sora_nurture_batch(
                                 batch_id,
                                 {
@@ -440,10 +464,14 @@ class SoraNurtureService:
                                 canceled_count += 1
                             else:
                                 failed_count += 1
-                                first_error = first_error or str(job_result.get("error") or "unknown error")
+                                first_error = first_error or str(
+                                    job_result.get("error") or "unknown error"
+                                )
                         except asyncio.TimeoutError:
                             failed_count += 1
-                            timeout_error = f"执行超时：超过 {max(1, int(self._job_timeout_seconds))} 秒"
+                            timeout_error = (
+                                f"执行超时：超过 {max(1, int(self._job_timeout_seconds))} 秒"
+                            )
                             first_error = first_error or timeout_error
                             self._db.update_sora_nurture_job(
                                 int(job_id),
@@ -514,12 +542,16 @@ class SoraNurtureService:
             status = str(job.get("status") or "").strip().lower()
             if status in {"completed", "failed", "canceled", "skipped"}:
                 continue
-            self._db.update_sora_nurture_job(int(job["id"]), {"status": "canceled", "phase": "done", "finished_at": now})
+            self._db.update_sora_nurture_job(
+                int(job["id"]), {"status": "canceled", "phase": "done", "finished_at": now}
+            )
             canceled += 1
         if canceled > 0:
             batch = self._db.get_sora_nurture_batch(int(batch_id)) or {}
             existing = int(batch.get("canceled_count") or 0)
-            self._db.update_sora_nurture_batch(int(batch_id), {"canceled_count": existing + canceled})
+            self._db.update_sora_nurture_batch(
+                int(batch_id), {"canceled_count": existing + canceled}
+            )
 
     def _find_job_row_by_profile(self, batch_id: int, profile_id: int) -> Optional[dict]:
         rows = self._db.list_sora_nurture_jobs(batch_id=int(batch_id), limit=5000)
@@ -570,12 +602,16 @@ class SoraNurtureService:
 
         browser = None
         try:
-            open_resp = await self._ix.open_profile_window(profile_id=runtime_profile_id, group_title=runtime_group_title)
+            open_resp = await self._ix.open_profile_window(
+                profile_id=runtime_profile_id, group_title=runtime_group_title
+            )
             ws_endpoint = open_resp.ws
             if not ws_endpoint and open_resp.debugging_address:
                 ws_endpoint = f"http://{open_resp.debugging_address}"
             if not ws_endpoint:
-                raise IXBrowserConnectionError("打开窗口成功，但未返回调试地址（ws/debugging_address）")
+                raise IXBrowserConnectionError(
+                    "打开窗口成功，但未返回调试地址（ws/debugging_address）"
+                )
 
             browser = await playwright.chromium.connect_over_cdp(ws_endpoint, timeout=20_000)
             context = browser.contexts[0] if browser.contexts else await browser.new_context()
@@ -757,7 +793,9 @@ class SoraNurtureService:
                 break
 
             need_like = (like_count < max_likes) and (random.random() < float(like_probability))
-            need_follow = (follow_count < max_follows) and (random.random() < float(follow_probability))
+            need_follow = (follow_count < max_follows) and (
+                random.random() < float(follow_probability)
+            )
 
             # 执行动作：顺序随机化（尽量自然）
             actions = []
@@ -850,7 +888,9 @@ class SoraNurtureService:
         await page.locator(POST_DIALOG_SELECTOR).first.wait_for(timeout=25_000)
 
     async def _wait_for_post_links(self, page, timeout_ms: int = 70_000) -> None:
-        locator = page.locator('a[href^="/p/"], a[href^="https://sora.chatgpt.com/p/"], a[href^="http://sora.chatgpt.com/p/"]')
+        locator = page.locator(
+            'a[href^="/p/"], a[href^="https://sora.chatgpt.com/p/"], a[href^="http://sora.chatgpt.com/p/"]'
+        )
         deadline = time.monotonic() + max(1, int(timeout_ms)) / 1000.0
         last_count = 0
         while time.monotonic() < deadline:
@@ -861,10 +901,14 @@ class SoraNurtureService:
             if last_count > 0:
                 return
             await page.wait_for_timeout(900)
-        raise IXBrowserConnectionError(f"Explore 页面未加载出作品入口（/p 链接），count={last_count}")
+        raise IXBrowserConnectionError(
+            f"Explore 页面未加载出作品入口（/p 链接），count={last_count}"
+        )
 
     async def _open_random_post_from_explore(self, page) -> None:
-        links = page.locator('a[href^="/p/"], a[href^="https://sora.chatgpt.com/p/"], a[href^="http://sora.chatgpt.com/p/"]')
+        links = page.locator(
+            'a[href^="/p/"], a[href^="https://sora.chatgpt.com/p/"], a[href^="http://sora.chatgpt.com/p/"]'
+        )
         count = await links.count()
         if count <= 0:
             raise IXBrowserConnectionError("Explore 页面未找到 /p/ 链接")
@@ -893,7 +937,9 @@ class SoraNurtureService:
         if isinstance(last_href, str):
             href = last_href.strip()
             if href.startswith("/p/"):
-                await page.goto(f"https://sora.chatgpt.com{href}", wait_until="domcontentloaded", timeout=40_000)
+                await page.goto(
+                    f"https://sora.chatgpt.com{href}", wait_until="domcontentloaded", timeout=40_000
+                )
                 return
             if href.startswith("http://") or href.startswith("https://"):
                 await page.goto(href, wait_until="domcontentloaded", timeout=40_000)
@@ -913,7 +959,9 @@ class SoraNurtureService:
         """
         关注：只点弹窗里唯一 aria-label=Follow 的按钮；不存在则跳过。
         """
-        btn = page.locator(f'{POST_DIALOG_SELECTOR} button[aria-label="Follow"], {POST_DIALOG_SELECTOR} button[aria-label="Following"]')
+        btn = page.locator(
+            f'{POST_DIALOG_SELECTOR} button[aria-label="Follow"], {POST_DIALOG_SELECTOR} button[aria-label="Following"]'
+        )
         if await btn.count() == 0:
             return False
 
@@ -1122,7 +1170,11 @@ class SoraNurtureService:
         for _ in range(10):
             await page.wait_for_timeout(300)
             after = await self._get_post_like_state(page)
-            if after and str(after.get("fill") or "").strip() and not str(after.get("stroke") or "").strip():
+            if (
+                after
+                and str(after.get("fill") or "").strip()
+                and not str(after.get("stroke") or "").strip()
+            ):
                 return True
 
         return False

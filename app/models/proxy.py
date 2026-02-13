@@ -154,7 +154,9 @@ class ProxyBatchCheckRequest(BaseModel):
     proxy_ids: List[int] = Field(default_factory=list)
     concurrency: int = Field(20, ge=1, le=100)
     timeout_sec: float = Field(8.0, ge=1.0, le=60.0)
-    force_refresh: bool = Field(True, description="是否强制实时检测（关闭后 30 天内复用历史成功结果）")
+    force_refresh: bool = Field(
+        True, description="是否强制实时检测（关闭后 30 天内复用历史成功结果）"
+    )
 
     @field_validator("proxy_ids")
     @classmethod

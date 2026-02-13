@@ -170,7 +170,9 @@ async def test_random_switch_avoids_same_proxy_and_prefers_unique(monkeypatch):
             return {"error": {"code": 0}, "data": 1}
         raise AssertionError(f"unexpected path: {path}")
 
-    monkeypatch.setattr("app.services.ixbrowser.proxies.random.choice", lambda seq: seq[0], raising=True)
+    monkeypatch.setattr(
+        "app.services.ixbrowser.proxies.random.choice", lambda seq: seq[0], raising=True
+    )
     service.list_group_windows = _fake_list_group_windows
     service._ensure_profile_closed = _fake_ensure_profile_closed
     service._post = _fake_post
@@ -276,7 +278,9 @@ async def test_random_switch_single_failure_does_not_abort_batch(monkeypatch):
             raise RuntimeError("switch failed")
         return {"error": {"code": 0}, "data": 1}
 
-    monkeypatch.setattr("app.services.ixbrowser.proxies.random.choice", lambda seq: seq[0], raising=True)
+    monkeypatch.setattr(
+        "app.services.ixbrowser.proxies.random.choice", lambda seq: seq[0], raising=True
+    )
     service.list_group_windows = _fake_list_group_windows
     service._ensure_profile_closed = _fake_ensure_profile_closed
     service._post = _fake_post

@@ -32,8 +32,12 @@ async def test_worker_start_stop_is_idempotent(monkeypatch, temp_db):
     runner = WorkerRunner()
 
     logs = []
-    monkeypatch.setattr("app.services.worker_runner.sqlite_db.fail_stale_running_sora_jobs", lambda: 0)
-    monkeypatch.setattr("app.services.worker_runner.sqlite_db.requeue_stale_sora_nurture_batches", lambda: 0)
+    monkeypatch.setattr(
+        "app.services.worker_runner.sqlite_db.fail_stale_running_sora_jobs", lambda: 0
+    )
+    monkeypatch.setattr(
+        "app.services.worker_runner.sqlite_db.requeue_stale_sora_nurture_batches", lambda: 0
+    )
     monkeypatch.setattr(
         "app.services.worker_runner.sqlite_db.create_event_log",
         lambda **kwargs: logs.append(kwargs) or 1,
@@ -104,7 +108,10 @@ async def test_worker_run_one_sora_job_clears_lease_after_exception(monkeypatch,
         await asyncio.sleep(3600)
 
     monkeypatch.setattr(runner, "_heartbeat_sora_job", lambda job_id: _fake_heartbeat(job_id))
-    monkeypatch.setattr("app.services.worker_runner.spawn", lambda coro, *, task_name, metadata=None: asyncio.create_task(coro))
+    monkeypatch.setattr(
+        "app.services.worker_runner.spawn",
+        lambda coro, *, task_name, metadata=None: asyncio.create_task(coro),
+    )
 
     async def _raise_run(_job_id):
         raise RuntimeError("run failed")
@@ -141,7 +148,10 @@ async def test_worker_run_one_sora_job_marks_failed_on_cancel(monkeypatch, temp_
         await asyncio.sleep(3600)
 
     monkeypatch.setattr(runner, "_heartbeat_sora_job", lambda job_id: _fake_heartbeat(job_id))
-    monkeypatch.setattr("app.services.worker_runner.spawn", lambda coro, *, task_name, metadata=None: asyncio.create_task(coro))
+    monkeypatch.setattr(
+        "app.services.worker_runner.spawn",
+        lambda coro, *, task_name, metadata=None: asyncio.create_task(coro),
+    )
 
     async def _slow_run(_job_id):
         await asyncio.sleep(3600)
@@ -165,8 +175,12 @@ async def test_worker_run_one_sora_job_marks_failed_on_cancel(monkeypatch, temp_
         return True
 
     monkeypatch.setattr("app.services.worker_runner.sqlite_db.update_sora_job", _fake_update)
-    monkeypatch.setattr("app.services.worker_runner.sqlite_db.create_sora_job_event", lambda *_args, **_kwargs: 1)
-    monkeypatch.setattr("app.services.worker_runner.sqlite_db.clear_sora_job_lease", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(
+        "app.services.worker_runner.sqlite_db.create_sora_job_event", lambda *_args, **_kwargs: 1
+    )
+    monkeypatch.setattr(
+        "app.services.worker_runner.sqlite_db.clear_sora_job_lease", lambda *_args, **_kwargs: True
+    )
 
     task = asyncio.create_task(runner._run_one_sora_job(99))  # noqa: SLF001
     await asyncio.sleep(0.05)

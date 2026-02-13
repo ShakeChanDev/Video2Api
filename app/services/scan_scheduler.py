@@ -1,4 +1,5 @@
 """按时段触发账号扫描的调度器。"""
+
 from __future__ import annotations
 
 import asyncio
@@ -82,7 +83,9 @@ class ScanScheduler:
             return
 
         lock_key = f"scheduler.scan.{slot_key}"
-        if not sqlite_db.try_acquire_scheduler_lock(lock_key=lock_key, owner=self._owner, ttl_seconds=120):
+        if not sqlite_db.try_acquire_scheduler_lock(
+            lock_key=lock_key, owner=self._owner, ttl_seconds=120
+        ):
             sqlite_db.create_event_log(
                 source="system",
                 action="scheduler.scan.lock_conflict",
@@ -100,7 +103,9 @@ class ScanScheduler:
 
         group_title = "Sora"
         try:
-            group_title = str(load_system_settings(mask_sensitive=False).scan.default_group_title or "Sora")
+            group_title = str(
+                load_system_settings(mask_sensitive=False).scan.default_group_title or "Sora"
+            )
         except Exception:  # noqa: BLE001
             group_title = "Sora"
 

@@ -7,8 +7,12 @@ import logging
 import time
 from typing import Any, List, Optional, Tuple
 
-from app.services.ixbrowser.errors import IXBrowserAPIError, IXBrowserConnectionError, IXBrowserServiceError
 from app.services.ixbrowser.error_patterns import is_sora_overload_error
+from app.services.ixbrowser.errors import (
+    IXBrowserAPIError,
+    IXBrowserConnectionError,
+    IXBrowserServiceError,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -27,7 +31,9 @@ class ProfilesMixin:
 
         ws_endpoint = open_data.get("ws") if isinstance(open_data, dict) else None
         if not ws_endpoint:
-            debugging_address = open_data.get("debugging_address") if isinstance(open_data, dict) else None
+            debugging_address = (
+                open_data.get("debugging_address") if isinstance(open_data, dict) else None
+            )
             if debugging_address:
                 ws_endpoint = f"http://{debugging_address}"
 
@@ -63,7 +69,11 @@ class ProfilesMixin:
             "窗口被标记为已打开",
             "already open",
         )
-        return bool(code_int == 111003 or any(marker in raw for marker in markers) or "already open" in lowered)
+        return bool(
+            code_int == 111003
+            or any(marker in raw for marker in markers)
+            or "already open" in lowered
+        )
 
     async def _wait_for_opened_profile(
         self,
@@ -108,12 +118,17 @@ class ProfilesMixin:
             except IXBrowserAPIError as exc:
                 last_error = exc
                 if self._is_profile_already_open_error(exc.code, exc.message):
-                    logger.warning("打开窗口命中 111003，尝试附着已开窗口 | profile_id=%s", int(profile_id))
+                    logger.warning(
+                        "打开窗口命中 111003，尝试附着已开窗口 | profile_id=%s", int(profile_id)
+                    )
                     opened = await self._wait_for_opened_profile(profile_id)
                     if opened:
                         logger.info("命中 111003 后附着成功 | profile_id=%s", int(profile_id))
                         return opened
-                    logger.warning("命中 111003 但未拿到调试地址，执行关闭后重开 | profile_id=%s", int(profile_id))
+                    logger.warning(
+                        "命中 111003 但未拿到调试地址，执行关闭后重开 | profile_id=%s",
+                        int(profile_id),
+                    )
                     await self._ensure_profile_closed(profile_id)
                     try:
                         reopened = await self._open_profile(profile_id, restart_if_opened=False)
@@ -121,12 +136,16 @@ class ProfilesMixin:
                         if reopened_data.get("ws") or reopened_data.get("debugging_address"):
                             logger.info("关闭后重开成功 | profile_id=%s", int(profile_id))
                             return reopened_data
-                        last_error = IXBrowserConnectionError("关闭后重开成功，但未返回调试地址（ws/debugging_address）")
+                        last_error = IXBrowserConnectionError(
+                            "关闭后重开成功，但未返回调试地址（ws/debugging_address）"
+                        )
                     except (IXBrowserAPIError, IXBrowserConnectionError) as reopen_exc:
                         last_error = reopen_exc
                         should_try_open_state_reset = (
                             isinstance(reopen_exc, IXBrowserAPIError)
-                            and self._is_profile_already_open_error(reopen_exc.code, reopen_exc.message)
+                            and self._is_profile_already_open_error(
+                                reopen_exc.code, reopen_exc.message
+                            )
                             and not open_state_reset_attempted
                         )
                         logger.warning(
@@ -136,29 +155,52 @@ class ProfilesMixin:
                         )
                         if should_try_open_state_reset:
                             open_state_reset_attempted = True
-                            logger.warning("关闭后重开仍 111003，尝试重置打开状态 | profile_id=%s", int(profile_id))
+                            logger.warning(
+                                "关闭后重开仍 111003，尝试重置打开状态 | profile_id=%s",
+                                int(profile_id),
+                            )
                             reset_ok = await self._reset_profile_open_state(profile_id)
                             if reset_ok:
-                                logger.warning("重置打开状态成功，重试打开 | profile_id=%s", int(profile_id))
+                                logger.warning(
+                                    "重置打开状态成功，重试打开 | profile_id=%s", int(profile_id)
+                                )
                                 try:
-                                    reopened_after_reset = await self._open_profile(profile_id, restart_if_opened=False)
-                                    reopened_after_reset_data = self._normalize_opened_profile_data(reopened_after_reset)
-                                    if reopened_after_reset_data.get("ws") or reopened_after_reset_data.get("debugging_address"):
-                                        logger.info("重置后重开成功 | profile_id=%s", int(profile_id))
+                                    reopened_after_reset = await self._open_profile(
+                                        profile_id, restart_if_opened=False
+                                    )
+                                    reopened_after_reset_data = self._normalize_opened_profile_data(
+                                        reopened_after_reset
+                                    )
+                                    if reopened_after_reset_data.get(
+                                        "ws"
+                                    ) or reopened_after_reset_data.get("debugging_address"):
+                                        logger.info(
+                                            "重置后重开成功 | profile_id=%s", int(profile_id)
+                                        )
                                         return reopened_after_reset_data
-                                    last_error = IXBrowserConnectionError("重置后重开成功，但未返回调试地址（ws/debugging_address）")
-                                except (IXBrowserAPIError, IXBrowserConnectionError) as reopen_after_reset_exc:
+                                    last_error = IXBrowserConnectionError(
+                                        "重置后重开成功，但未返回调试地址（ws/debugging_address）"
+                                    )
+                                except (
+                                    IXBrowserAPIError,
+                                    IXBrowserConnectionError,
+                                ) as reopen_after_reset_exc:
                                     last_error = reopen_after_reset_exc
                                     logger.warning(
                                         "重置后重开失败 | profile_id=%s | error=%s",
                                         int(profile_id),
                                         str(reopen_after_reset_exc),
                                     )
-                                    if isinstance(reopen_after_reset_exc, IXBrowserAPIError) and self._is_profile_already_open_error(
+                                    if isinstance(
+                                        reopen_after_reset_exc, IXBrowserAPIError
+                                    ) and self._is_profile_already_open_error(
                                         reopen_after_reset_exc.code,
                                         reopen_after_reset_exc.message,
                                     ):
-                                        logger.warning("重置后仍命中 111003，快速失败 | profile_id=%s", int(profile_id))
+                                        logger.warning(
+                                            "重置后仍命中 111003，快速失败 | profile_id=%s",
+                                            int(profile_id),
+                                        )
                                         raise reopen_after_reset_exc
             except IXBrowserConnectionError as exc:
                 last_error = exc
@@ -167,7 +209,9 @@ class ProfilesMixin:
                 await asyncio.sleep(1.2)
 
         if last_error:
-            logger.warning("打开窗口最终失败 | profile_id=%s | error=%s", int(profile_id), str(last_error))
+            logger.warning(
+                "打开窗口最终失败 | profile_id=%s | error=%s", int(profile_id), str(last_error)
+            )
             raise last_error
         raise IXBrowserConnectionError("打开窗口失败")
 
@@ -185,7 +229,9 @@ class ProfilesMixin:
         context = browser.contexts[0] if browser.contexts else await browser.new_context()
         page = context.pages[0] if context.pages else await context.new_page()
         await self._prepare_sora_page(page, profile_id)
-        await page.goto("https://sora.chatgpt.com/drafts", wait_until="domcontentloaded", timeout=40_000)
+        await page.goto(
+            "https://sora.chatgpt.com/drafts", wait_until="domcontentloaded", timeout=40_000
+        )
         await page.wait_for_timeout(1000)
         # 复用 publish workflow 的 token 抓取逻辑（避免在 service 里重复维护 JS）。
         access_token = await self._sora_publish_workflow._get_access_token_from_page(page)  # noqa: SLF001
@@ -212,15 +258,16 @@ class ProfilesMixin:
     def _is_sora_overload_error(self, text: str) -> bool:
         return is_sora_overload_error(text)
 
-
-    async def _open_profile(self, profile_id: int, restart_if_opened: bool = False, headless: bool = False) -> dict:
+    async def _open_profile(
+        self, profile_id: int, restart_if_opened: bool = False, headless: bool = False
+    ) -> dict:
         payload = {
             "profile_id": profile_id,
             "args": ["--disable-extension-welcome-page"],
             "load_extensions": True,
             "load_profile_info_page": False,
             "cookies_backup": True,
-            "cookie": ""
+            "cookie": "",
         }
         if headless:
             payload["headless"] = True
@@ -294,7 +341,9 @@ class ProfilesMixin:
             if not self._should_degrade_silent_open(exc):
                 raise
             # 降级为普通打开（可能会弹窗），并由上层在进度信息中提示。
-            return await self._open_profile(profile_id, restart_if_opened=True, headless=False), False
+            return await self._open_profile(
+                profile_id, restart_if_opened=True, headless=False
+            ), False
 
     async def _list_opened_profile_ids(self) -> List[int]:
         items = await self._list_opened_profiles()
@@ -427,10 +476,19 @@ class ProfilesMixin:
         if not isinstance(item, dict):
             return {}
         data = dict(item)
-        ws = data.get("ws") or data.get("wsEndpoint") or data.get("browserWSEndpoint") or data.get("webSocketDebuggerUrl")
+        ws = (
+            data.get("ws")
+            or data.get("wsEndpoint")
+            or data.get("browserWSEndpoint")
+            or data.get("webSocketDebuggerUrl")
+        )
         if ws:
             data["ws"] = ws
-        debugging_address = data.get("debugging_address") or data.get("debuggingAddress") or data.get("debug_address")
+        debugging_address = (
+            data.get("debugging_address")
+            or data.get("debuggingAddress")
+            or data.get("debug_address")
+        )
         if not debugging_address:
             port = data.get("debug_port") or data.get("debugPort") or data.get("port")
             if port:
@@ -446,7 +504,9 @@ class ProfilesMixin:
             # 1009: Process not found，说明进程已不存在，按“已关闭”处理即可。
             if exc.code == 1009 or "process not found" in exc.message.lower():
                 try:
-                    await self._post("/api/v2/profile-close-in-batches", {"profile_id": [profile_id]})
+                    await self._post(
+                        "/api/v2/profile-close-in-batches", {"profile_id": [profile_id]}
+                    )
                 except Exception:  # noqa: BLE001
                     pass
                 return True

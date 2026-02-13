@@ -34,7 +34,9 @@ async def create_sora_job(
     current_user: dict = Depends(get_current_active_user),
 ):
     try:
-        result = await ixbrowser_service.create_sora_job(request=request, operator_user=current_user)
+        result = await ixbrowser_service.create_sora_job(
+            request=request, operator_user=current_user
+        )
         log_audit(
             request=http_request,
             current_user=current_user,
@@ -182,7 +184,9 @@ async def stream_sora_jobs(
             snapshot_jobs = sora_job_stream_service.list_jobs(stream_filter)
             fingerprints = sora_job_stream_service.build_fingerprint_map(snapshot_jobs)
             visible_ids = set(fingerprints.keys())
-            last_phase_event_id = sora_job_stream_service.get_latest_phase_event_id() if with_events else 0
+            last_phase_event_id = (
+                sora_job_stream_service.get_latest_phase_event_id() if with_events else 0
+            )
             last_emit_at = time.monotonic()
             snapshot_payload = sora_job_stream_service.build_snapshot_payload(snapshot_jobs)
             yield format_sse_event("snapshot", snapshot_payload)
@@ -192,9 +196,11 @@ async def stream_sora_jobs(
                 has_output = False
 
                 latest_jobs = sora_job_stream_service.list_jobs(stream_filter)
-                changed_jobs, removed_job_ids, fingerprints, visible_ids = sora_job_stream_service.diff_jobs(
-                    fingerprints,
-                    latest_jobs,
+                changed_jobs, removed_job_ids, fingerprints, visible_ids = (
+                    sora_job_stream_service.diff_jobs(
+                        fingerprints,
+                        latest_jobs,
+                    )
                 )
                 for item in changed_jobs:
                     yield format_sse_event("job", item)
@@ -204,10 +210,12 @@ async def stream_sora_jobs(
                     has_output = True
 
                 if with_events:
-                    phase_events, last_phase_event_id = sora_job_stream_service.list_phase_events_since(
-                        after_id=last_phase_event_id,
-                        visible_job_ids=visible_ids,
-                        limit=int(sora_job_stream_service.phase_poll_limit),
+                    phase_events, last_phase_event_id = (
+                        sora_job_stream_service.list_phase_events_since(
+                            after_id=last_phase_event_id,
+                            visible_job_ids=visible_ids,
+                            limit=int(sora_job_stream_service.phase_poll_limit),
+                        )
                     )
                     for event in phase_events:
                         yield format_sse_event("phase", event)

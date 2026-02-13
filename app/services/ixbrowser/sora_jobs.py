@@ -18,7 +18,10 @@ from app.models.ixbrowser import (
     SoraJobEvent,
     SoraJobRequest,
 )
-from app.services.account_dispatch_service import AccountDispatchNoAvailableError, account_dispatch_service
+from app.services.account_dispatch_service import (
+    AccountDispatchNoAvailableError,
+    account_dispatch_service,
+)
 from app.services.ixbrowser.errors import IXBrowserNotFoundError, IXBrowserServiceError
 from app.services.task_runtime import spawn
 
@@ -66,8 +69,12 @@ class SoraJobsMixin:
                 "progress": 0,
                 "publish_status": "queued",
                 "publish_attempts": 0,
-                "operator_user_id": operator_user.get("id") if isinstance(operator_user, dict) else None,
-                "operator_username": operator_user.get("username") if isinstance(operator_user, dict) else None,
+                "operator_user_id": operator_user.get("id")
+                if isinstance(operator_user, dict)
+                else None,
+                "operator_username": operator_user.get("username")
+                if isinstance(operator_user, dict)
+                else None,
             }
         )
 
@@ -93,7 +100,11 @@ class SoraJobsMixin:
             raise IXBrowserServiceError("仅已完成的任务允许发布")
         if row.get("publish_status") == "running":
             raise IXBrowserServiceError("发布中，请稍后再试")
-        if row.get("publish_status") == "completed" and self._sora_publish_workflow.is_valid_publish_url(row.get("publish_url")):
+        if row.get(
+            "publish_status"
+        ) == "completed" and self._sora_publish_workflow.is_valid_publish_url(
+            row.get("publish_url")
+        ):
             return self._build_generate_job(row)
 
         sqlite_db.update_ixbrowser_generate_job(
@@ -101,10 +112,12 @@ class SoraJobsMixin:
             {
                 "publish_status": "queued",
                 "publish_error": None,
-                "publish_url": None if not self._sora_publish_workflow.is_valid_publish_url(row.get("publish_url")) else row.get("publish_url"),
+                "publish_url": None
+                if not self._sora_publish_workflow.is_valid_publish_url(row.get("publish_url"))
+                else row.get("publish_url"),
                 "publish_post_id": None,
                 "publish_permalink": None,
-            }
+            },
         )
 
         spawn(
@@ -204,8 +217,12 @@ class SoraJobsMixin:
             target_window = await self._get_window_from_group(selected_profile_id, group_title)
             window_lookup_ms = (time.perf_counter() - lookup_started) * 1000.0
             if not target_window:
-                raise IXBrowserNotFoundError(f"窗口 {selected_profile_id} 不在 {group_title} 分组中")
-            selected_window_name = str(target_window.name or "").strip() or f"窗口-{selected_profile_id}"
+                raise IXBrowserNotFoundError(
+                    f"窗口 {selected_profile_id} 不在 {group_title} 分组中"
+                )
+            selected_window_name = (
+                str(target_window.name or "").strip() or f"窗口-{selected_profile_id}"
+            )
             dispatch_reason = f"手动指定 profile={selected_profile_id}"
         else:
             try:
@@ -221,8 +238,12 @@ class SoraJobsMixin:
                 target_window = await self._get_window_from_group(selected_profile_id, group_title)
                 window_lookup_ms = (time.perf_counter() - lookup_started) * 1000.0
                 if not target_window:
-                    raise IXBrowserNotFoundError(f"自动分配失败，窗口 {selected_profile_id} 不在 {group_title} 分组中")
-                selected_window_name = str(target_window.name or "").strip() or f"窗口-{selected_profile_id}"
+                    raise IXBrowserNotFoundError(
+                        f"自动分配失败，窗口 {selected_profile_id} 不在 {group_title} 分组中"
+                    )
+                selected_window_name = (
+                    str(target_window.name or "").strip() or f"窗口-{selected_profile_id}"
+                )
             dispatch_score = float(weight.score_total)
             dispatch_quantity_score = float(weight.score_quantity)
             dispatch_quality_score = float(weight.score_quality)
@@ -245,8 +266,12 @@ class SoraJobsMixin:
                 "dispatch_quantity_score": dispatch_quantity_score,
                 "dispatch_quality_score": dispatch_quality_score,
                 "dispatch_reason": dispatch_reason,
-                "operator_user_id": operator_user.get("id") if isinstance(operator_user, dict) else None,
-                "operator_username": operator_user.get("username") if isinstance(operator_user, dict) else None,
+                "operator_user_id": operator_user.get("id")
+                if isinstance(operator_user, dict)
+                else None,
+                "operator_username": operator_user.get("username")
+                if isinstance(operator_user, dict)
+                else None,
             }
         )
         sqlite_db.create_sora_job_event(job_id, "dispatch", "select", dispatch_reason)
@@ -391,14 +416,16 @@ class SoraJobsMixin:
             target_window = await self._get_window_from_group(selected_profile_id, group_title)
             window_lookup_ms = (time.perf_counter() - lookup_started) * 1000.0
             if not target_window:
-                raise IXBrowserNotFoundError(f"自动分配失败，窗口 {selected_profile_id} 不在 {group_title} 分组中")
-            selected_window_name = str(target_window.name or "").strip() or f"窗口-{selected_profile_id}"
+                raise IXBrowserNotFoundError(
+                    f"自动分配失败，窗口 {selected_profile_id} 不在 {group_title} 分组中"
+                )
+            selected_window_name = (
+                str(target_window.name or "").strip() or f"窗口-{selected_profile_id}"
+            )
 
         dispatch_reason_base = " | ".join(weight.reasons or []) or "自动分配"
         trigger_text = "自动" if str(trigger or "").strip().lower() == "auto" else "手动"
-        dispatch_reason = (
-            f"{dispatch_reason_base} | heavy load {trigger_text}换号重试（from job #{job_id} profile={old_profile_id}）"
-        )
+        dispatch_reason = f"{dispatch_reason_base} | heavy load {trigger_text}换号重试（from job #{job_id} profile={old_profile_id}）"
 
         new_job_id = sqlite_db.create_sora_job(
             {
@@ -528,7 +555,9 @@ class SoraJobsMixin:
 
         canonical_share_url = f"https://sora.chatgpt.com/p/{share_id}"
         standard_pattern = rf"^https://sora\.chatgpt\.com/p/{re.escape(share_id)}$"
-        normalized_share_url = share_url_text if re.match(standard_pattern, share_url_text) else canonical_share_url
+        normalized_share_url = (
+            share_url_text if re.match(standard_pattern, share_url_text) else canonical_share_url
+        )
 
         config = sqlite_db.get_watermark_free_config() or {}
         parse_method = str(config.get("parse_method") or "custom").strip().lower()
@@ -585,7 +614,9 @@ class SoraJobsMixin:
                 "finished_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             },
         )
-        sqlite_db.create_sora_job_event(job_id, str(row.get("phase") or "queue"), "cancel", "任务已取消")
+        sqlite_db.create_sora_job_event(
+            job_id, str(row.get("phase") or "queue"), "cancel", "任务已取消"
+        )
         return self.get_sora_job(job_id)
 
     def list_sora_job_events(self, job_id: int) -> List[SoraJobEvent]:
@@ -616,19 +647,19 @@ class SoraJobsMixin:
 
     @staticmethod
     def _normalize_custom_parse_path(path: str) -> str:
-        from app.services.ixbrowser.sora_job_runner import SoraJobRunner  # noqa: WPS433
+        from app.services.ixbrowser.sora_job_runner import SoraJobRunner
 
         return SoraJobRunner.normalize_custom_parse_path(path)
 
     @staticmethod
     def _extract_share_id_from_url(url: str) -> Optional[str]:
-        from app.services.ixbrowser.sora_job_runner import SoraJobRunner  # noqa: WPS433
+        from app.services.ixbrowser.sora_job_runner import SoraJobRunner
 
         return SoraJobRunner.extract_share_id_from_url(url)
 
     @staticmethod
     def _is_sora_share_like_url(url: str) -> bool:
-        from app.services.ixbrowser.sora_job_runner import SoraJobRunner  # noqa: WPS433
+        from app.services.ixbrowser.sora_job_runner import SoraJobRunner
 
         return SoraJobRunner.is_sora_share_like_url(url)
 
@@ -648,7 +679,6 @@ class SoraJobsMixin:
             parse_path=parse_path,
             parse_token=parse_token,
         )
-
 
     def _build_sora_job(self, row: dict) -> SoraJob:
         status = str(row.get("status") or "queued")

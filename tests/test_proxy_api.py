@@ -30,7 +30,11 @@ def temp_db(tmp_path):
 @pytest.fixture()
 def client(temp_db):
     del temp_db
-    app.dependency_overrides[get_current_active_user] = lambda: {"id": 1, "username": "Admin", "role": "admin"}
+    app.dependency_overrides[get_current_active_user] = lambda: {
+        "id": 1,
+        "username": "Admin",
+        "role": "admin",
+    }
     try:
         yield TestClient(app, raise_server_exceptions=False)
     finally:
@@ -271,7 +275,9 @@ def test_proxy_batch_check_returns_extended_fields(client, monkeypatch):
         }
 
     monkeypatch.setattr(proxy_service_module, "_fetch_ipapi", fake_fetch_ipapi, raising=True)
-    monkeypatch.setattr(proxy_service_module, "_fetch_proxycheck", fake_fetch_proxycheck, raising=True)
+    monkeypatch.setattr(
+        proxy_service_module, "_fetch_proxycheck", fake_fetch_proxycheck, raising=True
+    )
 
     checked = client.post(
         "/api/v1/proxies/batch-check",
@@ -298,7 +304,12 @@ def test_proxy_batch_check_returns_extended_fields(client, monkeypatch):
 def test_proxy_batch_check_rejects_removed_check_url(client):
     resp = client.post(
         "/api/v1/proxies/batch-check",
-        json={"proxy_ids": [1], "concurrency": 5, "timeout_sec": 8, "check_url": "https://ipinfo.io/json"},
+        json={
+            "proxy_ids": [1],
+            "concurrency": 5,
+            "timeout_sec": 8,
+            "check_url": "https://ipinfo.io/json",
+        },
     )
     assert resp.status_code == 422
 

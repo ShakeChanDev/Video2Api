@@ -31,7 +31,9 @@ class SQLiteConnectionMixin:
         return conn
 
     @contextmanager
-    def transaction(self, conn: sqlite3.Connection, *, immediate: bool = True) -> Iterator[sqlite3.Cursor]:
+    def transaction(
+        self, conn: sqlite3.Connection, *, immediate: bool = True
+    ) -> Iterator[sqlite3.Cursor]:
         """统一事务包装。
 
         注意：
@@ -46,4 +48,3 @@ class SQLiteConnectionMixin:
         except Exception:
             conn.rollback()
             raise
-

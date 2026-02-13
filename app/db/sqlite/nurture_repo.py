@@ -13,7 +13,7 @@ class SQLiteNurtureRepo:
         cursor = conn.cursor()
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         cursor.execute(
-            '''
+            """
             INSERT INTO sora_nurture_batches (
                 name, group_title, profile_ids_json, total_jobs,
                 scroll_count, like_probability, follow_probability,
@@ -24,7 +24,7 @@ class SQLiteNurtureRepo:
                 started_at, finished_at,
                 created_at, updated_at
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ''',
+            """,
             (
                 data.get("name"),
                 str(data.get("group_title") or "Sora"),
@@ -113,7 +113,7 @@ class SQLiteNurtureRepo:
     def get_sora_nurture_batch(self, batch_id: int) -> Optional[Dict[str, Any]]:
         conn = self._get_conn()
         cursor = conn.cursor()
-        cursor.execute('SELECT * FROM sora_nurture_batches WHERE id = ?', (int(batch_id),))
+        cursor.execute("SELECT * FROM sora_nurture_batches WHERE id = ?", (int(batch_id),))
         row = cursor.fetchone()
         conn.close()
         if not row:
@@ -173,7 +173,7 @@ class SQLiteNurtureRepo:
         cursor = conn.cursor()
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         cursor.execute(
-            '''
+            """
             INSERT INTO sora_nurture_jobs (
                 batch_id, profile_id, window_name, group_title,
                 status, phase,
@@ -181,7 +181,7 @@ class SQLiteNurtureRepo:
                 error, started_at, finished_at,
                 created_at, updated_at
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ''',
+            """,
             (
                 int(data.get("batch_id") or 0),
                 int(data.get("profile_id") or 0),
@@ -251,7 +251,7 @@ class SQLiteNurtureRepo:
     def get_sora_nurture_job(self, job_id: int) -> Optional[Dict[str, Any]]:
         conn = self._get_conn()
         cursor = conn.cursor()
-        cursor.execute('SELECT * FROM sora_nurture_jobs WHERE id = ?', (int(job_id),))
+        cursor.execute("SELECT * FROM sora_nurture_jobs WHERE id = ?", (int(job_id),))
         row = cursor.fetchone()
         conn.close()
         return dict(row) if row else None

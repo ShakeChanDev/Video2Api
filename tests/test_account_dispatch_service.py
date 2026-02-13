@@ -2,11 +2,9 @@ from datetime import datetime, timedelta
 
 import pytest
 
-from app.models.ixbrowser import IXBrowserWindow
-from app.models.ixbrowser import SoraAccountWeight
+from app.models.ixbrowser import IXBrowserWindow, SoraAccountWeight
 from app.models.settings import AccountDispatchSettings
 from app.services.account_dispatch_service import AccountDispatchService
-
 
 pytestmark = pytest.mark.unit
 
@@ -25,7 +23,6 @@ async def test_account_weights_ignore_rules_do_not_penalize(monkeypatch):
     settings = AccountDispatchSettings()
 
     now = datetime.now()
-    since = (now - timedelta(hours=1)).strftime("%Y-%m-%d %H:%M:%S")
     fail_at = now.strftime("%Y-%m-%d %H:%M:%S")
 
     monkeypatch.setattr(service, "_load_settings", lambda: settings)
@@ -41,8 +38,18 @@ async def test_account_weights_ignore_rules_do_not_penalize(monkeypatch):
         service,
         "_load_latest_scan_map",
         lambda _group_title: {
-            1: {"quota_remaining_count": 10, "quota_total_count": 10, "account": "a@example.com", "account_plan": "plus"},
-            2: {"quota_remaining_count": 10, "quota_total_count": 10, "account": "b@example.com", "account_plan": "free"},
+            1: {
+                "quota_remaining_count": 10,
+                "quota_total_count": 10,
+                "account": "a@example.com",
+                "account_plan": "plus",
+            },
+            2: {
+                "quota_remaining_count": 10,
+                "quota_total_count": 10,
+                "account": "b@example.com",
+                "account_plan": "free",
+            },
         },
     )
     monkeypatch.setattr(
@@ -109,7 +116,9 @@ async def test_pick_best_account_excludes_profile_ids(monkeypatch):
     assert weight.profile_id == 2
 
 
-def test_load_latest_scan_map_overlays_realtime_quota_without_overwriting_account_fields(monkeypatch):
+def test_load_latest_scan_map_overlays_realtime_quota_without_overwriting_account_fields(
+    monkeypatch,
+):
     service = AccountDispatchService()
 
     monkeypatch.setattr(
@@ -187,10 +196,22 @@ async def test_account_weights_use_quota_cap_when_reset_passed(monkeypatch):
             }
         },
     )
-    monkeypatch.setattr("app.services.account_dispatch_service.sqlite_db.list_sora_jobs_since", lambda *_args, **_kwargs: [])
-    monkeypatch.setattr("app.services.account_dispatch_service.sqlite_db.list_sora_fail_events_since", lambda *_args, **_kwargs: [])
-    monkeypatch.setattr("app.services.account_dispatch_service.sqlite_db.count_sora_active_jobs_by_profile", lambda *_args, **_kwargs: {})
-    monkeypatch.setattr("app.services.account_dispatch_service.sqlite_db.count_sora_pending_submits_by_profile", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(
+        "app.services.account_dispatch_service.sqlite_db.list_sora_jobs_since",
+        lambda *_args, **_kwargs: [],
+    )
+    monkeypatch.setattr(
+        "app.services.account_dispatch_service.sqlite_db.list_sora_fail_events_since",
+        lambda *_args, **_kwargs: [],
+    )
+    monkeypatch.setattr(
+        "app.services.account_dispatch_service.sqlite_db.count_sora_active_jobs_by_profile",
+        lambda *_args, **_kwargs: {},
+    )
+    monkeypatch.setattr(
+        "app.services.account_dispatch_service.sqlite_db.count_sora_pending_submits_by_profile",
+        lambda *_args, **_kwargs: {},
+    )
 
     weights = await service.list_account_weights(group_title="Sora", limit=10)
     assert weights
@@ -219,9 +240,18 @@ async def test_account_weights_reservation_deducts_effective_remaining(monkeypat
             2: {"quota_remaining_count": 2, "quota_total_count": 30},
         },
     )
-    monkeypatch.setattr("app.services.account_dispatch_service.sqlite_db.list_sora_jobs_since", lambda *_args, **_kwargs: [])
-    monkeypatch.setattr("app.services.account_dispatch_service.sqlite_db.list_sora_fail_events_since", lambda *_args, **_kwargs: [])
-    monkeypatch.setattr("app.services.account_dispatch_service.sqlite_db.count_sora_active_jobs_by_profile", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(
+        "app.services.account_dispatch_service.sqlite_db.list_sora_jobs_since",
+        lambda *_args, **_kwargs: [],
+    )
+    monkeypatch.setattr(
+        "app.services.account_dispatch_service.sqlite_db.list_sora_fail_events_since",
+        lambda *_args, **_kwargs: [],
+    )
+    monkeypatch.setattr(
+        "app.services.account_dispatch_service.sqlite_db.count_sora_active_jobs_by_profile",
+        lambda *_args, **_kwargs: {},
+    )
     monkeypatch.setattr(
         "app.services.account_dispatch_service.sqlite_db.count_sora_pending_submits_by_profile",
         lambda *_args, **_kwargs: {1: 2, 2: 0},
@@ -263,10 +293,22 @@ async def test_account_weights_low_quota_blocked_when_reset_far(monkeypatch):
             }
         },
     )
-    monkeypatch.setattr("app.services.account_dispatch_service.sqlite_db.list_sora_jobs_since", lambda *_args, **_kwargs: [])
-    monkeypatch.setattr("app.services.account_dispatch_service.sqlite_db.list_sora_fail_events_since", lambda *_args, **_kwargs: [])
-    monkeypatch.setattr("app.services.account_dispatch_service.sqlite_db.count_sora_active_jobs_by_profile", lambda *_args, **_kwargs: {})
-    monkeypatch.setattr("app.services.account_dispatch_service.sqlite_db.count_sora_pending_submits_by_profile", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(
+        "app.services.account_dispatch_service.sqlite_db.list_sora_jobs_since",
+        lambda *_args, **_kwargs: [],
+    )
+    monkeypatch.setattr(
+        "app.services.account_dispatch_service.sqlite_db.list_sora_fail_events_since",
+        lambda *_args, **_kwargs: [],
+    )
+    monkeypatch.setattr(
+        "app.services.account_dispatch_service.sqlite_db.count_sora_active_jobs_by_profile",
+        lambda *_args, **_kwargs: {},
+    )
+    monkeypatch.setattr(
+        "app.services.account_dispatch_service.sqlite_db.count_sora_pending_submits_by_profile",
+        lambda *_args, **_kwargs: {},
+    )
 
     weights = await service.list_account_weights(group_title="Sora", limit=10)
     assert weights
@@ -288,17 +330,40 @@ async def test_account_weights_completion_recent_heat(monkeypatch):
         service,
         "_load_latest_scan_map",
         lambda _group_title: {
-            1: {"quota_remaining_count": 8, "quota_total_count": 30, "account": "a@example.com", "account_plan": "plus"},
+            1: {
+                "quota_remaining_count": 8,
+                "quota_total_count": 30,
+                "account": "a@example.com",
+                "account_plan": "plus",
+            },
         },
     )
-    monkeypatch.setattr("app.services.account_dispatch_service.sqlite_db.list_sora_jobs_since", lambda *_args, **_kwargs: [])
-    monkeypatch.setattr("app.services.account_dispatch_service.sqlite_db.list_sora_fail_events_since", lambda *_args, **_kwargs: [])
-    monkeypatch.setattr("app.services.account_dispatch_service.sqlite_db.count_sora_active_jobs_by_profile", lambda *_args, **_kwargs: {})
-    monkeypatch.setattr("app.services.account_dispatch_service.sqlite_db.count_sora_pending_submits_by_profile", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(
+        "app.services.account_dispatch_service.sqlite_db.list_sora_jobs_since",
+        lambda *_args, **_kwargs: [],
+    )
+    monkeypatch.setattr(
+        "app.services.account_dispatch_service.sqlite_db.list_sora_fail_events_since",
+        lambda *_args, **_kwargs: [],
+    )
+    monkeypatch.setattr(
+        "app.services.account_dispatch_service.sqlite_db.count_sora_active_jobs_by_profile",
+        lambda *_args, **_kwargs: {},
+    )
+    monkeypatch.setattr(
+        "app.services.account_dispatch_service.sqlite_db.count_sora_pending_submits_by_profile",
+        lambda *_args, **_kwargs: {},
+    )
     monkeypatch.setattr(
         "app.services.account_dispatch_service.sqlite_db.list_sora_jobs_recent_by_profiles",
         lambda profile_ids, window=30: [
-            {"profile_id": 1, "id": 107, "status": "failed", "phase": "submit", "error": "under heavy load"},
+            {
+                "profile_id": 1,
+                "id": 107,
+                "status": "failed",
+                "phase": "submit",
+                "error": "under heavy load",
+            },
             {"profile_id": 1, "id": 106, "status": "failed", "phase": "submit", "error": "timeout"},
             {"profile_id": 1, "id": 105, "status": "canceled", "phase": "queue", "error": ""},
             {"profile_id": 1, "id": 104, "status": "running", "phase": "progress", "error": ""},

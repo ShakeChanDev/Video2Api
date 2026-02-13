@@ -64,7 +64,9 @@ def temp_sqlite_db(tmp_path: Path, filename: str) -> Iterator[Path]:
         sqlite_db._db_path = old_db_path
 
 
-def start_uvicorn(app, port: int, host: str = "127.0.0.1") -> Tuple[uvicorn.Server, threading.Thread, str]:
+def start_uvicorn(
+    app, port: int, host: str = "127.0.0.1"
+) -> Tuple[uvicorn.Server, threading.Thread, str]:
     config = uvicorn.Config(
         app,
         host=host,
@@ -80,7 +82,9 @@ def start_uvicorn(app, port: int, host: str = "127.0.0.1") -> Tuple[uvicorn.Serv
     return server, thread, base_url
 
 
-def stop_uvicorn(server: uvicorn.Server, thread: threading.Thread, timeout_sec: float = 10.0) -> None:
+def stop_uvicorn(
+    server: uvicorn.Server, thread: threading.Thread, timeout_sec: float = 10.0
+) -> None:
     try:
         server.should_exit = True
     except Exception:
@@ -89,4 +93,3 @@ def stop_uvicorn(server: uvicorn.Server, thread: threading.Thread, timeout_sec: 
         thread.join(timeout=max(1.0, float(timeout_sec)))
     except Exception:
         pass
-

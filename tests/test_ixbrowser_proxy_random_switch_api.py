@@ -35,7 +35,11 @@ def temp_db(tmp_path):
 @pytest.fixture()
 def client(temp_db):
     del temp_db
-    app.dependency_overrides[get_current_active_user] = lambda: {"id": 1, "username": "Admin", "role": "admin"}
+    app.dependency_overrides[get_current_active_user] = lambda: {
+        "id": 1,
+        "username": "Admin",
+        "role": "admin",
+    }
     try:
         yield TestClient(app, raise_server_exceptions=False)
     finally:
@@ -51,7 +55,9 @@ def _latest_audit_by_action(action: str) -> dict:
 
 
 def test_random_switch_api_success_and_audit_log(client, monkeypatch):
-    async def _fake_random_switch_profile_proxies(*, group_title: str, profile_ids: list[int], max_concurrency: int = 3):
+    async def _fake_random_switch_profile_proxies(
+        *, group_title: str, profile_ids: list[int], max_concurrency: int = 3
+    ):
         assert group_title == "Sora"
         assert profile_ids == [11, 12]
         assert int(max_concurrency) == 3
@@ -80,7 +86,12 @@ def test_random_switch_api_success_and_audit_log(client, monkeypatch):
             ],
         )
 
-    monkeypatch.setattr(ixbrowser_service, "random_switch_profile_proxies", _fake_random_switch_profile_proxies, raising=True)
+    monkeypatch.setattr(
+        ixbrowser_service,
+        "random_switch_profile_proxies",
+        _fake_random_switch_profile_proxies,
+        raising=True,
+    )
 
     resp = client.post(
         "/api/v1/ixbrowser/profiles/proxies/random-switch",
@@ -116,7 +127,9 @@ def test_random_switch_api_rejects_empty_profile_ids(client):
 
 
 def test_random_switch_api_partial_failure_still_200(client, monkeypatch):
-    async def _fake_random_switch_profile_proxies(*, group_title: str, profile_ids: list[int], max_concurrency: int = 3):
+    async def _fake_random_switch_profile_proxies(
+        *, group_title: str, profile_ids: list[int], max_concurrency: int = 3
+    ):
         del group_title, profile_ids, max_concurrency
         return IXBrowserRandomSwitchProxyResponse(
             group_title="Sora",
@@ -143,7 +156,12 @@ def test_random_switch_api_partial_failure_still_200(client, monkeypatch):
             ],
         )
 
-    monkeypatch.setattr(ixbrowser_service, "random_switch_profile_proxies", _fake_random_switch_profile_proxies, raising=True)
+    monkeypatch.setattr(
+        ixbrowser_service,
+        "random_switch_profile_proxies",
+        _fake_random_switch_profile_proxies,
+        raising=True,
+    )
 
     resp = client.post(
         "/api/v1/ixbrowser/profiles/proxies/random-switch",
@@ -161,7 +179,12 @@ def test_random_switch_api_logs_failed_audit_when_service_error(client, monkeypa
     async def _boom_random_switch_profile_proxies(*_args, **_kwargs):
         raise IXBrowserServiceError("切换失败")
 
-    monkeypatch.setattr(ixbrowser_service, "random_switch_profile_proxies", _boom_random_switch_profile_proxies, raising=True)
+    monkeypatch.setattr(
+        ixbrowser_service,
+        "random_switch_profile_proxies",
+        _boom_random_switch_profile_proxies,
+        raising=True,
+    )
 
     resp = client.post(
         "/api/v1/ixbrowser/profiles/proxies/random-switch",

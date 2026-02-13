@@ -25,12 +25,22 @@ async def test_scan_scheduler_triggers_once_per_slot(monkeypatch):
         return None
 
     logs = []
-    monkeypatch.setattr("app.services.scan_scheduler.ixbrowser_service.scan_group_sora_sessions", _fake_scan_group_sora_sessions)
-    monkeypatch.setattr("app.services.scan_scheduler.sqlite_db.try_acquire_scheduler_lock", lambda **kwargs: True)
-    monkeypatch.setattr("app.services.scan_scheduler.sqlite_db.create_event_log", lambda **kwargs: logs.append(kwargs) or 1)
+    monkeypatch.setattr(
+        "app.services.scan_scheduler.ixbrowser_service.scan_group_sora_sessions",
+        _fake_scan_group_sora_sessions,
+    )
+    monkeypatch.setattr(
+        "app.services.scan_scheduler.sqlite_db.try_acquire_scheduler_lock", lambda **kwargs: True
+    )
+    monkeypatch.setattr(
+        "app.services.scan_scheduler.sqlite_db.create_event_log",
+        lambda **kwargs: logs.append(kwargs) or 1,
+    )
     monkeypatch.setattr(
         "app.services.scan_scheduler.load_system_settings",
-        lambda mask_sensitive=False: SimpleNamespace(scan=SimpleNamespace(default_group_title="Sora")),
+        lambda mask_sensitive=False: SimpleNamespace(
+            scan=SimpleNamespace(default_group_title="Sora")
+        ),
     )
 
     await scheduler._tick()  # noqa: SLF001
@@ -55,12 +65,19 @@ async def test_scan_scheduler_lock_conflict_logs_skip(monkeypatch):
         calls.append(kwargs)
         return None
 
-    monkeypatch.setattr("app.services.scan_scheduler.ixbrowser_service.scan_group_sora_sessions", _fake_scan_group_sora_sessions)
-    monkeypatch.setattr("app.services.scan_scheduler.sqlite_db.try_acquire_scheduler_lock", lambda **kwargs: False)
-    monkeypatch.setattr("app.services.scan_scheduler.sqlite_db.create_event_log", lambda **kwargs: logs.append(kwargs) or 1)
+    monkeypatch.setattr(
+        "app.services.scan_scheduler.ixbrowser_service.scan_group_sora_sessions",
+        _fake_scan_group_sora_sessions,
+    )
+    monkeypatch.setattr(
+        "app.services.scan_scheduler.sqlite_db.try_acquire_scheduler_lock", lambda **kwargs: False
+    )
+    monkeypatch.setattr(
+        "app.services.scan_scheduler.sqlite_db.create_event_log",
+        lambda **kwargs: logs.append(kwargs) or 1,
+    )
 
     await scheduler._tick()  # noqa: SLF001
 
     assert calls == []
     assert any(item.get("action") == "scheduler.scan.lock_conflict" for item in logs)
-

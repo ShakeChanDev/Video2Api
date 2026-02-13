@@ -29,7 +29,13 @@ class SoraApiMixin:
         if not endpoint:
             return {"status": None, "raw": None, "json": None, "error": "缺少 url", "source": ""}
         if not token:
-            return {"status": None, "raw": None, "json": None, "error": "缺少 accessToken", "source": endpoint}
+            return {
+                "status": None,
+                "raw": None,
+                "json": None,
+                "error": "缺少 accessToken",
+                "source": endpoint,
+            }
 
         headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
         result = await self._sora_publish_workflow.sora_fetch_json_via_page(
@@ -43,7 +49,9 @@ class SoraApiMixin:
         raw_text = result.get("raw") if isinstance(result.get("raw"), str) else None
         payload = result.get("json") if isinstance(result.get("json"), dict) else None
         error = result.get("error")
-        if result.get("is_cf") or self._is_sora_cf_challenge(status if isinstance(status, int) else None, raw_text):
+        if result.get("is_cf") or self._is_sora_cf_challenge(
+            status if isinstance(status, int) else None, raw_text
+        ):
             error = "cf_challenge"
         is_cf = str(error or "").strip().lower() == "cf_challenge"
         self._record_proxy_cf_event(
@@ -194,7 +202,13 @@ class SoraApiMixin:
         retries_int = int(retries) if int(retries or 0) > 0 else 0
 
         timeout = httpx.Timeout(timeout=timeout_ms_int / 1000.0)
-        last_result: Dict[str, Any] = {"status": None, "raw": None, "json": None, "error": None, "is_cf": False}
+        last_result: Dict[str, Any] = {
+            "status": None,
+            "raw": None,
+            "json": None,
+            "error": None,
+            "is_cf": False,
+        }
 
         for attempt in range(retries_int + 1):
             try:
@@ -218,7 +232,15 @@ class SoraApiMixin:
                 if raw_text and len(raw_text) > 20_000:
                     raw_text = raw_text[:20_000]
                 lowered = (raw_text or "").lower()
-                is_cf = any(marker in lowered for marker in ("just a moment", "challenge-platform", "cf-mitigated", "cloudflare"))
+                is_cf = any(
+                    marker in lowered
+                    for marker in (
+                        "just a moment",
+                        "challenge-platform",
+                        "cf-mitigated",
+                        "cloudflare",
+                    )
+                )
                 last_result = {
                     "status": status_code,
                     "raw": raw_text,
@@ -227,7 +249,13 @@ class SoraApiMixin:
                     "is_cf": bool(is_cf),
                 }
             except Exception as exc:  # noqa: BLE001
-                last_result = {"status": None, "raw": None, "json": None, "error": str(exc), "is_cf": False}
+                last_result = {
+                    "status": None,
+                    "raw": None,
+                    "json": None,
+                    "error": str(exc),
+                    "is_cf": False,
+                }
 
             should_retry = False
             if attempt < retries_int:
@@ -277,7 +305,13 @@ class SoraApiMixin:
         try:
             from curl_cffi.requests import AsyncSession  # type: ignore
         except Exception:  # noqa: BLE001
-            return {"status": None, "raw": None, "json": None, "error": "curl_cffi 未安装", "is_cf": False}
+            return {
+                "status": None,
+                "raw": None,
+                "json": None,
+                "error": "curl_cffi 未安装",
+                "is_cf": False,
+            }
 
         endpoint = str(url or "").strip()
         if not endpoint:
@@ -295,11 +329,19 @@ class SoraApiMixin:
         retries_int = int(retries) if int(retries or 0) > 0 else 0
         timeout_sec = max(1.0, float(timeout_ms_int) / 1000.0)
 
-        last_result: Dict[str, Any] = {"status": None, "raw": None, "json": None, "error": None, "is_cf": False}
+        last_result: Dict[str, Any] = {
+            "status": None,
+            "raw": None,
+            "json": None,
+            "error": None,
+            "is_cf": False,
+        }
 
         for attempt in range(retries_int + 1):
             try:
-                async with AsyncSession(impersonate=str(impersonate or "safari17_2_ios")) as session:
+                async with AsyncSession(
+                    impersonate=str(impersonate or "safari17_2_ios")
+                ) as session:
                     kwargs = {
                         "headers": safe_headers,
                         "timeout": timeout_sec,
@@ -329,7 +371,13 @@ class SoraApiMixin:
                     "is_cf": bool(is_cf),
                 }
             except Exception as exc:  # noqa: BLE001
-                last_result = {"status": None, "raw": None, "json": None, "error": str(exc), "is_cf": False}
+                last_result = {
+                    "status": None,
+                    "raw": None,
+                    "json": None,
+                    "error": str(exc),
+                    "is_cf": False,
+                }
 
             should_retry = False
             if attempt < retries_int:
@@ -372,7 +420,13 @@ class SoraApiMixin:
         if not endpoint:
             return {"status": None, "raw": None, "json": None, "error": "缺少 url", "source": ""}
         if not token:
-            return {"status": None, "raw": None, "json": None, "error": "缺少 accessToken", "source": endpoint}
+            return {
+                "status": None,
+                "raw": None,
+                "json": None,
+                "error": "缺少 accessToken",
+                "source": endpoint,
+            }
 
         headers: Dict[str, str] = {
             "Authorization": f"Bearer {token}",
@@ -394,7 +448,9 @@ class SoraApiMixin:
         raw_text = result.get("raw") if isinstance(result.get("raw"), str) else None
         payload = result.get("json") if isinstance(result.get("json"), (dict, list)) else None
         error = result.get("error")
-        if result.get("is_cf") or self._is_sora_cf_challenge(status if isinstance(status, int) else None, raw_text):
+        if result.get("is_cf") or self._is_sora_cf_challenge(
+            status if isinstance(status, int) else None, raw_text
+        ):
             error = "cf_challenge"
         return {
             "status": int(status) if isinstance(status, int) else status,
@@ -418,7 +474,13 @@ class SoraApiMixin:
         if not endpoint:
             return {"status": None, "raw": None, "json": None, "error": "缺少 url", "source": ""}
         if not token:
-            return {"status": None, "raw": None, "json": None, "error": "缺少 accessToken", "source": endpoint}
+            return {
+                "status": None,
+                "raw": None,
+                "json": None,
+                "error": "缺少 accessToken",
+                "source": endpoint,
+            }
 
         did = self._get_or_create_oai_did(profile_id)
         headers: Dict[str, str] = {
@@ -447,7 +509,9 @@ class SoraApiMixin:
         raw_text = result.get("raw") if isinstance(result.get("raw"), str) else None
         payload = result.get("json") if isinstance(result.get("json"), (dict, list)) else None
         error = result.get("error")
-        if result.get("is_cf") or self._is_sora_cf_challenge(status if isinstance(status, int) else None, raw_text):
+        if result.get("is_cf") or self._is_sora_cf_challenge(
+            status if isinstance(status, int) else None, raw_text
+        ):
             error = "cf_challenge"
         is_cf = str(error or "").strip().lower() == "cf_challenge"
         self._record_proxy_cf_event(
@@ -473,7 +537,7 @@ class SoraApiMixin:
         *,
         proxy_url: Optional[str] = None,
         user_agent: Optional[str] = None,
-    ) -> Tuple[Optional[int], Optional[dict], Optional[str]]:
+    ) -> tuple[Optional[int], Optional[dict], Optional[str]]:
         token = str(access_token or "").strip()
         if not token:
             return None, None, None
@@ -531,7 +595,7 @@ class SoraApiMixin:
         proxy_url: Optional[str] = None,
         user_agent: Optional[str] = None,
         profile_id: int,
-    ) -> Tuple[Optional[int], Optional[dict], Optional[str]]:
+    ) -> tuple[Optional[int], Optional[dict], Optional[str]]:
         token = str(access_token or "").strip()
         if not token:
             return None, None, None
@@ -603,7 +667,11 @@ class SoraApiMixin:
             items = payload.get("data")
             if isinstance(items, list) and items:
                 first = items[0] if isinstance(items[0], dict) else None
-                plan_obj = first.get("plan") if isinstance(first, dict) and isinstance(first.get("plan"), dict) else {}
+                plan_obj = (
+                    first.get("plan")
+                    if isinstance(first, dict) and isinstance(first.get("plan"), dict)
+                    else {}
+                )
                 for value in (plan_obj.get("id"), plan_obj.get("title")):
                     normalized = self._normalize_account_plan(value)
                     if normalized:
@@ -639,7 +707,11 @@ class SoraApiMixin:
             items = payload.get("data")
             if isinstance(items, list) and items:
                 first = items[0] if isinstance(items[0], dict) else None
-                plan_obj = first.get("plan") if isinstance(first, dict) and isinstance(first.get("plan"), dict) else {}
+                plan_obj = (
+                    first.get("plan")
+                    if isinstance(first, dict) and isinstance(first.get("plan"), dict)
+                    else {}
+                )
                 for value in (plan_obj.get("id"), plan_obj.get("title")):
                     normalized = self._normalize_account_plan(value)
                     if normalized:
@@ -772,7 +844,7 @@ class SoraApiMixin:
         access_token: str,
         *,
         profile_id: int,
-    ) -> Tuple[Optional[int], Optional[dict], Optional[str]]:
+    ) -> tuple[Optional[int], Optional[dict], Optional[str]]:
         """
         使用 accessToken 在浏览器上下文内请求 session 数据（API 形式），失败再回退 /backend/me。
         """
@@ -845,7 +917,11 @@ class SoraApiMixin:
             items = payload.get("data")
             if isinstance(items, list) and items:
                 first = items[0] if isinstance(items[0], dict) else None
-                plan_obj = first.get("plan") if isinstance(first, dict) and isinstance(first.get("plan"), dict) else {}
+                plan_obj = (
+                    first.get("plan")
+                    if isinstance(first, dict) and isinstance(first.get("plan"), dict)
+                    else {}
+                )
                 for value in (plan_obj.get("id"), plan_obj.get("title")):
                     normalized = self._normalize_account_plan(value)
                     if normalized:

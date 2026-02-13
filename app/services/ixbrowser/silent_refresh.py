@@ -31,13 +31,17 @@ class SilentRefreshMixin:
             success_count=int(row.get("success_count") or 0),
             failed_count=int(row.get("failed_count") or 0),
             progress_pct=float(row.get("progress_pct") or 0),
-            current_profile_id=int(row["current_profile_id"]) if row.get("current_profile_id") is not None else None,
+            current_profile_id=int(row["current_profile_id"])
+            if row.get("current_profile_id") is not None
+            else None,
             current_window_name=row.get("current_window_name"),
             message=row.get("message"),
             error=row.get("error"),
             run_id=int(row["run_id"]) if row.get("run_id") is not None else None,
             with_fallback=bool(row.get("with_fallback")),
-            operator_user_id=int(row["operator_user_id"]) if row.get("operator_user_id") is not None else None,
+            operator_user_id=int(row["operator_user_id"])
+            if row.get("operator_user_id") is not None
+            else None,
             operator_username=row.get("operator_username"),
             created_at=str(row.get("created_at") or ""),
             updated_at=str(row.get("updated_at") or ""),
@@ -59,7 +63,9 @@ class SilentRefreshMixin:
         normalized_group = str(group_title or "Sora").strip() or "Sora"
         with_fallback_bool = bool(with_fallback)
         operator_user_id = operator_user.get("id") if isinstance(operator_user, dict) else None
-        operator_username = operator_user.get("username") if isinstance(operator_user, dict) else None
+        operator_username = (
+            operator_user.get("username") if isinstance(operator_user, dict) else None
+        )
 
         running = sqlite_db.get_running_ixbrowser_silent_refresh_job(normalized_group)
         if running:
@@ -125,7 +131,9 @@ class SilentRefreshMixin:
             task_name="ixbrowser.silent_refresh.run",
             metadata={"job_id": int(job_id), "group_title": normalized_group},
         )
-        return IXBrowserSilentRefreshCreateResponse(job=self._build_silent_refresh_job(row), reused=False)
+        return IXBrowserSilentRefreshCreateResponse(
+            job=self._build_silent_refresh_job(row), reused=False
+        )
 
     async def _run_silent_refresh_job(
         self,
@@ -182,7 +190,9 @@ class SilentRefreshMixin:
                     "processed_windows": int(response.total_windows),
                     "success_count": int(response.success_count),
                     "failed_count": int(response.failed_count),
-                    "progress_pct": self._calc_progress_pct(response.total_windows, response.total_windows),
+                    "progress_pct": self._calc_progress_pct(
+                        response.total_windows, response.total_windows
+                    ),
                     "current_profile_id": None,
                     "current_window_name": None,
                     "message": "静默更新完成",
@@ -200,8 +210,12 @@ class SilentRefreshMixin:
                 message="静默更新任务完成",
                 resource_type="ixbrowser_silent_refresh_job",
                 resource_id=str(job_id),
-                operator_user_id=operator_user.get("id") if isinstance(operator_user, dict) else None,
-                operator_username=operator_user.get("username") if isinstance(operator_user, dict) else None,
+                operator_user_id=operator_user.get("id")
+                if isinstance(operator_user, dict)
+                else None,
+                operator_username=operator_user.get("username")
+                if isinstance(operator_user, dict)
+                else None,
                 metadata={
                     "group_title": group_title,
                     "run_id": response.run_id,
@@ -238,8 +252,12 @@ class SilentRefreshMixin:
                 message=f"静默更新任务失败: {exc}",
                 resource_type="ixbrowser_silent_refresh_job",
                 resource_id=str(job_id),
-                operator_user_id=operator_user.get("id") if isinstance(operator_user, dict) else None,
-                operator_username=operator_user.get("username") if isinstance(operator_user, dict) else None,
+                operator_user_id=operator_user.get("id")
+                if isinstance(operator_user, dict)
+                else None,
+                operator_username=operator_user.get("username")
+                if isinstance(operator_user, dict)
+                else None,
                 metadata={
                     "group_title": group_title,
                 },
@@ -250,4 +268,3 @@ class SilentRefreshMixin:
                 str(group_title),
                 str(exc),
             )
-

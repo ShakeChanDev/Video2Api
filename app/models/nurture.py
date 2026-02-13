@@ -1,4 +1,5 @@
 """Sora 养号任务模型"""
+
 from __future__ import annotations
 
 from typing import List, Optional
@@ -79,7 +80,9 @@ class SoraNurtureBatchCreateRequest(BaseModel):
             if key in seen:
                 continue
             seen.add(key)
-            normalized.append(SoraNurtureBatchTarget(group_title=group_title, profile_id=profile_id))
+            normalized.append(
+                SoraNurtureBatchTarget(group_title=group_title, profile_id=profile_id)
+            )
         return normalized
 
     @model_validator(mode="after")

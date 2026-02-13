@@ -26,7 +26,9 @@ class SQLiteSchemaMixin:
         try:
             current_version = self._get_user_version(cursor)
             if current_version != SCHEMA_VERSION:
-                self._handle_schema_mismatch(cursor, current_version=current_version, expected_version=SCHEMA_VERSION)
+                self._handle_schema_mismatch(
+                    cursor, current_version=current_version, expected_version=SCHEMA_VERSION
+                )
             else:
                 # 正常路径仍做一次轻量兜底：关键配置表的 seed 行确保存在。
                 self._ensure_seed_rows(cursor)
@@ -47,7 +49,9 @@ class SQLiteSchemaMixin:
     def _set_user_version(cursor: sqlite3.Cursor, version: int) -> None:
         cursor.execute(f"PRAGMA user_version = {int(version)}")
 
-    def _handle_schema_mismatch(self, cursor: sqlite3.Cursor, *, current_version: int, expected_version: int) -> None:
+    def _handle_schema_mismatch(
+        self, cursor: sqlite3.Cursor, *, current_version: int, expected_version: int
+    ) -> None:
         allow_reset = bool(getattr(settings, "sqlite_reset_on_schema_mismatch", True))
         if not allow_reset:
             raise RuntimeError(
@@ -70,7 +74,9 @@ class SQLiteSchemaMixin:
         except Exception:
             pass
 
-        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")
+        cursor.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
+        )
         rows = cursor.fetchall() or []
         for row in rows:
             name = row[0] if isinstance(row, (list, tuple)) and row else None
@@ -78,7 +84,9 @@ class SQLiteSchemaMixin:
                 continue
             cursor.execute(f'DROP TABLE IF EXISTS "{name}"')
 
-        cursor.execute("SELECT name FROM sqlite_master WHERE type='view' AND name NOT LIKE 'sqlite_%'")
+        cursor.execute(
+            "SELECT name FROM sqlite_master WHERE type='view' AND name NOT LIKE 'sqlite_%'"
+        )
         rows = cursor.fetchall() or []
         for row in rows:
             name = row[0] if isinstance(row, (list, tuple)) and row else None
@@ -499,4 +507,3 @@ class SQLiteSchemaMixin:
             """,
             (1, 1, "custom", None, None, "/get-sora-link", 2, 1, 0, now),
         )
-
