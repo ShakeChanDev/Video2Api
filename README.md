@@ -50,6 +50,8 @@ uvicorn app.main:app --host 0.0.0.0 --port 8001 --reload
 ## 开发文档与一键命令
 
 - 开发手册：`docs/dev.md`
+- ixBrowser Local API 速查：`docs/ixbrowser-local-api.md`
+- AdsPower Local API 速查（参考/对照）：`docs/adspower-local-api.md`
 - Sora 非付费额度说明：`docs/sora-quota.md`
 - 自测清单（Playwright）：`docs/selftest.md`
 - NopeCHA 反检测策略分析：`docs/nopecha-extension-anti-detection-analysis.md`
