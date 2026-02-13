@@ -59,6 +59,8 @@ python -m uvicorn app.main:app --host 0.0.0.0 --port 8001 --reload
 - `app/services/ixbrowser/sora_job_runner.py`：Sora 任务阶段状态机与去水印收尾。
 - `app/services/ixbrowser/sora_publish_workflow.py`：Sora 发布链路（发布、草稿检索、页面请求/轮询、发布链接捕获）。
 - `app/services/ixbrowser/sora_generation_workflow.py`：Sora 生成链路（提交、进度轮询、genid 获取、兼容生成任务发布）。
+- ixBrowser Local API 速查：`docs/ixbrowser-local-api.md`
+- AdsPower Local API 速查（参考/对照）：`docs/adspower-local-api.md`
 
 ## 前端开发（admin/）
 1. 安装依赖
